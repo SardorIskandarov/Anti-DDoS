@@ -18,24 +18,28 @@
             --neon-orange: #ff9f1c;
             --neon-purple: #9d4edd;
             --neon-cyan: #06ffa5;
+            --neon-yellow: #ffe600;
+
+            /* Z-score threshold colors */
+            --z-normal:  #00ff41;   /* |z| < 1  */
+            --z-warn:    #ffe600;   /* 1 ≤ |z| < 2 */
+            --z-alert:   #ff9f1c;   /* 2 ≤ |z| < 3 */
+            --z-critical:#ff2e63;   /* |z| ≥ 3  */
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        
-        body { 
-            background: var(--bg-dark); 
-            color: var(--text-main); 
-            font-family: 'Consolas', 'Monaco', monospace; 
-            padding: 15px; 
+
+        body {
+            background: var(--bg-dark);
+            color: var(--text-main);
+            font-family: 'Consolas', 'Monaco', monospace;
+            padding: 15px;
             overflow-x: hidden;
         }
 
-        .container {
-            max-width: 1920px;
-            margin: 0 auto;
-        }
+        .container { max-width: 1920px; margin: 0 auto; }
 
-        /* Header */
+        /* ── Header ── */
         .header {
             display: flex;
             justify-content: space-between;
@@ -45,24 +49,16 @@
             border: 1px solid var(--neon-green);
             border-radius: 6px;
             margin-bottom: 20px;
-            box-shadow: 0 0 20px rgba(0, 255, 65, 0.1);
+            box-shadow: 0 0 20px rgba(0,255,65,0.1);
         }
 
-        .header h1 {
-            font-size: 24px;
-            letter-spacing: 2px;
-        }
+        .header h1 { font-size: 24px; letter-spacing: 2px; }
 
-        .header-controls {
-            display: flex;
-            gap: 20px;
-            align-items: center;
-        }
+        .header-controls { display: flex; gap: 20px; align-items: center; }
 
         .live-indicator {
             display: inline-block;
-            width: 10px;
-            height: 10px;
+            width: 10px; height: 10px;
             background: var(--neon-green);
             border-radius: 50%;
             box-shadow: 0 0 15px var(--neon-green);
@@ -70,8 +66,8 @@
         }
 
         @keyframes pulse {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.4; transform: scale(0.9); }
+            0%,100% { opacity:1; transform:scale(1); }
+            50%      { opacity:0.4; transform:scale(0.9); }
         }
 
         select {
@@ -85,13 +81,52 @@
             cursor: pointer;
             min-width: 200px;
         }
+        select:focus { outline:none; box-shadow:0 0 10px var(--neon-cyan); }
 
-        select:focus {
-            outline: none;
-            box-shadow: 0 0 10px var(--neon-cyan);
+        /* ── Anomaly Summary Bar ── */
+        .anomaly-bar {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+            gap: 8px;
+            padding: 12px;
+            background: #0a0a0a;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            margin-bottom: 20px;
         }
 
-        /* Grid Layout */
+        .anomaly-tile {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 8px 6px;
+            border-radius: 4px;
+            border: 1px solid #1a1a1a;
+            transition: border-color 0.3s, box-shadow 0.3s;
+            cursor: default;
+        }
+
+        .anomaly-tile .tile-label {
+            font-size: 9px;
+            color: var(--text-muted);
+            letter-spacing: 0.8px;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .anomaly-tile .tile-z {
+            font-size: 16px;
+            font-weight: bold;
+            transition: color 0.3s;
+        }
+
+        /* dynamic classes set by JS */
+        .z-normal   { color: var(--z-normal);   border-color: #1a3a1a; }
+        .z-warn     { color: var(--z-warn);     border-color: #3a3a00; box-shadow: 0 0 8px rgba(255,230,0,0.15); }
+        .z-alert    { color: var(--z-alert);    border-color: #3a2000; box-shadow: 0 0 8px rgba(255,159,28,0.2); }
+        .z-critical { color: var(--z-critical); border-color: #3a0010; box-shadow: 0 0 12px rgba(255,46,99,0.3); }
+
+        /* ── Dashboard Grid ── */
         .dashboard-grid {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
@@ -99,12 +134,18 @@
             margin-bottom: 15px;
         }
 
+        /* A "feature column" stacks the raw chart above the Z-score chart */
+        .feature-column {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
         .panel {
             background: var(--panel-bg);
             border: 1px solid var(--border-color);
             border-radius: 6px;
             padding: 15px;
-            min-height: 280px;
             display: flex;
             flex-direction: column;
             transition: all 0.3s ease;
@@ -112,7 +153,16 @@
 
         .panel:hover {
             border-color: var(--neon-blue);
-            box-shadow: 0 0 15px rgba(0, 212, 255, 0.15);
+            box-shadow: 0 0 15px rgba(0,212,255,0.15);
+        }
+
+        /* Raw-feature panels keep their height */
+        .panel-raw { min-height: 280px; }
+
+        /* Z-score panels are shorter — they share space in the column */
+        .panel-zscore {
+            min-height: 160px;
+            border-style: dashed;
         }
 
         .panel-header {
@@ -134,25 +184,47 @@
             color: var(--neon-cyan);
         }
 
+        .z-badge {
+            font-size: 11px;
+            font-weight: bold;
+            padding: 2px 6px;
+            border-radius: 3px;
+            transition: background 0.3s, color 0.3s;
+        }
+
         .chart-container {
             flex: 1;
             position: relative;
-            min-height: 220px;
+            min-height: 0;   /* allow flex shrink */
         }
 
-        canvas {
-            width: 100% !important;
-            height: 100% !important;
-        }
+        /* raw panels give chart a fixed min height */
+        .panel-raw .chart-container  { min-height: 210px; }
+        .panel-zscore .chart-container { min-height: 110px; }
 
-        /* Color coding for different feature types */
-        .metric-traffic { border-top: 3px solid var(--neon-blue); }
+        canvas { width:100% !important; height:100% !important; }
+
+        /* Color coding */
+        .metric-traffic  { border-top: 3px solid var(--neon-blue); }
         .metric-protocol { border-top: 3px solid var(--neon-purple); }
-        .metric-flags { border-top: 3px solid var(--neon-red); }
-        .metric-flow { border-top: 3px solid var(--neon-orange); }
+        .metric-flags    { border-top: 3px solid var(--neon-red); }
+        .metric-flow     { border-top: 3px solid var(--neon-orange); }
         .metric-analysis { border-top: 3px solid var(--neon-cyan); }
+        .metric-zscore   { border-top: 3px solid #333; }
 
-        /* Status Bar */
+        /* Pie panels stay full-height in the grid */
+        .panel-pie { min-height: 280px; }
+
+        /* ── Section Label ── */
+        .section-label {
+            font-size: 10px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            padding: 4px 0 8px 4px;
+        }
+
+        /* ── Status Bar ── */
         .status-bar {
             display: flex;
             justify-content: space-between;
@@ -162,279 +234,383 @@
             border-radius: 4px;
             font-size: 12px;
             color: var(--text-muted);
+            margin-top: 15px;
         }
 
-        .status-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
+        .status-item { display: flex; align-items: center; gap: 8px; }
+        .status-value { color: var(--neon-green); font-weight: bold; }
 
-        .status-value {
-            color: var(--neon-green);
-            font-weight: bold;
-        }
-
-        /* Responsive */
-        @media (max-width: 1600px) {
-            .dashboard-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-        }
-
-        @media (max-width: 1000px) {
-            .dashboard-grid {
-                grid-template-columns: 1fr;
-            }
-        }
+        /* ── Responsive ── */
+        @media (max-width: 1600px) { .dashboard-grid { grid-template-columns: repeat(2,1fr); } }
+        @media (max-width: 1000px)  { .dashboard-grid { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
-
 <div class="container">
-    <!-- Header -->
+
+    <!-- ── Header ─────────────────────────────────────────────── -->
     <div class="header">
         <div>
-            <h1><span style="color:var(--neon-red)">◆</span> TRAFFIC_MONITOR <span style="font-size:12px; color:#444; font-weight:normal">v4.0</span></h1>
+            <h1>
+                <span style="color:var(--neon-red)">◆</span>
+                TRAFFIC_MONITOR
+                <span style="font-size:12px;color:#444;font-weight:normal">v5.0</span>
+            </h1>
         </div>
         <div class="header-controls">
             <span class="live-indicator"></span>
-            <label style="color: var(--text-muted)">TARGET IP:</label>
+            <label style="color:var(--text-muted)">TARGET IP:</label>
             <select id="ip-selector" onchange="changeTarget()">
                 <option value="">Loading...</option>
             </select>
         </div>
     </div>
 
-    <!-- Traffic Metrics -->
+    <!-- ── Anomaly Summary (Z-score tiles) ────────────────────── -->
+    <div class="section-label">⚠ EWMA Z-Score Anomaly Summary — |z|≥1 warn · |z|≥2 alert · |z|≥3 critical</div>
+    <div class="anomaly-bar" id="anomaly-bar">
+        <!-- Tiles injected by JS -->
+    </div>
+
+    <!-- ── Traffic Metrics ────────────────────────────────────── -->
+    <div class="section-label">Traffic Volume</div>
     <div class="dashboard-grid">
-        <div class="panel metric-traffic">
-            <div class="panel-header">
-                <span>Bits Per Second</span>
-                <span id="val-bps" class="panel-value">0</span>
+        <div class="feature-column">
+            <div class="panel panel-raw metric-traffic">
+                <div class="panel-header">
+                    <span>Bits Per Second</span>
+                    <span id="val-bps" class="panel-value">0</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-bps"></canvas></div>
             </div>
-            <div class="chart-container">
-                <canvas id="chart-bps"></canvas>
-            </div>
-        </div>
-
-        <div class="panel metric-traffic">
-            <div class="panel-header">
-                <span>Packets Per Second</span>
-                <span id="val-pps" class="panel-value">0</span>
-            </div>
-            <div class="chart-container">
-                <canvas id="chart-pps"></canvas>
+            <div class="panel panel-zscore metric-zscore">
+                <div class="panel-header">
+                    <span style="color:#555">Z-Score · BPS</span>
+                    <span id="zbadge-bps" class="z-badge z-normal">0.0000</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-z-bps"></canvas></div>
             </div>
         </div>
 
-        <div class="panel metric-traffic">
-            <div class="panel-header">
-                <span>Flows Per Second</span>
-                <span id="val-fps" class="panel-value">0</span>
+        <div class="feature-column">
+            <div class="panel panel-raw metric-traffic">
+                <div class="panel-header">
+                    <span>Packets Per Second</span>
+                    <span id="val-pps" class="panel-value">0</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-pps"></canvas></div>
             </div>
-            <div class="chart-container">
-                <canvas id="chart-fps"></canvas>
+            <div class="panel panel-zscore metric-zscore">
+                <div class="panel-header">
+                    <span style="color:#555">Z-Score · PPS</span>
+                    <span id="zbadge-pps" class="z-badge z-normal">0.0000</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-z-pps"></canvas></div>
+            </div>
+        </div>
+
+        <div class="feature-column">
+            <div class="panel panel-raw metric-traffic">
+                <div class="panel-header">
+                    <span>Flows Per Second</span>
+                    <span id="val-fps" class="panel-value">0</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-fps"></canvas></div>
+            </div>
+            <div class="panel panel-zscore metric-zscore">
+                <div class="panel-header">
+                    <span style="color:#555">Z-Score · FPS</span>
+                    <span id="zbadge-fps" class="z-badge z-normal">0.0000</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-z-fps"></canvas></div>
             </div>
         </div>
     </div>
 
-    <!-- Protocol Distribution -->
+    <!-- ── Burst & Direction ───────────────────────────────────── -->
+    <div class="section-label">Burst &amp; Direction</div>
     <div class="dashboard-grid">
-        <div class="panel metric-protocol">
-            <div class="panel-header">
-                <span>TCP Packets (Ratio %)</span>
-                <span id="val-tcp" class="panel-value">0</span>
+        <div class="feature-column">
+            <div class="panel panel-raw metric-analysis">
+                <div class="panel-header">
+                    <span>Burst Factor</span>
+                    <span id="val-burst" class="panel-value">0</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-burst"></canvas></div>
             </div>
-            <div class="chart-container">
-                <canvas id="chart-tcp"></canvas>
-            </div>
-        </div>
-
-        <div class="panel metric-protocol">
-            <div class="panel-header">
-                <span>UDP Packets (Ratio %)</span>
-                <span id="val-udp" class="panel-value">0</span>
-            </div>
-            <div class="chart-container">
-                <canvas id="chart-udp"></canvas>
+            <div class="panel panel-zscore metric-zscore">
+                <div class="panel-header">
+                    <span style="color:#555">Z-Score · Burst Factor</span>
+                    <span id="zbadge-burst" class="z-badge z-normal">0.0000</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-z-burst"></canvas></div>
             </div>
         </div>
 
-        <div class="panel metric-protocol">
-            <div class="panel-header">
-                <span>ICMP Packets (Ratio %)</span>
-                <span id="val-icmp" class="panel-value">0</span>
+        <div class="feature-column">
+            <div class="panel panel-raw metric-traffic">
+                <div class="panel-header">
+                    <span>Inbound Bits</span>
+                    <span id="val-inbound" class="panel-value">0</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-inbound"></canvas></div>
             </div>
-            <div class="chart-container">
-                <canvas id="chart-icmp"></canvas>
+            <div class="panel panel-zscore metric-zscore">
+                <div class="panel-header">
+                    <span style="color:#555">Z-Score · Inbound</span>
+                    <span id="zbadge-inbound" class="z-badge z-normal">0.0000</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-z-inbound"></canvas></div>
+            </div>
+        </div>
+
+        <div class="feature-column">
+            <div class="panel panel-raw metric-traffic">
+                <div class="panel-header">
+                    <span>Outbound Bits</span>
+                    <span id="val-outbound" class="panel-value">0</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-outbound"></canvas></div>
+            </div>
+            <div class="panel panel-zscore metric-zscore">
+                <div class="panel-header">
+                    <span style="color:#555">Z-Score · Outbound</span>
+                    <span id="zbadge-outbound" class="z-badge z-normal">0.0000</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-z-outbound"></canvas></div>
             </div>
         </div>
     </div>
 
-    <!-- Protocol Distribution Pie Chart -->
+    <!-- ── Protocol Mix ───────────────────────────────────────── -->
+    <div class="section-label">Protocol Distribution</div>
     <div class="dashboard-grid">
-        <div class="panel metric-protocol">
-            <div class="panel-header">
-                <span>Protocol Distribution</span>
+        <div class="feature-column">
+            <div class="panel panel-raw metric-protocol">
+                <div class="panel-header">
+                    <span>TCP Ratio</span>
+                    <span id="val-tcp" class="panel-value">0</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-tcp"></canvas></div>
             </div>
-            <div class="chart-container">
-                <canvas id="chart-proto-pie"></canvas>
-            </div>
-        </div>
-
-        <div class="panel metric-flags">
-            <div class="panel-header">
-                <span>SYN Ratio (% of TCP)</span>
-                <span id="val-syn" class="panel-value">0</span>
-            </div>
-            <div class="chart-container">
-                <canvas id="chart-syn"></canvas>
+            <div class="panel panel-zscore metric-zscore">
+                <div class="panel-header">
+                    <span style="color:#555">Z-Score · TCP</span>
+                    <span id="zbadge-tcp" class="z-badge z-normal">0.0000</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-z-tcp"></canvas></div>
             </div>
         </div>
 
-        <div class="panel metric-flags">
-            <div class="panel-header">
-                <span>SYN-ACK Ratio (% of TCP)</span>
-                <span id="val-synack" class="panel-value">0</span>
+        <div class="feature-column">
+            <div class="panel panel-raw metric-protocol">
+                <div class="panel-header">
+                    <span>UDP Ratio</span>
+                    <span id="val-udp" class="panel-value">0</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-udp"></canvas></div>
             </div>
-            <div class="chart-container">
-                <canvas id="chart-synack"></canvas>
+            <div class="panel panel-zscore metric-zscore">
+                <div class="panel-header">
+                    <span style="color:#555">Z-Score · UDP</span>
+                    <span id="zbadge-udp" class="z-badge z-normal">0.0000</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-z-udp"></canvas></div>
+            </div>
+        </div>
+
+        <div class="feature-column">
+            <div class="panel panel-raw metric-protocol">
+                <div class="panel-header">
+                    <span>ICMP Ratio</span>
+                    <span id="val-icmp" class="panel-value">0</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-icmp"></canvas></div>
+            </div>
+            <div class="panel panel-zscore metric-zscore">
+                <div class="panel-header">
+                    <span style="color:#555">Z-Score · ICMP</span>
+                    <span id="zbadge-icmp" class="z-badge z-normal">0.0000</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-z-icmp"></canvas></div>
             </div>
         </div>
     </div>
 
-    <!-- TCP Flags -->
+    <!-- Protocol Pie (no paired Z-score — it's derived) -->
     <div class="dashboard-grid">
-        <div class="panel metric-flags">
-            <div class="panel-header">
-                <span>FIN-ACK Ratio (% of TCP)</span>
-                <span id="val-finack" class="panel-value">0</span>
+        <div class="panel panel-pie metric-protocol">
+            <div class="panel-header"><span>Protocol Distribution</span></div>
+            <div class="chart-container"><canvas id="chart-proto-pie"></canvas></div>
+        </div>
+
+        <!-- ── TCP Flags ──────────────────────────────────────── -->
+        <div class="feature-column">
+            <div class="panel panel-raw metric-flags">
+                <div class="panel-header">
+                    <span>SYN Ratio (% TCP)</span>
+                    <span id="val-syn" class="panel-value">0</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-syn"></canvas></div>
             </div>
-            <div class="chart-container">
-                <canvas id="chart-finack"></canvas>
+            <div class="panel panel-zscore metric-zscore">
+                <div class="panel-header">
+                    <span style="color:#555">Z-Score · SYN</span>
+                    <span id="zbadge-syn" class="z-badge z-normal">0.0000</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-z-syn"></canvas></div>
             </div>
         </div>
 
-        <div class="panel metric-flags">
-            <div class="panel-header">
-                <span>RST Ratio (% of TCP)</span>
-                <span id="val-rst" class="panel-value">0</span>
+        <div class="feature-column">
+            <div class="panel panel-raw metric-flags">
+                <div class="panel-header">
+                    <span>SYN-ACK Ratio (% TCP)</span>
+                    <span id="val-synack" class="panel-value">0</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-synack"></canvas></div>
             </div>
-            <div class="chart-container">
-                <canvas id="chart-rst"></canvas>
-            </div>
-        </div>
-
-        <div class="panel metric-flags">
-            <div class="panel-header">
-                <span>TCP Flags Distribution</span>
-            </div>
-            <div class="chart-container">
-                <canvas id="chart-flags-pie"></canvas>
+            <div class="panel panel-zscore metric-zscore">
+                <div class="panel-header">
+                    <span style="color:#555">Z-Score · SYN-ACK</span>
+                    <span id="zbadge-synack" class="z-badge z-normal">0.0000</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-z-synack"></canvas></div>
             </div>
         </div>
     </div>
 
-    <!-- Flow Metrics -->
     <div class="dashboard-grid">
-        <div class="panel metric-flow">
-            <div class="panel-header">
-                <span>UDP Flows</span>
-                <span id="val-udpflows" class="panel-value">0</span>
+        <div class="feature-column">
+            <div class="panel panel-raw metric-flags">
+                <div class="panel-header">
+                    <span>FIN-ACK Ratio (% TCP)</span>
+                    <span id="val-finack" class="panel-value">0</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-finack"></canvas></div>
             </div>
-            <div class="chart-container">
-                <canvas id="chart-udpflows"></canvas>
-            </div>
-        </div>
-
-        <div class="panel metric-analysis">
-            <div class="panel-header">
-                <span>Unique Source IPs</span>
-                <span id="val-srcips" class="panel-value">0</span>
-            </div>
-            <div class="chart-container">
-                <canvas id="chart-srcips"></canvas>
+            <div class="panel panel-zscore metric-zscore">
+                <div class="panel-header">
+                    <span style="color:#555">Z-Score · FIN-ACK</span>
+                    <span id="zbadge-finack" class="z-badge z-normal">0.0000</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-z-finack"></canvas></div>
             </div>
         </div>
 
-        <div class="panel metric-analysis">
-            <div class="panel-header">
-                <span>Unique Destination Ports</span>
-                <span id="val-dstports" class="panel-value">0</span>
+        <div class="feature-column">
+            <div class="panel panel-raw metric-flags">
+                <div class="panel-header">
+                    <span>RST Ratio (% TCP)</span>
+                    <span id="val-rst" class="panel-value">0</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-rst"></canvas></div>
             </div>
-            <div class="chart-container">
-                <canvas id="chart-dstports"></canvas>
+            <div class="panel panel-zscore metric-zscore">
+                <div class="panel-header">
+                    <span style="color:#555">Z-Score · RST</span>
+                    <span id="zbadge-rst" class="z-badge z-normal">0.0000</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-z-rst"></canvas></div>
+            </div>
+        </div>
+
+        <div class="panel panel-pie metric-flags">
+            <div class="panel-header"><span>TCP Flags Distribution</span></div>
+            <div class="chart-container"><canvas id="chart-flags-pie"></canvas></div>
+        </div>
+    </div>
+
+    <!-- ── Flow / Cardinality Metrics ─────────────────────────── -->
+    <div class="section-label">Flow &amp; Cardinality</div>
+    <div class="dashboard-grid">
+        <div class="feature-column">
+            <div class="panel panel-raw metric-flow">
+                <div class="panel-header">
+                    <span>UDP Flows</span>
+                    <span id="val-udpflows" class="panel-value">0</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-udpflows"></canvas></div>
+            </div>
+            <div class="panel panel-zscore metric-zscore">
+                <div class="panel-header">
+                    <span style="color:#555">Z-Score · UDP Flows</span>
+                    <span id="zbadge-udpflows" class="z-badge z-normal">0.0000</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-z-udpflows"></canvas></div>
+            </div>
+        </div>
+
+        <div class="feature-column">
+            <div class="panel panel-raw metric-analysis">
+                <div class="panel-header">
+                    <span>Unique Source IPs</span>
+                    <span id="val-srcips" class="panel-value">0</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-srcips"></canvas></div>
+            </div>
+            <div class="panel panel-zscore metric-zscore">
+                <div class="panel-header">
+                    <span style="color:#555">Z-Score · Src IPs</span>
+                    <span id="zbadge-srcips" class="z-badge z-normal">0.0000</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-z-srcips"></canvas></div>
+            </div>
+        </div>
+
+        <div class="feature-column">
+            <div class="panel panel-raw metric-analysis">
+                <div class="panel-header">
+                    <span>Unique Destination Ports</span>
+                    <span id="val-dstports" class="panel-value">0</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-dstports"></canvas></div>
+            </div>
+            <div class="panel panel-zscore metric-zscore">
+                <div class="panel-header">
+                    <span style="color:#555">Z-Score · Dst Ports</span>
+                    <span id="zbadge-dstports" class="z-badge z-normal">0.0000</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-z-dstports"></canvas></div>
             </div>
         </div>
     </div>
 
-    <!-- Analysis Metrics -->
+    <!-- ── ICMP Echo & Direction Pie ──────────────────────────── -->
+    <div class="section-label">ICMP &amp; Traffic Direction</div>
     <div class="dashboard-grid">
-        <div class="panel metric-analysis">
-            <div class="panel-header">
-                <span>Burst Factor</span>
-                <span id="val-burst" class="panel-value">0</span>
+        <div class="feature-column">
+            <div class="panel panel-raw metric-analysis">
+                <div class="panel-header">
+                    <span>ICMP Echo Rate (% ICMP)</span>
+                    <span id="val-icmpecho" class="panel-value">0</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-icmpecho"></canvas></div>
             </div>
-            <div class="chart-container">
-                <canvas id="chart-burst"></canvas>
-            </div>
-        </div>
-
-        <div class="panel metric-traffic">
-            <div class="panel-header">
-                <span>Inbound Bits</span>
-                <span id="val-inbound" class="panel-value">0</span>
-            </div>
-            <div class="chart-container">
-                <canvas id="chart-inbound"></canvas>
+            <div class="panel panel-zscore metric-zscore">
+                <div class="panel-header">
+                    <span style="color:#555">Z-Score · ICMP Echo</span>
+                    <span id="zbadge-icmpecho" class="z-badge z-normal">0.0000</span>
+                </div>
+                <div class="chart-container"><canvas id="chart-z-icmpecho"></canvas></div>
             </div>
         </div>
 
-        <div class="panel metric-traffic">
-            <div class="panel-header">
-                <span>Outbound Bits</span>
-                <span id="val-outbound" class="panel-value">0</span>
-            </div>
-            <div class="chart-container">
-                <canvas id="chart-outbound"></canvas>
-            </div>
-        </div>
-    </div>
-
-    <!-- Traffic Direction -->
-    <div class="dashboard-grid">
-        <div class="panel metric-traffic">
-            <div class="panel-header">
-                <span>Traffic Direction (Inbound vs Outbound)</span>
-            </div>
-            <div class="chart-container">
-                <canvas id="chart-direction-pie"></canvas>
-            </div>
+        <div class="panel panel-pie metric-traffic">
+            <div class="panel-header"><span>Traffic Direction (Inbound vs Outbound)</span></div>
+            <div class="chart-container"><canvas id="chart-direction-pie"></canvas></div>
         </div>
 
-        <div class="panel metric-analysis">
-            <div class="panel-header">
-                <span>ICMP Echo Rate (% of ICMP)</span>
-                <span id="val-icmpecho" class="panel-value">0</span>
-            </div>
-            <div class="chart-container">
-                <canvas id="chart-icmpecho"></canvas>
-            </div>
-        </div>
-
-        <div class="panel metric-analysis">
+        <div class="panel panel-raw metric-analysis">
             <div class="panel-header">
                 <span>Data Points</span>
                 <span id="val-datapoints" class="panel-value">0</span>
             </div>
-            <div class="chart-container">
-                <canvas id="chart-timestamp"></canvas>
-            </div>
+            <div class="chart-container"><canvas id="chart-timestamp"></canvas></div>
         </div>
     </div>
 
-    <!-- Status Bar -->
+    <!-- ── Status Bar ─────────────────────────────────────────── -->
     <div class="status-bar">
         <div class="status-item">
             <span>Selected IP:</span>
@@ -448,87 +624,132 @@
             <span>Last Update:</span>
             <span id="status-time" class="status-value">Never</span>
         </div>
-        <div class="status-item" style="color: #444; font-size: 10px;">
-            <span>⚠ Attack Indicators: SYN>80% (SYN Flood) | UDP Flows>>1K (Amp Attack) | Burst>2.0 (Traffic Spike) | Unique IPs>>100 (Botnet)</span>
+        <div class="status-item" style="color:#444;font-size:10px;">
+            <span>
+                ⚠ Attack Indicators:
+                SYN&gt;80% (SYN Flood) |
+                UDP Flows&gt;&gt;1K (Amp Attack) |
+                Burst&gt;2.0 (Traffic Spike) |
+                Unique IPs&gt;&gt;100 (Botnet) |
+                Z&gt;3 (EWMA Anomaly)
+            </span>
         </div>
     </div>
-</div>
+</div><!-- /container -->
 
 <script>
-const MAX_POINTS = 60;
-const REFRESH_RATE = 1000;
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+const MAX_POINTS  = 60;
+const REFRESH_RATE = 1000; // ms
+
+// Z-score threshold levels — must stay in sync with CSS class names
+const Z_THRESHOLDS = [
+    { limit: 3,   cls: 'z-critical' },
+    { limit: 2,   cls: 'z-alert'    },
+    { limit: 1,   cls: 'z-warn'     },
+    { limit: 0,   cls: 'z-normal'   },
+];
+
+// All 17 Z-score fields in feature order
+const Z_FIELDS = [
+    { key: 'z_pps',             label: 'PPS'       },
+    { key: 'z_bps',             label: 'BPS'       },
+    { key: 'z_fps',             label: 'FPS'       },
+    { key: 'z_burst_factor',    label: 'BURST'     },
+    { key: 'z_inbound_bits',    label: 'INBOUND'   },
+    { key: 'z_outbound_bits',   label: 'OUTBOUND'  },
+    { key: 'z_udp',             label: 'UDP'       },
+    { key: 'z_tcp',             label: 'TCP'       },
+    { key: 'z_icmp',            label: 'ICMP'      },
+    { key: 'z_syn_pps',         label: 'SYN'       },
+    { key: 'z_synack_pps',      label: 'SYN-ACK'   },
+    { key: 'z_finack_pps',      label: 'FIN-ACK'   },
+    { key: 'z_rst_pps',         label: 'RST'       },
+    { key: 'z_udp_flows',       label: 'UDP FLOWS' },
+    { key: 'z_unique_src_ips',  label: 'SRC IPs'   },
+    { key: 'z_unique_dst_ports',label: 'DST PORTS' },
+    { key: 'z_icmp_echo_rate',  label: 'ICMP ECHO' },
+];
+
+// ============================================================================
+// CHART STATE
+// ============================================================================
 let charts = {};
 let currentIP = null;
 
-// Common chart options
-const lineChartOptions = {
+// ============================================================================
+// CHART OPTIONS
+// ============================================================================
+
+const baseLineOpts = {
     responsive: true,
     maintainAspectRatio: false,
     animation: { duration: 300 },
     elements: { point: { radius: 0 }, line: { tension: 0.4 } },
     scales: {
-        x: { 
+        x: {
             display: true,
             grid: { color: '#1a1a1a' },
             ticks: { color: '#444', maxTicksLimit: 6, font: { size: 9 } }
         },
-        y: { 
+        y: {
             display: true,
             grid: { color: '#1a1a1a' },
             ticks: { color: '#666', font: { size: 10 } }
         }
     },
-    plugins: { 
+    plugins: {
         legend: { display: false },
         tooltip: { enabled: true, mode: 'index', intersect: false }
     }
 };
 
-const lineChartOptionsPercent = {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: { duration: 300 },
-    elements: { point: { radius: 0 }, line: { tension: 0.4 } },
-    scales: {
-        x: { 
-            display: true,
-            grid: { color: '#1a1a1a' },
-            ticks: { color: '#444', maxTicksLimit: 6, font: { size: 9 } }
-        },
-        y: { 
-            display: true,
-            grid: { color: '#1a1a1a' },
-            ticks: { 
-                color: '#666', 
-                font: { size: 10 },
-                callback: function(value) { return value + '%'; }
-            },
-            min: 0,
-            max: 100
-        }
-    },
-    plugins: { 
-        legend: { display: false },
-        tooltip: { 
-            enabled: true, 
-            mode: 'index', 
-            intersect: false,
-            callbacks: {
-                label: function(context) {
-                    return context.dataset.label + ': ' + context.parsed.y.toFixed(2) + '%';
-                }
-            }
-        }
-    }
+const percentLineOpts = JSON.parse(JSON.stringify(baseLineOpts));
+percentLineOpts.scales.y.min = 0;
+percentLineOpts.scales.y.max = 100;
+percentLineOpts.scales.y.ticks.callback = v => v + '%';
+percentLineOpts.plugins.tooltip.callbacks = {
+    label: ctx => ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(2) + '%'
 };
 
-const pieChartOptions = {
+/**
+ * Z-score chart options — adds ±1, ±2, ±3 reference lines via annotation-like
+ * approach using a custom plugin that draws horizontal lines on the canvas.
+ */
+function makeZOpts() {
+    const opts = JSON.parse(JSON.stringify(baseLineOpts));
+
+    // Symmetric y-axis so thresholds are visible even when z hovers near 0
+    opts.scales.y.suggestedMin = -4;
+    opts.scales.y.suggestedMax =  4;
+
+    // Override tick colors to match threshold bands
+    opts.scales.y.ticks.callback = function(v) {
+        if (Math.abs(v) >= 3) return v + 'σ';
+        if (Math.abs(v) >= 2) return v + 'σ';
+        if (Math.abs(v) >= 1) return v + 'σ';
+        return v;
+    };
+    opts.scales.y.ticks.color = function(ctx) {
+        const v = Math.abs(ctx.tick.value);
+        if (v >= 3) return '#ff2e63';
+        if (v >= 2) return '#ff9f1c';
+        if (v >= 1) return '#ffe600';
+        return '#555';
+    };
+
+    return opts;
+}
+
+const pieOpts = {
     responsive: true,
     maintainAspectRatio: false,
     animation: { duration: 300 },
     plugins: {
-        legend: { 
-            display: true, 
+        legend: {
+            display: true,
             position: 'bottom',
             labels: { color: '#888', font: { size: 11 } }
         },
@@ -536,60 +757,79 @@ const pieChartOptions = {
     }
 };
 
-// Initialize all charts
-function initCharts() {
-    // Traffic Metrics (Line Charts) - Raw values
-    charts.bps = createLineChart('chart-bps', 'BPS', '#00d4ff', lineChartOptions);
-    charts.pps = createLineChart('chart-pps', 'PPS', '#00ff41', lineChartOptions);
-    charts.fps = createLineChart('chart-fps', 'FPS', '#ff9f1c', lineChartOptions);
-    
-    // Protocol Line Charts - Percentages (ratios)
-    charts.tcp = createLineChart('chart-tcp', 'TCP %', '#9d4edd', lineChartOptionsPercent);
-    charts.udp = createLineChart('chart-udp', 'UDP %', '#ff9f1c', lineChartOptionsPercent);
-    charts.icmp = createLineChart('chart-icmp', 'ICMP %', '#00ff41', lineChartOptionsPercent);
-    
-    // TCP Flags Line Charts - Percentages (ratios of TCP)
-    charts.syn = createLineChart('chart-syn', 'SYN %', '#ff2e63', lineChartOptionsPercent);
-    charts.synack = createLineChart('chart-synack', 'SYN-ACK %', '#00ff41', lineChartOptionsPercent);
-    charts.finack = createLineChart('chart-finack', 'FIN-ACK %', '#ff9f1c', lineChartOptionsPercent);
-    charts.rst = createLineChart('chart-rst', 'RST %', '#9d4edd', lineChartOptionsPercent);
-    
-    // Flow Metrics - Raw counts
-    charts.udpflows = createLineChart('chart-udpflows', 'UDP Flows', '#ff9f1c', lineChartOptions);
-    charts.srcips = createLineChart('chart-srcips', 'Unique Src IPs', '#06ffa5', lineChartOptions);
-    charts.dstports = createLineChart('chart-dstports', 'Unique Dst Ports', '#06ffa5', lineChartOptions);
-    
-    // Analysis Metrics
-    charts.burst = createLineChart('chart-burst', 'Burst Factor', '#06ffa5', lineChartOptions);
-    charts.inbound = createLineChart('chart-inbound', 'Inbound', '#ff2e63', lineChartOptions);
-    charts.outbound = createLineChart('chart-outbound', 'Outbound', '#00d4ff', lineChartOptions);
-    charts.icmpecho = createLineChart('chart-icmpecho', 'ICMP Echo %', '#00ff41', lineChartOptionsPercent);
-    charts.timestamp = createLineChart('chart-timestamp', 'Data Flow', '#06ffa5', lineChartOptions);
-    
-    // Pie Charts
-    charts.protoPie = createPieChart('chart-proto-pie', 
-        ['TCP', 'UDP', 'ICMP'],
-        ['#9d4edd', '#ff9f1c', '#00ff41']
-    );
-    
-    charts.flagsPie = createPieChart('chart-flags-pie',
-        ['SYN', 'SYN-ACK', 'FIN-ACK', 'RST'],
-        ['#ff2e63', '#00ff41', '#ff9f1c', '#9d4edd']
-    );
-    
-    charts.directionPie = createPieChart('chart-direction-pie',
-        ['Inbound', 'Outbound'],
-        ['#ff2e63', '#00d4ff']
-    );
+// ============================================================================
+// ANOMALY SUMMARY BAR — build tiles once, update in place
+// ============================================================================
+function buildAnomalyBar() {
+    const bar = document.getElementById('anomaly-bar');
+    bar.innerHTML = '';
+    Z_FIELDS.forEach(f => {
+        const tile = document.createElement('div');
+        tile.className = 'anomaly-tile z-normal';
+        tile.id = `atile-${f.key}`;
+        tile.innerHTML = `
+            <span class="tile-label">${f.label}</span>
+            <span class="tile-z" id="atile-z-${f.key}">0.00</span>
+        `;
+        bar.appendChild(tile);
+    });
 }
 
+function updateAnomalyBar(latest) {
+    Z_FIELDS.forEach(f => {
+        const z    = latest[f.key] ?? 0;
+        const absZ = Math.abs(z);
+        const tile = document.getElementById(`atile-${f.key}`);
+        const span = document.getElementById(`atile-z-${f.key}`);
+        if (!tile || !span) return;
+
+        // Pick CSS class
+        let cls = 'z-normal';
+        for (const t of Z_THRESHOLDS) {
+            if (absZ >= t.limit) { cls = t.cls; break; }
+        }
+
+        // Remove all threshold classes then add the correct one
+        tile.classList.remove('z-normal','z-warn','z-alert','z-critical');
+        tile.classList.add(cls);
+        span.className = 'tile-z';        // reset inline colour
+        span.style.color = getZColor(absZ);
+        span.textContent = z.toFixed(2);
+    });
+}
+
+function getZColor(absZ) {
+    if (absZ >= 3) return 'var(--z-critical)';
+    if (absZ >= 2) return 'var(--z-alert)';
+    if (absZ >= 1) return 'var(--z-warn)';
+    return 'var(--z-normal)';
+}
+
+/** Apply Z-score threshold color to a badge element */
+function setZBadge(id, z) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const absZ = Math.abs(z);
+    el.classList.remove('z-normal','z-warn','z-alert','z-critical');
+    for (const t of Z_THRESHOLDS) {
+        if (absZ >= t.limit) { el.classList.add(t.cls); break; }
+    }
+    el.style.color = getZColor(absZ);
+    el.textContent = z.toFixed(4);
+}
+
+// ============================================================================
+// CHART FACTORY HELPERS
+// ============================================================================
 function createLineChart(canvasId, label, color, options) {
-    return new Chart(document.getElementById(canvasId), {
+    const ctx = document.getElementById(canvasId);
+    if (!ctx) return null;
+    return new Chart(ctx, {
         type: 'line',
         data: {
             labels: [],
             datasets: [{
-                label: label,
+                label,
                 data: [],
                 borderColor: color,
                 backgroundColor: color + '20',
@@ -597,15 +837,75 @@ function createLineChart(canvasId, label, color, options) {
                 borderWidth: 2
             }]
         },
-        options: options
+        options
+    });
+}
+
+/**
+ * Z-score chart — 3 datasets:
+ *   [0] the Z-score line
+ *   [1] +threshold reference lines (constant)
+ *   [2] -threshold reference lines (constant)
+ *
+ * We redraw threshold lines as separate datasets so they appear as colored
+ * dashed rules without requiring the annotation plugin.
+ */
+function createZChart(canvasId, label) {
+    const ctx = document.getElementById(canvasId);
+    if (!ctx) return null;
+    const opts = makeZOpts();
+
+    // Color map for threshold datasets
+    const thresholdDatasets = [
+        { label: '+3σ', val:  3, color: '#ff2e6388' },
+        { label: '-3σ', val: -3, color: '#ff2e6388' },
+        { label: '+2σ', val:  2, color: '#ff9f1c88' },
+        { label: '-2σ', val: -2, color: '#ff9f1c88' },
+        { label: '+1σ', val:  1, color: '#ffe60066' },
+        { label: '-1σ', val: -1, color: '#ffe60066' },
+    ].map(t => ({
+        label: t.label,
+        data: [],                    // populated at update time
+        borderColor: t.color,
+        borderWidth: 1,
+        borderDash: [4, 4],
+        pointRadius: 0,
+        fill: false,
+        tension: 0,
+        spanGaps: true,
+        order: 2,
+    }));
+
+    return new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [
+                {
+                    label,
+                    data: [],
+                    borderColor: '#06ffa5',
+                    backgroundColor: '#06ffa510',
+                    fill: true,
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.4,
+                    order: 1,
+                },
+                ...thresholdDatasets
+            ]
+        },
+        options: opts
     });
 }
 
 function createPieChart(canvasId, labels, colors) {
-    return new Chart(document.getElementById(canvasId), {
+    const ctx = document.getElementById(canvasId);
+    if (!ctx) return null;
+    return new Chart(ctx, {
         type: 'doughnut',
         data: {
-            labels: labels,
+            labels,
             datasets: [{
                 data: [],
                 backgroundColor: colors,
@@ -613,188 +913,280 @@ function createPieChart(canvasId, labels, colors) {
                 borderWidth: 2
             }]
         },
-        options: pieChartOptions
+        options: pieOpts
     });
 }
 
-// Update IP selector
+// ============================================================================
+// INITIALIZE ALL CHARTS
+// ============================================================================
+function initCharts() {
+    // Raw line charts — traffic volume
+    charts.bps     = createLineChart('chart-bps',     'BPS',     '#00d4ff', JSON.parse(JSON.stringify(baseLineOpts)));
+    charts.pps     = createLineChart('chart-pps',     'PPS',     '#00ff41', JSON.parse(JSON.stringify(baseLineOpts)));
+    charts.fps     = createLineChart('chart-fps',     'FPS',     '#ff9f1c', JSON.parse(JSON.stringify(baseLineOpts)));
+
+    // Raw line charts — burst / direction
+    charts.burst   = createLineChart('chart-burst',   'Burst',   '#06ffa5', JSON.parse(JSON.stringify(baseLineOpts)));
+    charts.inbound = createLineChart('chart-inbound', 'Inbound', '#ff2e63', JSON.parse(JSON.stringify(baseLineOpts)));
+    charts.outbound= createLineChart('chart-outbound','Outbound','#00d4ff', JSON.parse(JSON.stringify(baseLineOpts)));
+
+    // Raw line charts — protocol mix (%)
+    charts.tcp     = createLineChart('chart-tcp',     'TCP %',   '#9d4edd', JSON.parse(JSON.stringify(percentLineOpts)));
+    charts.udp     = createLineChart('chart-udp',     'UDP %',   '#ff9f1c', JSON.parse(JSON.stringify(percentLineOpts)));
+    charts.icmp    = createLineChart('chart-icmp',    'ICMP %',  '#00ff41', JSON.parse(JSON.stringify(percentLineOpts)));
+
+    // Raw line charts — TCP flags (%)
+    charts.syn     = createLineChart('chart-syn',     'SYN %',   '#ff2e63', JSON.parse(JSON.stringify(percentLineOpts)));
+    charts.synack  = createLineChart('chart-synack',  'SYN-ACK %','#00ff41',JSON.parse(JSON.stringify(percentLineOpts)));
+    charts.finack  = createLineChart('chart-finack',  'FIN-ACK %','#ff9f1c',JSON.parse(JSON.stringify(percentLineOpts)));
+    charts.rst     = createLineChart('chart-rst',     'RST %',   '#9d4edd', JSON.parse(JSON.stringify(percentLineOpts)));
+
+    // Raw line charts — flow/cardinality
+    charts.udpflows = createLineChart('chart-udpflows','UDP Flows','#ff9f1c',JSON.parse(JSON.stringify(baseLineOpts)));
+    charts.srcips   = createLineChart('chart-srcips',  'Src IPs', '#06ffa5', JSON.parse(JSON.stringify(baseLineOpts)));
+    charts.dstports = createLineChart('chart-dstports','Dst Ports','#06ffa5',JSON.parse(JSON.stringify(baseLineOpts)));
+
+    // Raw line charts — ICMP echo + timeline
+    charts.icmpecho  = createLineChart('chart-icmpecho', 'Echo %', '#00ff41', JSON.parse(JSON.stringify(percentLineOpts)));
+    charts.timestamp = createLineChart('chart-timestamp','Records','#06ffa5', JSON.parse(JSON.stringify(baseLineOpts)));
+
+    // Z-score charts (one per raw feature)
+    charts.z_bps      = createZChart('chart-z-bps',      'Z·BPS');
+    charts.z_pps      = createZChart('chart-z-pps',      'Z·PPS');
+    charts.z_fps      = createZChart('chart-z-fps',      'Z·FPS');
+    charts.z_burst    = createZChart('chart-z-burst',    'Z·Burst');
+    charts.z_inbound  = createZChart('chart-z-inbound',  'Z·Inbound');
+    charts.z_outbound = createZChart('chart-z-outbound', 'Z·Outbound');
+    charts.z_tcp      = createZChart('chart-z-tcp',      'Z·TCP');
+    charts.z_udp      = createZChart('chart-z-udp',      'Z·UDP');
+    charts.z_icmp     = createZChart('chart-z-icmp',     'Z·ICMP');
+    charts.z_syn      = createZChart('chart-z-syn',      'Z·SYN');
+    charts.z_synack   = createZChart('chart-z-synack',   'Z·SYN-ACK');
+    charts.z_finack   = createZChart('chart-z-finack',   'Z·FIN-ACK');
+    charts.z_rst      = createZChart('chart-z-rst',      'Z·RST');
+    charts.z_udpflows = createZChart('chart-z-udpflows', 'Z·UDPFlows');
+    charts.z_srcips   = createZChart('chart-z-srcips',   'Z·SrcIPs');
+    charts.z_dstports = createZChart('chart-z-dstports', 'Z·DstPorts');
+    charts.z_icmpecho = createZChart('chart-z-icmpecho', 'Z·ICMPEcho');
+
+    // Pie charts
+    charts.protoPie     = createPieChart('chart-proto-pie',     ['TCP','UDP','ICMP'],              ['#9d4edd','#ff9f1c','#00ff41']);
+    charts.flagsPie     = createPieChart('chart-flags-pie',     ['SYN','SYN-ACK','FIN-ACK','RST'], ['#ff2e63','#00ff41','#ff9f1c','#9d4edd']);
+    charts.directionPie = createPieChart('chart-direction-pie', ['Inbound','Outbound'],            ['#ff2e63','#00d4ff']);
+}
+
+// ============================================================================
+// CHART UPDATE HELPERS
+// ============================================================================
+function updateLineChart(chart, labels, data) {
+    if (!chart) return;
+    chart.data.labels = labels;
+    chart.data.datasets[0].data = data;
+    chart.update('none');
+}
+
+/**
+ * Update a Z-score chart.
+ * dataset[0] = Z-score series
+ * datasets[1..6] = threshold lines (constant values repeated for each label)
+ */
+function updateZChart(chart, labels, zData) {
+    if (!chart) return;
+    chart.data.labels = labels;
+    chart.data.datasets[0].data = zData;
+
+    // Threshold constant values in the same order as createZChart
+    const constants = [3, -3, 2, -2, 1, -1];
+    constants.forEach((val, i) => {
+        chart.data.datasets[i + 1].data = labels.map(() => val);
+    });
+
+    chart.update('none');
+}
+
+function updatePieChart(chart, data) {
+    if (!chart) return;
+    chart.data.datasets[0].data = data;
+    chart.update('none');
+}
+
+// ============================================================================
+// IP SELECTOR
+// ============================================================================
 function updateIPSelector() {
     fetch('/api/targets')
-        .then(res => res.json())
+        .then(r => r.json())
         .then(targets => {
-            const selector = document.getElementById('ip-selector');
-            const currentValue = selector.value;
-            
-            selector.innerHTML = '';
-            
-            if (targets.length === 0) {
-                selector.innerHTML = '<option value="">No IPs detected</option>';
+            const sel = document.getElementById('ip-selector');
+            const cur = sel.value;
+            sel.innerHTML = '';
+            if (!targets.length) {
+                sel.innerHTML = '<option value="">No IPs detected</option>';
                 return;
             }
-            
             targets.forEach(ip => {
-                const option = document.createElement('option');
-                option.value = ip;
-                option.textContent = ip;
-                selector.appendChild(option);
+                const opt = document.createElement('option');
+                opt.value = ip; opt.textContent = ip;
+                sel.appendChild(opt);
             });
-            
-            // Restore selection or select first
-            if (currentValue && targets.includes(currentValue)) {
-                selector.value = currentValue;
-            } else if (!currentIP && targets.length > 0) {
-                selector.value = targets[0];
+            if (cur && targets.includes(cur)) {
+                sel.value = cur;
+            } else if (!currentIP && targets.length) {
+                sel.value = targets[0];
                 currentIP = targets[0];
             }
         })
-        .catch(err => console.error('Failed to fetch targets:', err));
+        .catch(e => console.error('Failed to fetch targets:', e));
 }
 
-// Change target IP
 function changeTarget() {
     currentIP = document.getElementById('ip-selector').value;
     document.getElementById('status-ip').textContent = currentIP || 'None';
     updateDashboard();
 }
 
-// Update all charts with data
+// ============================================================================
+// MAIN DASHBOARD UPDATE
+// ============================================================================
 function updateDashboard() {
     if (!currentIP) return;
-    
+
     fetch(`/api/stats/${currentIP}`)
-        .then(res => res.json())
+        .then(r => r.json())
         .then(data => {
-            if (!data || data.length === 0) return;
-            
-            // Limit to MAX_POINTS
-            const displayData = data.slice(-MAX_POINTS);
-            const labels = displayData.map(r => {
-                const d = new Date(r.timestamp);
-                return d.toLocaleTimeString();
-            });
-            
-            // Update status
-            document.getElementById('status-records').textContent = displayData.length;
+            if (!data || !data.length) return;
+
+            const display = data.slice(-MAX_POINTS);
+            const labels  = display.map(r => new Date(r.timestamp).toLocaleTimeString());
+            const latest  = display[display.length - 1];
+
+            // ── Status bar ───────────────────────────────────────────────
+            document.getElementById('status-records').textContent = display.length;
             document.getElementById('status-time').textContent = new Date().toLocaleTimeString();
-            
-            // Get latest values
-            const latest = displayData[displayData.length - 1];
-            
-            // Update value displays
-            // Raw metrics (not ratios)
-            document.getElementById('val-bps').textContent = formatNumber(latest.bps);
-            document.getElementById('val-pps').textContent = formatNumber(latest.pps);
-            document.getElementById('val-fps').textContent = formatNumber(latest.fps);
-            
-            // Protocol ratios (0.0 - 1.0) - display as percentages
-            document.getElementById('val-tcp').textContent = formatRatio(latest.tcp);
-            document.getElementById('val-udp').textContent = formatRatio(latest.udp);
-            document.getElementById('val-icmp').textContent = formatRatio(latest.icmp);
-            
-            // TCP flag ratios (0.0 - 1.0) - display as percentages
-            document.getElementById('val-syn').textContent = formatRatio(latest.syn_pps);
-            document.getElementById('val-synack').textContent = formatRatio(latest.synack_pps);
-            document.getElementById('val-finack').textContent = formatRatio(latest.finack_pps);
-            document.getElementById('val-rst').textContent = formatRatio(latest.rst_pps);
-            
-            // Count metrics
-            document.getElementById('val-udpflows').textContent = formatNumber(latest.udp_flows);
-            document.getElementById('val-srcips').textContent = formatNumber(latest.unique_src_ips);
-            document.getElementById('val-dstports').textContent = formatNumber(latest.unique_dst_ports);
-            
-            // Burst factor (usually 0.5 - 2.0, can spike higher during attacks)
-            document.getElementById('val-burst').textContent = latest.burst_factor.toFixed(3);
-            
-            // Bit metrics
-            document.getElementById('val-inbound').textContent = formatNumber(latest.inbound_bits);
-            document.getElementById('val-outbound').textContent = formatNumber(latest.outbound_bits);
-            
-            // ICMP echo ratio (0.0 - 1.0)
-            document.getElementById('val-icmpecho').textContent = formatRatio(latest.icmp_echo_rate);
-            
-            document.getElementById('val-datapoints').textContent = displayData.length;
-            
-            // Update line charts - Raw metrics
-            updateLineChart(charts.bps, labels, displayData.map(r => r.bps));
-            updateLineChart(charts.pps, labels, displayData.map(r => r.pps));
-            updateLineChart(charts.fps, labels, displayData.map(r => r.fps));
-            
-            // Protocol ratios - convert to percentages for better visualization
-            updateLineChart(charts.tcp, labels, displayData.map(r => r.tcp * 100));
-            updateLineChart(charts.udp, labels, displayData.map(r => r.udp * 100));
-            updateLineChart(charts.icmp, labels, displayData.map(r => r.icmp * 100));
-            
-            // TCP flag ratios - convert to percentages
-            updateLineChart(charts.syn, labels, displayData.map(r => r.syn_pps * 100));
-            updateLineChart(charts.synack, labels, displayData.map(r => r.synack_pps * 100));
-            updateLineChart(charts.finack, labels, displayData.map(r => r.finack_pps * 100));
-            updateLineChart(charts.rst, labels, displayData.map(r => r.rst_pps * 100));
-            
-            // Count metrics
-            updateLineChart(charts.udpflows, labels, displayData.map(r => r.udp_flows));
-            updateLineChart(charts.srcips, labels, displayData.map(r => r.unique_src_ips));
-            updateLineChart(charts.dstports, labels, displayData.map(r => r.unique_dst_ports));
-            
-            // Burst factor
-            updateLineChart(charts.burst, labels, displayData.map(r => r.burst_factor));
-            
-            // Bit metrics
-            updateLineChart(charts.inbound, labels, displayData.map(r => r.inbound_bits));
-            updateLineChart(charts.outbound, labels, displayData.map(r => r.outbound_bits));
-            
-            // ICMP echo ratio - convert to percentage
-            updateLineChart(charts.icmpecho, labels, displayData.map(r => r.icmp_echo_rate * 100));
-            
-            // Timeline
-            updateLineChart(charts.timestamp, labels, displayData.map((r, i) => i + 1));
-            
-            // Update pie charts
-            // Protocol pie uses actual packet counts, not ratios
-            // Calculate total packets from any ratio and pps
-            const totalPackets = latest.pps; // pps is the actual packet rate
-            const tcpPackets = latest.tcp * totalPackets;
-            const udpPackets = latest.udp * totalPackets;
-            const icmpPackets = latest.icmp * totalPackets;
-            updatePieChart(charts.protoPie, [tcpPackets, udpPackets, icmpPackets]);
-            
-            // TCP flags pie - use ratios directly (they're ratios of TCP packets)
-            updatePieChart(charts.flagsPie, [latest.syn_pps, latest.synack_pps, latest.finack_pps, latest.rst_pps]);
-            
-            // Traffic direction pie - use actual bit counts
-            updatePieChart(charts.directionPie, [latest.inbound_bits, latest.outbound_bits]);
+
+            // ── Value readouts ───────────────────────────────────────────
+            document.getElementById('val-bps').textContent      = formatNum(latest.bps);
+            document.getElementById('val-pps').textContent      = formatNum(latest.pps);
+            document.getElementById('val-fps').textContent      = formatNum(latest.fps);
+            document.getElementById('val-burst').textContent    = latest.burst_factor.toFixed(3);
+            document.getElementById('val-inbound').textContent  = formatNum(latest.inbound_bits);
+            document.getElementById('val-outbound').textContent = formatNum(latest.outbound_bits);
+            document.getElementById('val-tcp').textContent      = fmtRatio(latest.tcp);
+            document.getElementById('val-udp').textContent      = fmtRatio(latest.udp);
+            document.getElementById('val-icmp').textContent     = fmtRatio(latest.icmp);
+            document.getElementById('val-syn').textContent      = fmtRatio(latest.syn_pps);
+            document.getElementById('val-synack').textContent   = fmtRatio(latest.synack_pps);
+            document.getElementById('val-finack').textContent   = fmtRatio(latest.finack_pps);
+            document.getElementById('val-rst').textContent      = fmtRatio(latest.rst_pps);
+            document.getElementById('val-udpflows').textContent = formatNum(latest.udp_flows);
+            document.getElementById('val-srcips').textContent   = formatNum(latest.unique_src_ips);
+            document.getElementById('val-dstports').textContent = formatNum(latest.unique_dst_ports);
+            document.getElementById('val-icmpecho').textContent = fmtRatio(latest.icmp_echo_rate);
+            document.getElementById('val-datapoints').textContent = display.length;
+
+            // ── Z-score badges (next to each raw panel header) ───────────
+            setZBadge('zbadge-bps',      latest.z_bps);
+            setZBadge('zbadge-pps',      latest.z_pps);
+            setZBadge('zbadge-fps',      latest.z_fps);
+            setZBadge('zbadge-burst',    latest.z_burst_factor);
+            setZBadge('zbadge-inbound',  latest.z_inbound_bits);
+            setZBadge('zbadge-outbound', latest.z_outbound_bits);
+            setZBadge('zbadge-tcp',      latest.z_tcp);
+            setZBadge('zbadge-udp',      latest.z_udp);
+            setZBadge('zbadge-icmp',     latest.z_icmp);
+            setZBadge('zbadge-syn',      latest.z_syn_pps);
+            setZBadge('zbadge-synack',   latest.z_synack_pps);
+            setZBadge('zbadge-finack',   latest.z_finack_pps);
+            setZBadge('zbadge-rst',      latest.z_rst_pps);
+            setZBadge('zbadge-udpflows', latest.z_udp_flows);
+            setZBadge('zbadge-srcips',   latest.z_unique_src_ips);
+            setZBadge('zbadge-dstports', latest.z_unique_dst_ports);
+            setZBadge('zbadge-icmpecho', latest.z_icmp_echo_rate);
+
+            // ── Anomaly summary bar ──────────────────────────────────────
+            updateAnomalyBar(latest);
+
+            // ── Raw line charts ──────────────────────────────────────────
+            updateLineChart(charts.bps,      labels, display.map(r => r.bps));
+            updateLineChart(charts.pps,      labels, display.map(r => r.pps));
+            updateLineChart(charts.fps,      labels, display.map(r => r.fps));
+            updateLineChart(charts.burst,    labels, display.map(r => r.burst_factor));
+            updateLineChart(charts.inbound,  labels, display.map(r => r.inbound_bits));
+            updateLineChart(charts.outbound, labels, display.map(r => r.outbound_bits));
+            updateLineChart(charts.tcp,      labels, display.map(r => r.tcp  * 100));
+            updateLineChart(charts.udp,      labels, display.map(r => r.udp  * 100));
+            updateLineChart(charts.icmp,     labels, display.map(r => r.icmp * 100));
+            updateLineChart(charts.syn,      labels, display.map(r => r.syn_pps    * 100));
+            updateLineChart(charts.synack,   labels, display.map(r => r.synack_pps * 100));
+            updateLineChart(charts.finack,   labels, display.map(r => r.finack_pps * 100));
+            updateLineChart(charts.rst,      labels, display.map(r => r.rst_pps    * 100));
+            updateLineChart(charts.udpflows, labels, display.map(r => r.udp_flows));
+            updateLineChart(charts.srcips,   labels, display.map(r => r.unique_src_ips));
+            updateLineChart(charts.dstports, labels, display.map(r => r.unique_dst_ports));
+            updateLineChart(charts.icmpecho, labels, display.map(r => r.icmp_echo_rate * 100));
+            updateLineChart(charts.timestamp,labels, display.map((_,i) => i + 1));
+
+            // ── Z-score line charts ──────────────────────────────────────
+            updateZChart(charts.z_bps,      labels, display.map(r => r.z_bps));
+            updateZChart(charts.z_pps,      labels, display.map(r => r.z_pps));
+            updateZChart(charts.z_fps,      labels, display.map(r => r.z_fps));
+            updateZChart(charts.z_burst,    labels, display.map(r => r.z_burst_factor));
+            updateZChart(charts.z_inbound,  labels, display.map(r => r.z_inbound_bits));
+            updateZChart(charts.z_outbound, labels, display.map(r => r.z_outbound_bits));
+            updateZChart(charts.z_tcp,      labels, display.map(r => r.z_tcp));
+            updateZChart(charts.z_udp,      labels, display.map(r => r.z_udp));
+            updateZChart(charts.z_icmp,     labels, display.map(r => r.z_icmp));
+            updateZChart(charts.z_syn,      labels, display.map(r => r.z_syn_pps));
+            updateZChart(charts.z_synack,   labels, display.map(r => r.z_synack_pps));
+            updateZChart(charts.z_finack,   labels, display.map(r => r.z_finack_pps));
+            updateZChart(charts.z_rst,      labels, display.map(r => r.z_rst_pps));
+            updateZChart(charts.z_udpflows, labels, display.map(r => r.z_udp_flows));
+            updateZChart(charts.z_srcips,   labels, display.map(r => r.z_unique_src_ips));
+            updateZChart(charts.z_dstports, labels, display.map(r => r.z_unique_dst_ports));
+            updateZChart(charts.z_icmpecho, labels, display.map(r => r.z_icmp_echo_rate));
+
+            // ── Pie charts ───────────────────────────────────────────────
+            const pps = latest.pps;
+            updatePieChart(charts.protoPie, [
+                latest.tcp  * pps,
+                latest.udp  * pps,
+                latest.icmp * pps
+            ]);
+            updatePieChart(charts.flagsPie, [
+                latest.syn_pps,
+                latest.synack_pps,
+                latest.finack_pps,
+                latest.rst_pps
+            ]);
+            updatePieChart(charts.directionPie, [
+                latest.inbound_bits,
+                latest.outbound_bits
+            ]);
         })
-        .catch(err => console.error('Failed to fetch stats:', err));
+        .catch(e => console.error('Dashboard update failed:', e));
 }
 
-function updateLineChart(chart, labels, data) {
-    chart.data.labels = labels;
-    chart.data.datasets[0].data = data;
-    chart.update('none'); // Skip animation for performance
+// ============================================================================
+// FORMATTERS
+// ============================================================================
+function formatNum(n) {
+    if (n >= 1e9) return (n/1e9).toFixed(2)+'G';
+    if (n >= 1e6) return (n/1e6).toFixed(2)+'M';
+    if (n >= 1e3) return (n/1e3).toFixed(2)+'K';
+    return n.toFixed(0);
 }
 
-function updatePieChart(chart, data) {
-    chart.data.datasets[0].data = data;
-    chart.update('none');
-}
+function fmtRatio(r) { return (r * 100).toFixed(2) + '%'; }
 
-function formatNumber(num) {
-    if (num >= 1e9) return (num / 1e9).toFixed(2) + 'G';
-    if (num >= 1e6) return (num / 1e6).toFixed(2) + 'M';
-    if (num >= 1e3) return (num / 1e3).toFixed(2) + 'K';
-    return num.toFixed(0);
-}
-
-function formatRatio(ratio) {
-    // Convert ratio (0.0 - 1.0) to percentage
-    return (ratio * 100).toFixed(2) + '%';
-}
-
-// Start
+// ============================================================================
+// BOOT
+// ============================================================================
+buildAnomalyBar();
 initCharts();
 updateIPSelector();
-setInterval(updateIPSelector, 5000); // Refresh IP list every 5s
-setInterval(updateDashboard, REFRESH_RATE);
+setInterval(updateIPSelector, 5000);
+setInterval(updateDashboard,  REFRESH_RATE);
 </script>
-
 </body>
 </html>
