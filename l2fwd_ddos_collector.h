@@ -111,6 +111,46 @@ struct ewma_feature_states {
 };
 
 // ============================================================================
+// EWMA MEAN SNAPSHOT — smoothed baseline value for every feature
+// ============================================================================
+
+/**
+ * EWMA mean (moving average) for every feature at the end of the most-recently
+ * completed 1-second window.
+ *
+ * Each field is simply ewma_state.mean for the corresponding feature after
+ * ewma_update() has been called for that period.  During the cold-start period
+ * (n == 1) the mean equals the first observed value; from n == 2 onward it is
+ * the exponentially-smoothed estimate of the long-run average for this
+ * destination IP.
+ *
+ * These values are:
+ *   - Emitted in the CSV so the Python side can plot the EWMA trend line
+ *     alongside the raw measurement.
+ *   - Cached here so other in-process consumers (e.g. a mitigation engine)
+ *     can read the current baseline without recomputing.
+ */
+struct ewma_mean_snapshot {
+    double pps;
+    double bps;
+    double fps;
+    double burst_factor;
+    double inbound_bits;
+    double outbound_bits;
+    double udp_ratio;
+    double tcp_ratio;
+    double icmp_ratio;
+    double syn_ratio;
+    double synack_ratio;
+    double finack_ratio;
+    double rst_ratio;
+    double udp_flows;
+    double unique_src_ips;
+    double unique_dst_ports;
+    double icmp_echo_rate;
+};
+
+// ============================================================================
 // Z-SCORE SNAPSHOT — normalised values for the current period
 // ============================================================================
 
@@ -192,6 +232,14 @@ struct dst_ip_stats {
     /* EWMA baseline models — updated every stats period                   */
     /* ------------------------------------------------------------------ */
     struct ewma_feature_states ewma;
+
+    /* ------------------------------------------------------------------ */
+    /* EWMA mean snapshot — smoothed moving-average value per feature,     */
+    /* captured after ewma_update() for the most-recently-completed period.*/
+    /* Emitted in the CSV so Python can plot the EWMA trend line alongside  */
+    /* the raw measurement.                                                 */
+    /* ------------------------------------------------------------------ */
+    struct ewma_mean_snapshot ewma_mean;
 
     /* ------------------------------------------------------------------ */
     /* Z-score normalised snapshot for the most-recently-completed period  */

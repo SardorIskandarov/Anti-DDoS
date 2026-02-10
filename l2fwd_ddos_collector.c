@@ -432,10 +432,11 @@ void ddos_log_and_reset_stats(void) {
     long long  timestamp_ms;
 
     /*
-     * Buffer sized for the original 20 raw fields plus 17 Z-score fields,
-     * the IP string, and formatting overhead — 512 bytes is ample.
+     * Buffer sized for 3 header + 17 raw + 17 EWMA-mean + 17 Z-score fields
+     * plus the IP string and formatting overhead.
+     * 54 fields × ~12 chars each + separators ≈ 700 bytes; 1024 is safe.
      */
-    char buffer[512];
+    char buffer[1024];
     int  len;
 
     check_and_connect_socket();
@@ -547,6 +548,54 @@ void ddos_log_and_reset_stats(void) {
         stats->zscore.icmp_echo_rate  = z_icmp_echo;
 
         // ----------------------------------------------------------------
+        // STEP 2b: CAPTURE EWMA MEAN (moving-average baseline) VALUES
+        //
+        // ewma_update() has already run for every feature above, so
+        // ewma_state.mean now holds the post-update exponentially-smoothed
+        // average.  We copy each mean into a local variable for use in
+        // the snprintf call below, and also persist it in the snapshot
+        // struct so other in-process consumers can read the current
+        // baseline without touching the ewma_state directly.
+        // ----------------------------------------------------------------
+
+        double em_pps        = stats->ewma.pps.mean;
+        double em_bps        = stats->ewma.bps.mean;
+        double em_fps        = stats->ewma.fps.mean;
+        double em_burst      = stats->ewma.burst_factor.mean;
+        double em_inbound    = stats->ewma.inbound_bits.mean;
+        double em_outbound   = stats->ewma.outbound_bits.mean;
+        double em_udp        = stats->ewma.udp_ratio.mean;
+        double em_tcp        = stats->ewma.tcp_ratio.mean;
+        double em_icmp       = stats->ewma.icmp_ratio.mean;
+        double em_syn        = stats->ewma.syn_ratio.mean;
+        double em_synack     = stats->ewma.synack_ratio.mean;
+        double em_finack     = stats->ewma.finack_ratio.mean;
+        double em_rst        = stats->ewma.rst_ratio.mean;
+        double em_udp_flows  = stats->ewma.udp_flows.mean;
+        double em_src_ips    = stats->ewma.unique_src_ips.mean;
+        double em_dst_ports  = stats->ewma.unique_dst_ports.mean;
+        double em_icmp_echo  = stats->ewma.icmp_echo_rate.mean;
+
+        /* Persist in snapshot struct for other consumers */
+        stats->ewma_mean.pps             = em_pps;
+        stats->ewma_mean.bps             = em_bps;
+        stats->ewma_mean.fps             = em_fps;
+        stats->ewma_mean.burst_factor    = em_burst;
+        stats->ewma_mean.inbound_bits    = em_inbound;
+        stats->ewma_mean.outbound_bits   = em_outbound;
+        stats->ewma_mean.udp_ratio       = em_udp;
+        stats->ewma_mean.tcp_ratio       = em_tcp;
+        stats->ewma_mean.icmp_ratio      = em_icmp;
+        stats->ewma_mean.syn_ratio       = em_syn;
+        stats->ewma_mean.synack_ratio    = em_synack;
+        stats->ewma_mean.finack_ratio    = em_finack;
+        stats->ewma_mean.rst_ratio       = em_rst;
+        stats->ewma_mean.udp_flows       = em_udp_flows;
+        stats->ewma_mean.unique_src_ips  = em_src_ips;
+        stats->ewma_mean.unique_dst_ports= em_dst_ports;
+        stats->ewma_mean.icmp_echo_rate  = em_icmp_echo;
+
+        // ----------------------------------------------------------------
         // STEP 3: FORMAT AND EMIT CSV LINE
         // ----------------------------------------------------------------
 
@@ -557,31 +606,44 @@ void ddos_log_and_reset_stats(void) {
         inet_ntop(AF_INET, &addr, dst_ip_str, INET_ADDRSTRLEN);
 
         /*
-         * CSV format:
+         * CSV format (54 data columns total):
          *   timestamp, port, dst_ip,
-         *   <17 raw features>,
-         *   <17 Z-scores>
          *
-         * Raw feature columns (same as before):
+         *   --- 17 raw features ---
          *   pps, bps, fps, burst_factor, inbound_bits, outbound_bits,
          *   udp, tcp, icmp,
          *   syn_ratio, synack_ratio, finack_ratio, rst_ratio,
-         *   udp_flows, unique_src_ips, unique_dst_ports, icmp_echo_rate
+         *   udp_flows, unique_src_ips, unique_dst_ports, icmp_echo_rate,
          *
-         * Z-score columns (same order, prefixed "z_"):
-         *   z_pps, z_bps, z_fps, z_burst_factor, z_inbound_bits, z_outbound_bits,
+         *   --- 17 EWMA mean values (prefixed "em_") ---
+         *   em_pps, em_bps, em_fps, em_burst_factor,
+         *   em_inbound_bits, em_outbound_bits,
+         *   em_udp, em_tcp, em_icmp,
+         *   em_syn_ratio, em_synack_ratio, em_finack_ratio, em_rst_ratio,
+         *   em_udp_flows, em_unique_src_ips, em_unique_dst_ports,
+         *   em_icmp_echo_rate,
+         *
+         *   --- 17 Z-scores (prefixed "z_") ---
+         *   z_pps, z_bps, z_fps, z_burst_factor,
+         *   z_inbound_bits, z_outbound_bits,
          *   z_udp, z_tcp, z_icmp,
          *   z_syn_ratio, z_synack_ratio, z_finack_ratio, z_rst_ratio,
-         *   z_udp_flows, z_unique_src_ips, z_unique_dst_ports, z_icmp_echo_rate
+         *   z_udp_flows, z_unique_src_ips, z_unique_dst_ports,
+         *   z_icmp_echo_rate
          */
         len = snprintf(buffer, sizeof(buffer),
-            /* header fields */
+            /* header */
             "%lld,%u,%s,"
             /* raw features */
             "%.2f,%.2f,%.2f,%.4f,%.2f,%.2f,"
             "%.4f,%.4f,%.4f,"
             "%.4f,%.4f,%.4f,%.4f,"
             "%.0f,%.0f,%.0f,%.4f,"
+            /* EWMA mean values */
+            "%.2f,%.2f,%.2f,%.4f,%.2f,%.2f,"
+            "%.4f,%.4f,%.4f,"
+            "%.4f,%.4f,%.4f,%.4f,"
+            "%.2f,%.2f,%.2f,%.4f,"
             /* Z-scores */
             "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
             "%.4f,%.4f,%.4f,"
@@ -594,6 +656,11 @@ void ddos_log_and_reset_stats(void) {
             udp_ratio, tcp_ratio, icmp_ratio,
             syn_ratio, synack_ratio, finack_ratio, rst_ratio,
             udp_flows_f, unique_src_ips_f, unique_dst_ports_f, icmp_echo_rate,
+            /* EWMA mean values */
+            em_pps, em_bps, em_fps, em_burst, em_inbound, em_outbound,
+            em_udp, em_tcp, em_icmp,
+            em_syn, em_synack, em_finack, em_rst,
+            em_udp_flows, em_src_ips, em_dst_ports, em_icmp_echo,
             /* Z-scores */
             z_pps, z_bps, z_fps, z_burst, z_inbound, z_outbound,
             z_udp, z_tcp, z_icmp,
