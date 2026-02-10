@@ -7,10 +7,7 @@ project('l2fwd', 'c',
   ],
 )
 
-dep_json = dependency('json-c', required: true)
 dpdk_dep = dependency('libdpdk', required: true)
-dep_curl = dependency('libcurl', required: true)
-dep_threads = dependency('threads')
 
 add_project_arguments('-D_GNU_SOURCE', language: 'c')
 add_project_arguments('-march=native', '-O3', '-funroll-loops', language: 'c')
@@ -23,7 +20,7 @@ src = [
 executable('l2fwd',
   sources: src,
   # FIX: Added ssl_dep to the list below
-  dependencies: [dpdk_dep, dep_json, dep_curl, dep_threads], 
+  dependencies: [dpdk_dep], 
   link_args: ['-lm'],
   install: true,
 )

@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>⚡ DDoS Traffic Analysis | Feature Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-dark: #050505;
+            --panel-bg: #0d0d0d;
+            --border-color: #1a1a1a;
+            --text-main: #e8e8e8;
+            --text-muted: #707070;
+            --neon-green: #00ff41;
+            --neon-blue: #00d4ff;
+            --neon-red: #ff2e63;
+            --neon-orange: #ff9f1c;
+            --neon-purple: #9d4edd;
+            --neon-cyan: #06ffa5;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body { 
+            background: var(--bg-dark); 
+            color: var(--text-main); 
+            font-family: 'Consolas', 'Monaco', monospace; 
+            padding: 15px; 
+            overflow-x: hidden;
+        }
+
+        .container {
+            max-width: 1920px;
+            margin: 0 auto;
+        }
+
+        /* Header */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 20px;
+            background: linear-gradient(135deg, #1a1a1a 0%, #0a0a0a 100%);
+            border: 1px solid var(--neon-green);
+            border-radius: 6px;
+            margin-bottom: 20px;
+            box-shadow: 0 0 20px rgba(0, 255, 65, 0.1);
+        }
+
+        .header h1 {
+            font-size: 24px;
+            letter-spacing: 2px;
+        }
+
+        .header-controls {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .live-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background: var(--neon-green);
+            border-radius: 50%;
+            box-shadow: 0 0 15px var(--neon-green);
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(0.9); }
+        }
+
+        select {
+            background: #000;
+            color: var(--neon-cyan);
+            border: 1px solid var(--neon-cyan);
+            padding: 8px 15px;
+            font-family: inherit;
+            font-size: 13px;
+            border-radius: 4px;
+            cursor: pointer;
+            min-width: 200px;
+        }
+
+        select:focus {
+            outline: none;
+            box-shadow: 0 0 10px var(--neon-cyan);
+        }
+
+        /* Grid Layout */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+
+        .panel {
+            background: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 15px;
+            min-height: 280px;
+            display: flex;
+            flex-direction: column;
+            transition: all 0.3s ease;
+        }
+
+        .panel:hover {
+            border-color: var(--neon-blue);
+            box-shadow: 0 0 15px rgba(0, 212, 255, 0.15);
+        }
+
+        .panel-header {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .panel-value {
+            font-size: 14px;
+            font-weight: bold;
+            color: var(--neon-cyan);
+        }
+
+        .chart-container {
+            flex: 1;
+            position: relative;
+            min-height: 220px;
+        }
+
+        canvas {
+            width: 100% !important;
+            height: 100% !important;
+        }
+
+        /* Color coding for different feature types */
+        .metric-traffic { border-top: 3px solid var(--neon-blue); }
+        .metric-protocol { border-top: 3px solid var(--neon-purple); }
+        .metric-flags { border-top: 3px solid var(--neon-red); }
+        .metric-flow { border-top: 3px solid var(--neon-orange); }
+        .metric-analysis { border-top: 3px solid var(--neon-cyan); }
+
+        /* Status Bar */
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            padding: 12px 20px;
+            background: #0a0a0a;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-value {
+            color: var(--neon-green);
+            font-weight: bold;
+        }
+
+        /* Responsive */
+        @media (max-width: 1600px) {
+            .dashboard-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media (max-width: 1000px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <!-- Header -->
+    <div class="header">
+        <div>
+            <h1><span style="color:var(--neon-red)">◆</span> TRAFFIC_MONITOR <span style="font-size:12px; color:#444; font-weight:normal">v4.0</span></h1>
+        </div>
+        <div class="header-controls">
+            <span class="live-indicator"></span>
+            <label style="color: var(--text-muted)">TARGET IP:</label>
+            <select id="ip-selector" onchange="changeTarget()">
+                <option value="">Loading...</option>
+            </select>
+        </div>
+    </div>
+
+    <!-- Traffic Metrics -->
+    <div class="dashboard-grid">
+        <div class="panel metric-traffic">
+            <div class="panel-header">
+                <span>Bits Per Second</span>
+                <span id="val-bps" class="panel-value">0</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-bps"></canvas>
+            </div>
+        </div>
+
+        <div class="panel metric-traffic">
+            <div class="panel-header">
+                <span>Packets Per Second</span>
+                <span id="val-pps" class="panel-value">0</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-pps"></canvas>
+            </div>
+        </div>
+
+        <div class="panel metric-traffic">
+            <div class="panel-header">
+                <span>Flows Per Second</span>
+                <span id="val-fps" class="panel-value">0</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-fps"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Protocol Distribution -->
+    <div class="dashboard-grid">
+        <div class="panel metric-protocol">
+            <div class="panel-header">
+                <span>TCP Packets (Ratio %)</span>
+                <span id="val-tcp" class="panel-value">0</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-tcp"></canvas>
+            </div>
+        </div>
+
+        <div class="panel metric-protocol">
+            <div class="panel-header">
+                <span>UDP Packets (Ratio %)</span>
+                <span id="val-udp" class="panel-value">0</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-udp"></canvas>
+            </div>
+        </div>
+
+        <div class="panel metric-protocol">
+            <div class="panel-header">
+                <span>ICMP Packets (Ratio %)</span>
+                <span id="val-icmp" class="panel-value">0</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-icmp"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Protocol Distribution Pie Chart -->
+    <div class="dashboard-grid">
+        <div class="panel metric-protocol">
+            <div class="panel-header">
+                <span>Protocol Distribution</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-proto-pie"></canvas>
+            </div>
+        </div>
+
+        <div class="panel metric-flags">
+            <div class="panel-header">
+                <span>SYN Ratio (% of TCP)</span>
+                <span id="val-syn" class="panel-value">0</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-syn"></canvas>
+            </div>
+        </div>
+
+        <div class="panel metric-flags">
+            <div class="panel-header">
+                <span>SYN-ACK Ratio (% of TCP)</span>
+                <span id="val-synack" class="panel-value">0</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-synack"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- TCP Flags -->
+    <div class="dashboard-grid">
+        <div class="panel metric-flags">
+            <div class="panel-header">
+                <span>FIN-ACK Ratio (% of TCP)</span>
+                <span id="val-finack" class="panel-value">0</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-finack"></canvas>
+            </div>
+        </div>
+
+        <div class="panel metric-flags">
+            <div class="panel-header">
+                <span>RST Ratio (% of TCP)</span>
+                <span id="val-rst" class="panel-value">0</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-rst"></canvas>
+            </div>
+        </div>
+
+        <div class="panel metric-flags">
+            <div class="panel-header">
+                <span>TCP Flags Distribution</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-flags-pie"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Flow Metrics -->
+    <div class="dashboard-grid">
+        <div class="panel metric-flow">
+            <div class="panel-header">
+                <span>UDP Flows</span>
+                <span id="val-udpflows" class="panel-value">0</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-udpflows"></canvas>
+            </div>
+        </div>
+
+        <div class="panel metric-analysis">
+            <div class="panel-header">
+                <span>Unique Source IPs</span>
+                <span id="val-srcips" class="panel-value">0</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-srcips"></canvas>
+            </div>
+        </div>
+
+        <div class="panel metric-analysis">
+            <div class="panel-header">
+                <span>Unique Destination Ports</span>
+                <span id="val-dstports" class="panel-value">0</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-dstports"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Analysis Metrics -->
+    <div class="dashboard-grid">
+        <div class="panel metric-analysis">
+            <div class="panel-header">
+                <span>Burst Factor</span>
+                <span id="val-burst" class="panel-value">0</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-burst"></canvas>
+            </div>
+        </div>
+
+        <div class="panel metric-traffic">
+            <div class="panel-header">
+                <span>Inbound Bits</span>
+                <span id="val-inbound" class="panel-value">0</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-inbound"></canvas>
+            </div>
+        </div>
+
+        <div class="panel metric-traffic">
+            <div class="panel-header">
+                <span>Outbound Bits</span>
+                <span id="val-outbound" class="panel-value">0</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-outbound"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Traffic Direction -->
+    <div class="dashboard-grid">
+        <div class="panel metric-traffic">
+            <div class="panel-header">
+                <span>Traffic Direction (Inbound vs Outbound)</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-direction-pie"></canvas>
+            </div>
+        </div>
+
+        <div class="panel metric-analysis">
+            <div class="panel-header">
+                <span>ICMP Echo Rate (% of ICMP)</span>
+                <span id="val-icmpecho" class="panel-value">0</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-icmpecho"></canvas>
+            </div>
+        </div>
+
+        <div class="panel metric-analysis">
+            <div class="panel-header">
+                <span>Data Points</span>
+                <span id="val-datapoints" class="panel-value">0</span>
+            </div>
+            <div class="chart-container">
+                <canvas id="chart-timestamp"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Status Bar -->
+    <div class="status-bar">
+        <div class="status-item">
+            <span>Selected IP:</span>
+            <span id="status-ip" class="status-value">None</span>
+        </div>
+        <div class="status-item">
+            <span>Records:</span>
+            <span id="status-records" class="status-value">0</span>
+        </div>
+        <div class="status-item">
+            <span>Last Update:</span>
+            <span id="status-time" class="status-value">Never</span>
+        </div>
+        <div class="status-item" style="color: #444; font-size: 10px;">
+            <span>⚠ Attack Indicators: SYN>80% (SYN Flood) | UDP Flows>>1K (Amp Attack) | Burst>2.0 (Traffic Spike) | Unique IPs>>100 (Botnet)</span>
+        </div>
+    </div>
+</div>
+
+<script>
+const MAX_POINTS = 60;
+const REFRESH_RATE = 1000;
+let charts = {};
+let currentIP = null;
+
+// Common chart options
+const lineChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 300 },
+    elements: { point: { radius: 0 }, line: { tension: 0.4 } },
+    scales: {
+        x: { 
+            display: true,
+            grid: { color: '#1a1a1a' },
+            ticks: { color: '#444', maxTicksLimit: 6, font: { size: 9 } }
+        },
+        y: { 
+            display: true,
+            grid: { color: '#1a1a1a' },
+            ticks: { color: '#666', font: { size: 10 } }
+        }
+    },
+    plugins: { 
+        legend: { display: false },
+        tooltip: { enabled: true, mode: 'index', intersect: false }
+    }
+};
+
+const lineChartOptionsPercent = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 300 },
+    elements: { point: { radius: 0 }, line: { tension: 0.4 } },
+    scales: {
+        x: { 
+            display: true,
+            grid: { color: '#1a1a1a' },
+            ticks: { color: '#444', maxTicksLimit: 6, font: { size: 9 } }
+        },
+        y: { 
+            display: true,
+            grid: { color: '#1a1a1a' },
+            ticks: { 
+                color: '#666', 
+                font: { size: 10 },
+                callback: function(value) { return value + '%'; }
+            },
+            min: 0,
+            max: 100
+        }
+    },
+    plugins: { 
+        legend: { display: false },
+        tooltip: { 
+            enabled: true, 
+            mode: 'index', 
+            intersect: false,
+            callbacks: {
+                label: function(context) {
+                    return context.dataset.label + ': ' + context.parsed.y.toFixed(2) + '%';
+                }
+            }
+        }
+    }
+};
+
+const pieChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 300 },
+    plugins: {
+        legend: { 
+            display: true, 
+            position: 'bottom',
+            labels: { color: '#888', font: { size: 11 } }
+        },
+        tooltip: { enabled: true }
+    }
+};
+
+// Initialize all charts
+function initCharts() {
+    // Traffic Metrics (Line Charts) - Raw values
+    charts.bps = createLineChart('chart-bps', 'BPS', '#00d4ff', lineChartOptions);
+    charts.pps = createLineChart('chart-pps', 'PPS', '#00ff41', lineChartOptions);
+    charts.fps = createLineChart('chart-fps', 'FPS', '#ff9f1c', lineChartOptions);
+    
+    // Protocol Line Charts - Percentages (ratios)
+    charts.tcp = createLineChart('chart-tcp', 'TCP %', '#9d4edd', lineChartOptionsPercent);
+    charts.udp = createLineChart('chart-udp', 'UDP %', '#ff9f1c', lineChartOptionsPercent);
+    charts.icmp = createLineChart('chart-icmp', 'ICMP %', '#00ff41', lineChartOptionsPercent);
+    
+    // TCP Flags Line Charts - Percentages (ratios of TCP)
+    charts.syn = createLineChart('chart-syn', 'SYN %', '#ff2e63', lineChartOptionsPercent);
+    charts.synack = createLineChart('chart-synack', 'SYN-ACK %', '#00ff41', lineChartOptionsPercent);
+    charts.finack = createLineChart('chart-finack', 'FIN-ACK %', '#ff9f1c', lineChartOptionsPercent);
+    charts.rst = createLineChart('chart-rst', 'RST %', '#9d4edd', lineChartOptionsPercent);
+    
+    // Flow Metrics - Raw counts
+    charts.udpflows = createLineChart('chart-udpflows', 'UDP Flows', '#ff9f1c', lineChartOptions);
+    charts.srcips = createLineChart('chart-srcips', 'Unique Src IPs', '#06ffa5', lineChartOptions);
+    charts.dstports = createLineChart('chart-dstports', 'Unique Dst Ports', '#06ffa5', lineChartOptions);
+    
+    // Analysis Metrics
+    charts.burst = createLineChart('chart-burst', 'Burst Factor', '#06ffa5', lineChartOptions);
+    charts.inbound = createLineChart('chart-inbound', 'Inbound', '#ff2e63', lineChartOptions);
+    charts.outbound = createLineChart('chart-outbound', 'Outbound', '#00d4ff', lineChartOptions);
+    charts.icmpecho = createLineChart('chart-icmpecho', 'ICMP Echo %', '#00ff41', lineChartOptionsPercent);
+    charts.timestamp = createLineChart('chart-timestamp', 'Data Flow', '#06ffa5', lineChartOptions);
+    
+    // Pie Charts
+    charts.protoPie = createPieChart('chart-proto-pie', 
+        ['TCP', 'UDP', 'ICMP'],
+        ['#9d4edd', '#ff9f1c', '#00ff41']
+    );
+    
+    charts.flagsPie = createPieChart('chart-flags-pie',
+        ['SYN', 'SYN-ACK', 'FIN-ACK', 'RST'],
+        ['#ff2e63', '#00ff41', '#ff9f1c', '#9d4edd']
+    );
+    
+    charts.directionPie = createPieChart('chart-direction-pie',
+        ['Inbound', 'Outbound'],
+        ['#ff2e63', '#00d4ff']
+    );
+}
+
+function createLineChart(canvasId, label, color, options) {
+    return new Chart(document.getElementById(canvasId), {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [{
+                label: label,
+                data: [],
+                borderColor: color,
+                backgroundColor: color + '20',
+                fill: true,
+                borderWidth: 2
+            }]
+        },
+        options: options
+    });
+}
+
+function createPieChart(canvasId, labels, colors) {
+    return new Chart(document.getElementById(canvasId), {
+        type: 'doughnut',
+        data: {
+            labels: labels,
+            datasets: [{
+                data: [],
+                backgroundColor: colors,
+                borderColor: '#0a0a0a',
+                borderWidth: 2
+            }]
+        },
+        options: pieChartOptions
+    });
+}
+
+// Update IP selector
+function updateIPSelector() {
+    fetch('/api/targets')
+        .then(res => res.json())
+        .then(targets => {
+            const selector = document.getElementById('ip-selector');
+            const currentValue = selector.value;
+            
+            selector.innerHTML = '';
+            
+            if (targets.length === 0) {
+                selector.innerHTML = '<option value="">No IPs detected</option>';
+                return;
+            }
+            
+            targets.forEach(ip => {
+                const option = document.createElement('option');
+                option.value = ip;
+                option.textContent = ip;
+                selector.appendChild(option);
+            });
+            
+            // Restore selection or select first
+            if (currentValue && targets.includes(currentValue)) {
+                selector.value = currentValue;
+            } else if (!currentIP && targets.length > 0) {
+                selector.value = targets[0];
+                currentIP = targets[0];
+            }
+        })
+        .catch(err => console.error('Failed to fetch targets:', err));
+}
+
+// Change target IP
+function changeTarget() {
+    currentIP = document.getElementById('ip-selector').value;
+    document.getElementById('status-ip').textContent = currentIP || 'None';
+    updateDashboard();
+}
+
+// Update all charts with data
+function updateDashboard() {
+    if (!currentIP) return;
+    
+    fetch(`/api/stats/${currentIP}`)
+        .then(res => res.json())
+        .then(data => {
+            if (!data || data.length === 0) return;
+            
+            // Limit to MAX_POINTS
+            const displayData = data.slice(-MAX_POINTS);
+            const labels = displayData.map(r => {
+                const d = new Date(r.timestamp);
+                return d.toLocaleTimeString();
+            });
+            
+            // Update status
+            document.getElementById('status-records').textContent = displayData.length;
+            document.getElementById('status-time').textContent = new Date().toLocaleTimeString();
+            
+            // Get latest values
+            const latest = displayData[displayData.length - 1];
+            
+            // Update value displays
+            // Raw metrics (not ratios)
+            document.getElementById('val-bps').textContent = formatNumber(latest.bps);
+            document.getElementById('val-pps').textContent = formatNumber(latest.pps);
+            document.getElementById('val-fps').textContent = formatNumber(latest.fps);
+            
+            // Protocol ratios (0.0 - 1.0) - display as percentages
+            document.getElementById('val-tcp').textContent = formatRatio(latest.tcp);
+            document.getElementById('val-udp').textContent = formatRatio(latest.udp);
+            document.getElementById('val-icmp').textContent = formatRatio(latest.icmp);
+            
+            // TCP flag ratios (0.0 - 1.0) - display as percentages
+            document.getElementById('val-syn').textContent = formatRatio(latest.syn_pps);
+            document.getElementById('val-synack').textContent = formatRatio(latest.synack_pps);
+            document.getElementById('val-finack').textContent = formatRatio(latest.finack_pps);
+            document.getElementById('val-rst').textContent = formatRatio(latest.rst_pps);
+            
+            // Count metrics
+            document.getElementById('val-udpflows').textContent = formatNumber(latest.udp_flows);
+            document.getElementById('val-srcips').textContent = formatNumber(latest.unique_src_ips);
+            document.getElementById('val-dstports').textContent = formatNumber(latest.unique_dst_ports);
+            
+            // Burst factor (usually 0.5 - 2.0, can spike higher during attacks)
+            document.getElementById('val-burst').textContent = latest.burst_factor.toFixed(3);
+            
+            // Bit metrics
+            document.getElementById('val-inbound').textContent = formatNumber(latest.inbound_bits);
+            document.getElementById('val-outbound').textContent = formatNumber(latest.outbound_bits);
+            
+            // ICMP echo ratio (0.0 - 1.0)
+            document.getElementById('val-icmpecho').textContent = formatRatio(latest.icmp_echo_rate);
+            
+            document.getElementById('val-datapoints').textContent = displayData.length;
+            
+            // Update line charts - Raw metrics
+            updateLineChart(charts.bps, labels, displayData.map(r => r.bps));
+            updateLineChart(charts.pps, labels, displayData.map(r => r.pps));
+            updateLineChart(charts.fps, labels, displayData.map(r => r.fps));
+            
+            // Protocol ratios - convert to percentages for better visualization
+            updateLineChart(charts.tcp, labels, displayData.map(r => r.tcp * 100));
+            updateLineChart(charts.udp, labels, displayData.map(r => r.udp * 100));
+            updateLineChart(charts.icmp, labels, displayData.map(r => r.icmp * 100));
+            
+            // TCP flag ratios - convert to percentages
+            updateLineChart(charts.syn, labels, displayData.map(r => r.syn_pps * 100));
+            updateLineChart(charts.synack, labels, displayData.map(r => r.synack_pps * 100));
+            updateLineChart(charts.finack, labels, displayData.map(r => r.finack_pps * 100));
+            updateLineChart(charts.rst, labels, displayData.map(r => r.rst_pps * 100));
+            
+            // Count metrics
+            updateLineChart(charts.udpflows, labels, displayData.map(r => r.udp_flows));
+            updateLineChart(charts.srcips, labels, displayData.map(r => r.unique_src_ips));
+            updateLineChart(charts.dstports, labels, displayData.map(r => r.unique_dst_ports));
+            
+            // Burst factor
+            updateLineChart(charts.burst, labels, displayData.map(r => r.burst_factor));
+            
+            // Bit metrics
+            updateLineChart(charts.inbound, labels, displayData.map(r => r.inbound_bits));
+            updateLineChart(charts.outbound, labels, displayData.map(r => r.outbound_bits));
+            
+            // ICMP echo ratio - convert to percentage
+            updateLineChart(charts.icmpecho, labels, displayData.map(r => r.icmp_echo_rate * 100));
+            
+            // Timeline
+            updateLineChart(charts.timestamp, labels, displayData.map((r, i) => i + 1));
+            
+            // Update pie charts
+            // Protocol pie uses actual packet counts, not ratios
+            // Calculate total packets from any ratio and pps
+            const totalPackets = latest.pps; // pps is the actual packet rate
+            const tcpPackets = latest.tcp * totalPackets;
+            const udpPackets = latest.udp * totalPackets;
+            const icmpPackets = latest.icmp * totalPackets;
+            updatePieChart(charts.protoPie, [tcpPackets, udpPackets, icmpPackets]);
+            
+            // TCP flags pie - use ratios directly (they're ratios of TCP packets)
+            updatePieChart(charts.flagsPie, [latest.syn_pps, latest.synack_pps, latest.finack_pps, latest.rst_pps]);
+            
+            // Traffic direction pie - use actual bit counts
+            updatePieChart(charts.directionPie, [latest.inbound_bits, latest.outbound_bits]);
+        })
+        .catch(err => console.error('Failed to fetch stats:', err));
+}
+
+function updateLineChart(chart, labels, data) {
+    chart.data.labels = labels;
+    chart.data.datasets[0].data = data;
+    chart.update('none'); // Skip animation for performance
+}
+
+function updatePieChart(chart, data) {
+    chart.data.datasets[0].data = data;
+    chart.update('none');
+}
+
+function formatNumber(num) {
+    if (num >= 1e9) return (num / 1e9).toFixed(2) + 'G';
+    if (num >= 1e6) return (num / 1e6).toFixed(2) + 'M';
+    if (num >= 1e3) return (num / 1e3).toFixed(2) + 'K';
+    return num.toFixed(0);
+}
+
+function formatRatio(ratio) {
+    // Convert ratio (0.0 - 1.0) to percentage
+    return (ratio * 100).toFixed(2) + '%';
+}
+
+// Start
+initCharts();
+updateIPSelector();
+setInterval(updateIPSelector, 5000); // Refresh IP list every 5s
+setInterval(updateDashboard, REFRESH_RATE);
+</script>
+
+</body>
+</html>
