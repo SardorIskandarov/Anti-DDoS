@@ -7,23 +7,24 @@ import database
 import shared_state
 
 
-# CSV column count after the C-side EWMA/Z-score additions:
-#   3 header fields  (timestamp, port, dst_ip)
-#  17 raw features
-#  17 Z-score fields
-EXPECTED_CSV_FIELDS = 37
+# CSV column count produced by l2fwd_ddos_collector.c:
+#   3  header fields   (timestamp, port, dst_ip)
+#  17  raw features
+#  17  EWMA mean values (prefixed em_)
+#  17  EWMA Z-scores    (prefixed z_)
+EXPECTED_CSV_FIELDS = 54
 
 
 def parse_csv_line(line):
     """
-    Parse a CSV line into a dictionary with all 37 fields.
+    Parse a CSV line into a dictionary with all 54 fields.
 
     Column order (mirrors ddos_log_and_reset_stats in l2fwd_ddos_collector.c):
 
       0  timestamp
       1  port
       2  dst_ip
-      --- raw features ---
+      --- 17 raw features ---
       3  pps
       4  bps
       5  fps
@@ -33,32 +34,50 @@ def parse_csv_line(line):
       9  udp
       10 tcp
       11 icmp
-      12 syn_ratio
-      13 synack_ratio
-      14 finack_ratio
-      15 rst_ratio
+      12 syn_pps
+      13 synack_pps
+      14 finack_pps
+      15 rst_pps
       16 udp_flows
       17 unique_src_ips
       18 unique_dst_ports
       19 icmp_echo_rate
-      --- EWMA Z-scores (same feature order, prefixed z_) ---
-      20 z_pps
-      21 z_bps
-      22 z_fps
-      23 z_burst_factor
-      24 z_inbound_bits
-      25 z_outbound_bits
-      26 z_udp
-      27 z_tcp
-      28 z_icmp
-      29 z_syn_ratio
-      30 z_synack_ratio
-      31 z_finack_ratio
-      32 z_rst_ratio
-      33 z_udp_flows
-      34 z_unique_src_ips
-      35 z_unique_dst_ports
-      36 z_icmp_echo_rate
+      --- 17 EWMA mean values (prefixed em_) ---
+      20 em_pps
+      21 em_bps
+      22 em_fps
+      23 em_burst_factor
+      24 em_inbound_bits
+      25 em_outbound_bits
+      26 em_udp
+      27 em_tcp
+      28 em_icmp
+      29 em_syn_pps
+      30 em_synack_pps
+      31 em_finack_pps
+      32 em_rst_pps
+      33 em_udp_flows
+      34 em_unique_src_ips
+      35 em_unique_dst_ports
+      36 em_icmp_echo_rate
+      --- 17 EWMA Z-scores (prefixed z_) ---
+      37 z_pps
+      38 z_bps
+      39 z_fps
+      40 z_burst_factor
+      41 z_inbound_bits
+      42 z_outbound_bits
+      43 z_udp
+      44 z_tcp
+      45 z_icmp
+      46 z_syn_pps
+      47 z_synack_pps
+      48 z_finack_pps
+      49 z_rst_pps
+      50 z_udp_flows
+      51 z_unique_src_ips
+      52 z_unique_dst_ports
+      53 z_icmp_echo_rate
     """
     try:
         parts = line.strip().split(',')
@@ -70,47 +89,66 @@ def parse_csv_line(line):
 
         data = {
             # ── header ────────────────────────────────────────────────────
-            'timestamp':         datetime.fromtimestamp(int(parts[0]) / 1000.0),
-            'port':              int(parts[1]),
-            'dst_ip':            parts[2],
+            'timestamp':            datetime.fromtimestamp(int(parts[0]) / 1000.0),
+            'port':                 int(parts[1]),
+            'dst_ip':               parts[2],
 
-            # ── raw features ───────────────────────────────────────────────
-            'pps':               float(parts[3]),
-            'bps':               float(parts[4]),
-            'fps':               float(parts[5]),
-            'burst_factor':      float(parts[6]),
-            'inbound_bits':      float(parts[7]),
-            'outbound_bits':     float(parts[8]),
-            'udp':               float(parts[9]),
-            'tcp':               float(parts[10]),
-            'icmp':              float(parts[11]),
-            'syn_pps':           float(parts[12]),   # stored as syn_ratio in C
-            'synack_pps':        float(parts[13]),
-            'finack_pps':        float(parts[14]),
-            'rst_pps':           float(parts[15]),
-            'udp_flows':         int(float(parts[16])),
-            'unique_src_ips':    int(float(parts[17])),
-            'unique_dst_ports':  int(float(parts[18])),
-            'icmp_echo_rate':    float(parts[19]),
+            # ── raw features ──────────────────────────────────────────────
+            'pps':                  float(parts[3]),
+            'bps':                  float(parts[4]),
+            'fps':                  float(parts[5]),
+            'burst_factor':         float(parts[6]),
+            'inbound_bits':         float(parts[7]),
+            'outbound_bits':        float(parts[8]),
+            'udp':                  float(parts[9]),
+            'tcp':                  float(parts[10]),
+            'icmp':                 float(parts[11]),
+            'syn_pps':              float(parts[12]),
+            'synack_pps':           float(parts[13]),
+            'finack_pps':           float(parts[14]),
+            'rst_pps':              float(parts[15]),
+            'udp_flows':            int(float(parts[16])),
+            'unique_src_ips':       int(float(parts[17])),
+            'unique_dst_ports':     int(float(parts[18])),
+            'icmp_echo_rate':       float(parts[19]),
+
+            # ── EWMA mean values ──────────────────────────────────────────
+            'em_pps':               float(parts[20]),
+            'em_bps':               float(parts[21]),
+            'em_fps':               float(parts[22]),
+            'em_burst_factor':      float(parts[23]),
+            'em_inbound_bits':      float(parts[24]),
+            'em_outbound_bits':     float(parts[25]),
+            'em_udp':               float(parts[26]),
+            'em_tcp':               float(parts[27]),
+            'em_icmp':              float(parts[28]),
+            'em_syn_pps':           float(parts[29]),
+            'em_synack_pps':        float(parts[30]),
+            'em_finack_pps':        float(parts[31]),
+            'em_rst_pps':           float(parts[32]),
+            'em_udp_flows':         float(parts[33]),
+            'em_unique_src_ips':    float(parts[34]),
+            'em_unique_dst_ports':  float(parts[35]),
+            'em_icmp_echo_rate':    float(parts[36]),
 
             # ── EWMA Z-scores ─────────────────────────────────────────────
-            'z_pps':             float(parts[20]),
-            'z_bps':             float(parts[21]),
-            'z_fps':             float(parts[22]),
-            'z_burst_factor':    float(parts[23]),
-            'z_inbound_bits':    float(parts[24]),
-            'z_outbound_bits':   float(parts[25]),
-            'z_udp':             float(parts[26]),
-            'z_tcp':             float(parts[27]),
-            'z_icmp':            float(parts[28]),
-            'z_syn_pps':         float(parts[29]),
-            'z_synack_pps':      float(parts[30]),
-            'z_finack_pps':      float(parts[31]),
-            'z_rst_pps':         float(parts[32]),
-            'z_udp_flows':       float(parts[33]),
-            'z_unique_src_ips':  float(parts[34]),
-            'z_unique_dst_ports':float(parts[35]),
-            'z_icmp_echo_rate':  float(parts[36]),
+            'z_pps':                float(parts[37]),
+            'z_bps':                float(parts[38]),
+            'z_fps':                float(parts[39]),
+            'z_burst_factor':       float(parts[40]),
+            'z_inbound_bits':       float(parts[41]),
+            'z_outbound_bits':      float(parts[42]),
+            'z_udp':                float(parts[43]),
+            'z_tcp':                float(parts[44]),
+            'z_icmp':               float(parts[45]),
+            'z_syn_pps':            float(parts[46]),
+            'z_synack_pps':         float(parts[47]),
+            'z_finack_pps':         float(parts[48]),
+            'z_rst_pps':            float(parts[49]),
+            'z_udp_flows':          float(parts[50]),
+            'z_unique_src_ips':     float(parts[51]),
+            'z_unique_dst_ports':   float(parts[52]),
+            'z_icmp_echo_rate':     float(parts[53]),
         }
 
         return data

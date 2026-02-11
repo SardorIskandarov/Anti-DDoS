@@ -20,10 +20,11 @@ def get_db_client():
     # -------------------------------------------------------------------------
     # Create Table
     #
-    # Schema mirrors the 37-field CSV produced by l2fwd_ddos_collector.c:
+    # Schema mirrors the 54-field CSV produced by l2fwd_ddos_collector.c:
     #   - 3  header fields
     #   - 17 raw traffic features
-    #   - 17 EWMA Z-score features  (prefixed z_)
+    #   - 17 EWMA mean values      (prefixed em_)
+    #   - 17 EWMA Z-score features (prefixed z_)
     # -------------------------------------------------------------------------
     create_table_query = f"""
     CREATE TABLE IF NOT EXISTS {config.CH_DB}.{config.CH_TABLE} (
@@ -50,6 +51,28 @@ def get_db_client():
         unique_src_ips      UInt64,
         unique_dst_ports    UInt64,
         icmp_echo_rate      Float64,
+
+        -- EWMA moving-average baseline for each raw feature (prefixed em_)
+        -- These are the smoothed long-run averages used as the baseline model.
+        -- Plotting em_X alongside X shows how far current traffic deviates
+        -- from its learned normal.
+        em_pps              Float64,
+        em_bps              Float64,
+        em_fps              Float64,
+        em_burst_factor     Float64,
+        em_inbound_bits     Float64,
+        em_outbound_bits    Float64,
+        em_udp              Float64,
+        em_tcp              Float64,
+        em_icmp             Float64,
+        em_syn_pps          Float64,
+        em_synack_pps       Float64,
+        em_finack_pps       Float64,
+        em_rst_pps          Float64,
+        em_udp_flows        Float64,
+        em_unique_src_ips   Float64,
+        em_unique_dst_ports Float64,
+        em_icmp_echo_rate   Float64,
 
         -- EWMA Z-scores (same feature order, prefixed z_)
         -- Values near 0 = normal baseline.
