@@ -1,19 +1,26 @@
-# Configuration Settings for DDoS Monitor
-
-# Unix Socket Configuration
-SOCK_PATH = "/tmp/ddos_stats_socket"
-
-# ClickHouse Database Settings
+# ============================================================================
+# CLICKHOUSE DATABASE CONFIGURATION
+# ============================================================================
 CH_HOST = 'localhost'
 CH_PORT = 9000
-CH_DB = 'ddos_monitoring'
-CH_TABLE = 'network_stats'
+CH_DB = 'ddos_detection'
+CH_TABLE = 'traffic_stats'
 
-# Web Dashboard Settings
-WEB_HOST = '0.0.0.0'
-WEB_PORT = 5000
+# ============================================================================
+# UNIX SOCKET CONFIGURATION
+# ============================================================================
+SOCK_PATH = '/tmp/ddos_stats_socket'
+BUFFER_SIZE = 65536
 
-# Collector Settings
-BATCH_SIZE = 100  # Number of records to batch before inserting to DB
-BUFFER_SIZE = 4096  # Socket receive buffer size
-RAM_BUFFER_SIZE = 20  # Number of latest records to keep in RAM for dashboard
+# ============================================================================
+# BATCH PROCESSING CONFIGURATION
+# ============================================================================
+BATCH_SIZE = 100              # Records per database batch insert
+RAM_BUFFER_SIZE = 1000        # Records to keep in RAM for dashboard
+
+# ============================================================================
+# FLASK WEB SERVER CONFIGURATION
+# ============================================================================
+FLASK_HOST = '0.0.0.0'
+FLASK_PORT = 5000
+FLASK_DEBUG = False

@@ -1,1263 +1,439 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-bs-theme="dark">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>⚡ DDoS Traffic Analysis | Feature Monitor</title>
+    <title> Dashboard</title>
+
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/moment@2.29.1/moment.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@1.0.0/dist/chartjs-adapter-moment.min.js"></script>
     <style>
         :root {
-            --bg-dark:    #050505;
-            --panel-bg:   #0d0d0d;
-            --border:     #1a1a1a;
-            --text-main:  #e8e8e8;
-            --text-muted: #606060;
+            --fg-bg-main: #0f1419;
+            --fg-bg-card: #161b22;
+            --fg-bg-header: #1c2128;
+            --fg-border: #2a2f36;
 
-            --c-blue:    #00d4ff;
-            --c-green:   #00ff41;
-            --c-orange:  #ff9f1c;
-            --c-purple:  #9d4edd;
-            --c-red:     #ff2e63;
-            --c-cyan:    #06ffa5;
-
-            /* EWMA mean line — warm amber, visually distinct from all raw colors */
-            --c-ewma:    #ffb347;
-
-            --z-normal:   #00ff41;
-            --z-warn:     #ffe600;
-            --z-alert:    #ff9f1c;
-            --z-critical: #ff2e63;
+            --fg-green: #00d084;
+            --fg-amber: #ffb020;
+            --fg-red: #ff4d4f;
+            --fg-cyan: #00c2ff;
+            --fg-purple: #8b5cf6;
         }
 
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-
+        /* Background */
         body {
-            background: var(--bg-dark);
-            color: var(--text-main);
-            font-family: 'Consolas', 'Monaco', monospace;
-            padding: 15px;
-            overflow-x: hidden;
+            background-color: var(--fg-bg-main) !important;
+            color: #e6edf3;
         }
 
-        .container { max-width: 1920px; margin: 0 auto; }
-
-        /* ── Header ─────────────────────────────────────────────── */
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 15px 20px;
-            background: linear-gradient(135deg, #1a1a1a 0%, #0a0a0a 100%);
-            border: 1px solid var(--c-green);
-            border-radius: 6px;
-            margin-bottom: 15px;
-            box-shadow: 0 0 20px rgba(0,255,65,0.08);
+        /* Navbar */
+        .navbar {
+            background-color: var(--fg-bg-header) !important;
+            border-bottom: 1px solid var(--fg-border);
         }
 
-        .header h1 { font-size: 22px; letter-spacing: 2px; }
-        .header-controls { display: flex; gap: 20px; align-items: center; }
-
-        .live-dot {
-            width: 10px; height: 10px;
-            background: var(--c-green);
-            border-radius: 50%;
-            box-shadow: 0 0 12px var(--c-green);
-            animation: blink 1.5s infinite;
+        /* Cards */
+        .card {
+            background-color: var(--fg-bg-card);
+            border: 1px solid var(--fg-border);
+            border-radius: 10px;
+            transition: all 0.2s ease;
         }
 
-        @keyframes blink {
-            0%,100% { opacity: 1; transform: scale(1); }
-            50%      { opacity: 0.35; transform: scale(0.88); }
+        .card:hover {
+            border-color: var(--fg-cyan);
+            box-shadow: 0 0 10px rgba(0, 194, 255, 0.15);
         }
 
-        select {
-            background: #000;
-            color: var(--c-cyan);
-            border: 1px solid var(--c-cyan);
-            padding: 7px 14px;
-            font-family: inherit;
-            font-size: 13px;
-            border-radius: 4px;
-            cursor: pointer;
-            min-width: 200px;
+        /* Section Headers */
+        h6.text-primary {
+            color: var(--fg-cyan) !important;
+            border-color: var(--fg-cyan) !important;
         }
-        select:focus { outline: none; box-shadow: 0 0 8px var(--c-cyan); }
 
-        /* ── Shared legend pill ──────────────────────────────────── */
-        .chart-legend {
-            display: flex;
-            gap: 14px;
-            font-size: 10px;
-            color: var(--text-muted);
-            margin-bottom: 7px;
+        /* HUD Numbers */
+        .card-title {
+            letter-spacing: 1px;
+        }
+
+        /* Status Badge Glow */
+        .badge {
+            font-weight: 600;
             letter-spacing: 0.5px;
         }
 
-        .ldot {
-            display: inline-block;
-            width: 12px; height: 3px;
-            border-radius: 2px;
-            vertical-align: middle;
-            margin-right: 4px;
+        .status-normal {
+            background-color: var(--fg-green) !important;
+            box-shadow: 0 0 10px rgba(0, 208, 132, 0.4);
         }
 
-        /* ── Anomaly summary bar ─────────────────────────────────── */
-        .anomaly-bar {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-            gap: 7px;
-            padding: 10px;
-            background: #0a0a0a;
-            border: 1px solid var(--border);
+        .status-warning {
+            background-color: var(--fg-amber) !important;
+            color: #000 !important;
+            box-shadow: 0 0 10px rgba(255, 176, 32, 0.4);
+        }
+
+        .status-danger {
+            background-color: var(--fg-red) !important;
+            box-shadow: 0 0 10px rgba(255, 77, 79, 0.4);
+        }
+
+        /* Chart Grid */
+        canvas {
+            background: linear-gradient(180deg,
+                    rgba(255, 255, 255, 0.02),
+                    rgba(0, 0, 0, 0.1));
             border-radius: 6px;
-            margin-bottom: 15px;
         }
-
-        .anomaly-tile {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            padding: 7px 5px;
-            border-radius: 4px;
-            border: 1px solid #1a1a1a;
-            transition: border-color .25s, box-shadow .25s;
-        }
-
-        .tile-label {
-            font-size: 9px;
-            color: var(--text-muted);
-            letter-spacing: .8px;
-            text-transform: uppercase;
-            margin-bottom: 3px;
-        }
-
-        .tile-z { font-size: 15px; font-weight: bold; transition: color .25s; }
-
-        .z-normal   { color: var(--z-normal);   border-color: #1a301a; }
-        .z-warn     { color: var(--z-warn);     border-color: #303000; box-shadow: 0 0 7px rgba(255,230,0,.12); }
-        .z-alert    { color: var(--z-alert);    border-color: #301800; box-shadow: 0 0 7px rgba(255,159,28,.18); }
-        .z-critical { color: var(--z-critical); border-color: #300010; box-shadow: 0 0 10px rgba(255,46,99,.25); }
-
-        /* ── Layout ──────────────────────────────────────────────── */
-        .section-label {
-            font-size: 10px;
-            letter-spacing: 2px;
-            text-transform: uppercase;
-            color: var(--text-muted);
-            padding: 4px 0 8px 2px;
-        }
-
-        .dashboard-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 14px;
-            margin-bottom: 14px;
-        }
-
-        /* Column stacks raw panel above z-score panel */
-        .feature-col { display: flex; flex-direction: column; gap: 7px; }
-
-        .panel {
-            background: var(--panel-bg);
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            padding: 12px 14px;
-            display: flex;
-            flex-direction: column;
-            transition: border-color .25s, box-shadow .25s;
-        }
-
-        .panel:hover { border-color: var(--c-blue); box-shadow: 0 0 12px rgba(0,212,255,.12); }
-
-        .panel-raw { min-height: 295px; }
-        .panel-z   { min-height: 155px; border-style: dashed; }
-        .panel-pie { min-height: 285px; }
-
-        .panel-header {
-            font-size: 11px;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 6px;
-            padding-bottom: 7px;
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .panel-value { font-size: 13px; font-weight: bold; color: var(--c-cyan); }
-
-        .z-badge {
-            font-size: 11px;
-            font-weight: bold;
-            padding: 2px 5px;
-            border-radius: 3px;
-            transition: color .25s;
-        }
-
-        .chart-wrap { flex: 1; position: relative; min-height: 0; }
-        .panel-raw .chart-wrap  { min-height: 215px; }
-        .panel-z   .chart-wrap  { min-height: 100px; }
-        .panel-pie .chart-wrap  { min-height: 215px; }
-
-        canvas { width: 100% !important; height: 100% !important; }
-
-        /* Group colour strips */
-        .m-traffic  { border-top: 3px solid var(--c-blue);   }
-        .m-protocol { border-top: 3px solid var(--c-purple); }
-        .m-flags    { border-top: 3px solid var(--c-red);    }
-        .m-flow     { border-top: 3px solid var(--c-orange); }
-        .m-analysis { border-top: 3px solid var(--c-cyan);   }
-        .m-z        { border-top: 3px solid #2a2a2a;         }
-
-        /* ── Status bar ──────────────────────────────────────────── */
-        .status-bar {
-            display: flex;
-            justify-content: space-between;
-            flex-wrap: wrap;
-            gap: 8px;
-            padding: 11px 18px;
-            background: #0a0a0a;
-            border: 1px solid var(--border);
-            border-radius: 4px;
-            font-size: 11px;
-            color: var(--text-muted);
-            margin-top: 14px;
-        }
-
-        .s-item { display: flex; align-items: center; gap: 7px; }
-        .s-val  { color: var(--c-green); font-weight: bold; }
-
-        @media (max-width: 1500px) { .dashboard-grid { grid-template-columns: repeat(2,1fr); } }
-        @media (max-width:  900px)  { .dashboard-grid { grid-template-columns: 1fr; } }
     </style>
+
 </head>
-<body>
-<div class="container">
 
-    <!-- Header -->
-    <div class="header">
-        <h1>
-            <span style="color:var(--c-red)">◆</span> TRAFFIC_MONITOR
-            <span style="font-size:11px;color:#333;font-weight:normal">v6.0</span>
-        </h1>
-        <div class="header-controls">
-            <span class="live-dot"></span>
-            <label style="color:var(--text-muted)">TARGET IP:</label>
-            <select id="ip-selector" onchange="changeTarget()">
-                <option value="">Loading…</option>
-            </select>
+<body class="bg-body-tertiary">
+
+    <nav class="navbar navbar-expand-lg bg-body-tertiary border-bottom mb-4">
+        <div class="container-fluid">
+            <a class="navbar-brand fw-bold" href="#">
+                <span class="text-primary">🛡️</span> Dashboard
+            </a>
+
+            <div class="d-flex align-items-center gap-3">
+                <div class="input-group input-group-sm">
+                    <span class="input-group-text">MONITORING</span>
+                    <select id="targetSelect" class="form-select" style="max-width: 200px;">
+                        <option value="" disabled selected>Loading...</option>
+                    </select>
+                </div>
+                <span id="detectionStatus" class="badge rounded-pill bg-secondary px-3 py-2">
+                    WAITING...
+                </span>
+            </div>
         </div>
+    </nav>
+
+    <div class="container-fluid px-4">
+
+        <div class="row g-3 mb-4">
+            <div class="col-md-3">
+                <div class="card h-100 border-0 shadow-sm">
+                    <div class="card-body">
+                        <h6 class="card-subtitle mb-2 text-body-secondary text-uppercase small">Packet Rate</h6>
+                        <div class="d-flex align-items-baseline">
+                            <h2 class="card-title fw-bold text-primary mb-0 me-1" id="hud_pps">0</h2>
+                            <span class="small text-body-secondary">pps</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card h-100 border-0 shadow-sm">
+                    <div class="card-body">
+                        <h6 class="card-subtitle mb-2 text-body-secondary text-uppercase small">Bandwidth</h6>
+                        <div class="d-flex align-items-baseline">
+                            <h2 class="card-title fw-bold mb-0 me-1" id="hud_bps">0</h2>
+                            <span class="small text-body-secondary">bps</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card h-100 border-0 shadow-sm">
+                    <div class="card-body">
+                        <h6 class="card-subtitle mb-2 text-body-secondary text-uppercase small">Anomaly Score (T0)</h6>
+                        <div class="d-flex align-items-baseline">
+                            <h2 class="card-title fw-bold text-info mb-0 me-1" id="hud_t0">0.0000</h2>
+                            <span class="small text-body-secondary">Norm Distance</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card h-100 border-0 shadow-sm">
+                    <div class="card-body">
+                        <h6 class="card-subtitle mb-2 text-body-secondary text-uppercase small">Active Flows</h6>
+                        <div class="d-flex align-items-baseline">
+                            <h2 class="card-title fw-bold mb-0 me-1" id="hud_flows">0</h2>
+                            <span class="small text-body-secondary">flows/sec</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <h6 class="text-primary text-uppercase fw-bold mb-3 border-start border-primary border-4 ps-2">Anomaly Detection
+            Engines</h6>
+        <div class="row g-3 mb-4" id="anomalyContainer"></div>
+
+        <h6 class="text-primary text-uppercase fw-bold mb-3 border-start border-primary border-4 ps-2">Traffic
+            Volumetrics</h6>
+        <div class="row g-3 mb-4" id="volumetricsContainer"></div>
+
+        <h6 class="text-primary text-uppercase fw-bold mb-3 border-start border-primary border-4 ps-2">Attack Vectors
+            (TCP/UDP)</h6>
+        <div class="row g-3 mb-5" id="vectorsContainer"></div>
+
     </div>
 
-    <!-- Anomaly summary -->
-    <div class="section-label">⚠ EWMA Z-Score Anomaly Summary — |z|≥1 warn · |z|≥2 alert · |z|≥3 critical</div>
-    <div class="anomaly-bar" id="anomaly-bar"></div>
+    <script>
+        // ---------------------------------------------------------
+        // Configuration
+        // ---------------------------------------------------------
+        const API_BASE = '/api';
+        let currentTarget = null;
+        let charts = {};
 
-    <!-- ================================================================== -->
-    <!-- TRAFFIC VOLUME                                                       -->
-    <!-- ================================================================== -->
-    <div class="section-label">Traffic Volume</div>
-    <div class="dashboard-grid">
-
-        <div class="feature-col">
-            <div class="panel panel-raw m-traffic">
-                <div class="panel-header">
-                    <span>Bits Per Second</span>
-                    <span id="val-bps" class="panel-value">0</span>
-                </div>
-                <div class="chart-legend">
-                    <span><span class="ldot" style="background:var(--c-blue)"></span>Raw</span>
-                    <span><span class="ldot" style="background:var(--c-ewma);border-bottom:1px dashed var(--c-ewma)"></span>EWMA mean</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-bps"></canvas></div>
-            </div>
-            <div class="panel panel-z m-z">
-                <div class="panel-header">
-                    <span style="color:#444">Z-Score · BPS</span>
-                    <span id="zb-bps" class="z-badge z-normal">0.0000</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-z-bps"></canvas></div>
-            </div>
-        </div>
-
-        <div class="feature-col">
-            <div class="panel panel-raw m-traffic">
-                <div class="panel-header">
-                    <span>Packets Per Second</span>
-                    <span id="val-pps" class="panel-value">0</span>
-                </div>
-                <div class="chart-legend">
-                    <span><span class="ldot" style="background:var(--c-green)"></span>Raw</span>
-                    <span><span class="ldot" style="background:var(--c-ewma)"></span>EWMA mean</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-pps"></canvas></div>
-            </div>
-            <div class="panel panel-z m-z">
-                <div class="panel-header">
-                    <span style="color:#444">Z-Score · PPS</span>
-                    <span id="zb-pps" class="z-badge z-normal">0.0000</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-z-pps"></canvas></div>
-            </div>
-        </div>
-
-        <div class="feature-col">
-            <div class="panel panel-raw m-traffic">
-                <div class="panel-header">
-                    <span>Flows Per Second</span>
-                    <span id="val-fps" class="panel-value">0</span>
-                </div>
-                <div class="chart-legend">
-                    <span><span class="ldot" style="background:var(--c-orange)"></span>Raw</span>
-                    <span><span class="ldot" style="background:var(--c-ewma)"></span>EWMA mean</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-fps"></canvas></div>
-            </div>
-            <div class="panel panel-z m-z">
-                <div class="panel-header">
-                    <span style="color:#444">Z-Score · FPS</span>
-                    <span id="zb-fps" class="z-badge z-normal">0.0000</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-z-fps"></canvas></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- ================================================================== -->
-    <!-- BURST & DIRECTION                                                    -->
-    <!-- ================================================================== -->
-    <div class="section-label">Burst &amp; Direction</div>
-    <div class="dashboard-grid">
-
-        <div class="feature-col">
-            <div class="panel panel-raw m-analysis">
-                <div class="panel-header">
-                    <span>Burst Factor</span>
-                    <span id="val-burst" class="panel-value">0</span>
-                </div>
-                <div class="chart-legend">
-                    <span><span class="ldot" style="background:var(--c-cyan)"></span>Raw</span>
-                    <span><span class="ldot" style="background:var(--c-ewma)"></span>EWMA mean</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-burst"></canvas></div>
-            </div>
-            <div class="panel panel-z m-z">
-                <div class="panel-header">
-                    <span style="color:#444">Z-Score · Burst</span>
-                    <span id="zb-burst" class="z-badge z-normal">0.0000</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-z-burst"></canvas></div>
-            </div>
-        </div>
-
-        <div class="feature-col">
-            <div class="panel panel-raw m-traffic">
-                <div class="panel-header">
-                    <span>Inbound Bits</span>
-                    <span id="val-inbound" class="panel-value">0</span>
-                </div>
-                <div class="chart-legend">
-                    <span><span class="ldot" style="background:var(--c-red)"></span>Raw</span>
-                    <span><span class="ldot" style="background:var(--c-ewma)"></span>EWMA mean</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-inbound"></canvas></div>
-            </div>
-            <div class="panel panel-z m-z">
-                <div class="panel-header">
-                    <span style="color:#444">Z-Score · Inbound</span>
-                    <span id="zb-inbound" class="z-badge z-normal">0.0000</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-z-inbound"></canvas></div>
-            </div>
-        </div>
-
-        <div class="feature-col">
-            <div class="panel panel-raw m-traffic">
-                <div class="panel-header">
-                    <span>Outbound Bits</span>
-                    <span id="val-outbound" class="panel-value">0</span>
-                </div>
-                <div class="chart-legend">
-                    <span><span class="ldot" style="background:var(--c-blue)"></span>Raw</span>
-                    <span><span class="ldot" style="background:var(--c-ewma)"></span>EWMA mean</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-outbound"></canvas></div>
-            </div>
-            <div class="panel panel-z m-z">
-                <div class="panel-header">
-                    <span style="color:#444">Z-Score · Outbound</span>
-                    <span id="zb-outbound" class="z-badge z-normal">0.0000</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-z-outbound"></canvas></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- ================================================================== -->
-    <!-- PROTOCOL DISTRIBUTION                                                -->
-    <!-- ================================================================== -->
-    <div class="section-label">Protocol Distribution</div>
-    <div class="dashboard-grid">
-
-        <div class="feature-col">
-            <div class="panel panel-raw m-protocol">
-                <div class="panel-header">
-                    <span>TCP Ratio</span>
-                    <span id="val-tcp" class="panel-value">0</span>
-                </div>
-                <div class="chart-legend">
-                    <span><span class="ldot" style="background:var(--c-purple)"></span>Raw</span>
-                    <span><span class="ldot" style="background:var(--c-ewma)"></span>EWMA mean</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-tcp"></canvas></div>
-            </div>
-            <div class="panel panel-z m-z">
-                <div class="panel-header">
-                    <span style="color:#444">Z-Score · TCP</span>
-                    <span id="zb-tcp" class="z-badge z-normal">0.0000</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-z-tcp"></canvas></div>
-            </div>
-        </div>
-
-        <div class="feature-col">
-            <div class="panel panel-raw m-protocol">
-                <div class="panel-header">
-                    <span>UDP Ratio</span>
-                    <span id="val-udp" class="panel-value">0</span>
-                </div>
-                <div class="chart-legend">
-                    <span><span class="ldot" style="background:var(--c-orange)"></span>Raw</span>
-                    <span><span class="ldot" style="background:var(--c-ewma)"></span>EWMA mean</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-udp"></canvas></div>
-            </div>
-            <div class="panel panel-z m-z">
-                <div class="panel-header">
-                    <span style="color:#444">Z-Score · UDP</span>
-                    <span id="zb-udp" class="z-badge z-normal">0.0000</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-z-udp"></canvas></div>
-            </div>
-        </div>
-
-        <div class="feature-col">
-            <div class="panel panel-raw m-protocol">
-                <div class="panel-header">
-                    <span>ICMP Ratio</span>
-                    <span id="val-icmp" class="panel-value">0</span>
-                </div>
-                <div class="chart-legend">
-                    <span><span class="ldot" style="background:var(--c-green)"></span>Raw</span>
-                    <span><span class="ldot" style="background:var(--c-ewma)"></span>EWMA mean</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-icmp"></canvas></div>
-            </div>
-            <div class="panel panel-z m-z">
-                <div class="panel-header">
-                    <span style="color:#444">Z-Score · ICMP</span>
-                    <span id="zb-icmp" class="z-badge z-normal">0.0000</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-z-icmp"></canvas></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Protocol pie + SYN/SYN-ACK -->
-    <div class="dashboard-grid">
-        <div class="panel panel-pie m-protocol">
-            <div class="panel-header"><span>Protocol Distribution</span></div>
-            <div class="chart-wrap"><canvas id="c-proto-pie"></canvas></div>
-        </div>
-
-        <div class="feature-col">
-            <div class="panel panel-raw m-flags">
-                <div class="panel-header">
-                    <span>SYN Ratio (% TCP)</span>
-                    <span id="val-syn" class="panel-value">0</span>
-                </div>
-                <div class="chart-legend">
-                    <span><span class="ldot" style="background:var(--c-red)"></span>Raw</span>
-                    <span><span class="ldot" style="background:var(--c-ewma)"></span>EWMA mean</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-syn"></canvas></div>
-            </div>
-            <div class="panel panel-z m-z">
-                <div class="panel-header">
-                    <span style="color:#444">Z-Score · SYN</span>
-                    <span id="zb-syn" class="z-badge z-normal">0.0000</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-z-syn"></canvas></div>
-            </div>
-        </div>
-
-        <div class="feature-col">
-            <div class="panel panel-raw m-flags">
-                <div class="panel-header">
-                    <span>SYN-ACK Ratio (% TCP)</span>
-                    <span id="val-synack" class="panel-value">0</span>
-                </div>
-                <div class="chart-legend">
-                    <span><span class="ldot" style="background:var(--c-green)"></span>Raw</span>
-                    <span><span class="ldot" style="background:var(--c-ewma)"></span>EWMA mean</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-synack"></canvas></div>
-            </div>
-            <div class="panel panel-z m-z">
-                <div class="panel-header">
-                    <span style="color:#444">Z-Score · SYN-ACK</span>
-                    <span id="zb-synack" class="z-badge z-normal">0.0000</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-z-synack"></canvas></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- FIN-ACK / RST / flags pie -->
-    <div class="dashboard-grid">
-        <div class="feature-col">
-            <div class="panel panel-raw m-flags">
-                <div class="panel-header">
-                    <span>FIN-ACK Ratio (% TCP)</span>
-                    <span id="val-finack" class="panel-value">0</span>
-                </div>
-                <div class="chart-legend">
-                    <span><span class="ldot" style="background:var(--c-orange)"></span>Raw</span>
-                    <span><span class="ldot" style="background:var(--c-ewma)"></span>EWMA mean</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-finack"></canvas></div>
-            </div>
-            <div class="panel panel-z m-z">
-                <div class="panel-header">
-                    <span style="color:#444">Z-Score · FIN-ACK</span>
-                    <span id="zb-finack" class="z-badge z-normal">0.0000</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-z-finack"></canvas></div>
-            </div>
-        </div>
-
-        <div class="feature-col">
-            <div class="panel panel-raw m-flags">
-                <div class="panel-header">
-                    <span>RST Ratio (% TCP)</span>
-                    <span id="val-rst" class="panel-value">0</span>
-                </div>
-                <div class="chart-legend">
-                    <span><span class="ldot" style="background:var(--c-purple)"></span>Raw</span>
-                    <span><span class="ldot" style="background:var(--c-ewma)"></span>EWMA mean</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-rst"></canvas></div>
-            </div>
-            <div class="panel panel-z m-z">
-                <div class="panel-header">
-                    <span style="color:#444">Z-Score · RST</span>
-                    <span id="zb-rst" class="z-badge z-normal">0.0000</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-z-rst"></canvas></div>
-            </div>
-        </div>
-
-        <div class="panel panel-pie m-flags">
-            <div class="panel-header"><span>TCP Flags Distribution</span></div>
-            <div class="chart-wrap"><canvas id="c-flags-pie"></canvas></div>
-        </div>
-    </div>
-
-    <!-- ================================================================== -->
-    <!-- FLOW & CARDINALITY                                                   -->
-    <!-- ================================================================== -->
-    <div class="section-label">Flow &amp; Cardinality</div>
-    <div class="dashboard-grid">
-
-        <div class="feature-col">
-            <div class="panel panel-raw m-flow">
-                <div class="panel-header">
-                    <span>UDP Flows</span>
-                    <span id="val-udpflows" class="panel-value">0</span>
-                </div>
-                <div class="chart-legend">
-                    <span><span class="ldot" style="background:var(--c-orange)"></span>Raw</span>
-                    <span><span class="ldot" style="background:var(--c-ewma)"></span>EWMA mean</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-udpflows"></canvas></div>
-            </div>
-            <div class="panel panel-z m-z">
-                <div class="panel-header">
-                    <span style="color:#444">Z-Score · UDP Flows</span>
-                    <span id="zb-udpflows" class="z-badge z-normal">0.0000</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-z-udpflows"></canvas></div>
-            </div>
-        </div>
-
-        <div class="feature-col">
-            <div class="panel panel-raw m-analysis">
-                <div class="panel-header">
-                    <span>Unique Source IPs</span>
-                    <span id="val-srcips" class="panel-value">0</span>
-                </div>
-                <div class="chart-legend">
-                    <span><span class="ldot" style="background:var(--c-cyan)"></span>Raw</span>
-                    <span><span class="ldot" style="background:var(--c-ewma)"></span>EWMA mean</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-srcips"></canvas></div>
-            </div>
-            <div class="panel panel-z m-z">
-                <div class="panel-header">
-                    <span style="color:#444">Z-Score · Src IPs</span>
-                    <span id="zb-srcips" class="z-badge z-normal">0.0000</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-z-srcips"></canvas></div>
-            </div>
-        </div>
-
-        <div class="feature-col">
-            <div class="panel panel-raw m-analysis">
-                <div class="panel-header">
-                    <span>Unique Dst Ports</span>
-                    <span id="val-dstports" class="panel-value">0</span>
-                </div>
-                <div class="chart-legend">
-                    <span><span class="ldot" style="background:var(--c-cyan)"></span>Raw</span>
-                    <span><span class="ldot" style="background:var(--c-ewma)"></span>EWMA mean</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-dstports"></canvas></div>
-            </div>
-            <div class="panel panel-z m-z">
-                <div class="panel-header">
-                    <span style="color:#444">Z-Score · Dst Ports</span>
-                    <span id="zb-dstports" class="z-badge z-normal">0.0000</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-z-dstports"></canvas></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- ================================================================== -->
-    <!-- ICMP ECHO & TRAFFIC DIRECTION                                        -->
-    <!-- ================================================================== -->
-    <div class="section-label">ICMP &amp; Traffic Direction</div>
-    <div class="dashboard-grid">
-
-        <div class="feature-col">
-            <div class="panel panel-raw m-analysis">
-                <div class="panel-header">
-                    <span>ICMP Echo Rate</span>
-                    <span id="val-icmpecho" class="panel-value">0</span>
-                </div>
-                <div class="chart-legend">
-                    <span><span class="ldot" style="background:var(--c-green)"></span>Raw</span>
-                    <span><span class="ldot" style="background:var(--c-ewma)"></span>EWMA mean</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-icmpecho"></canvas></div>
-            </div>
-            <div class="panel panel-z m-z">
-                <div class="panel-header">
-                    <span style="color:#444">Z-Score · ICMP Echo</span>
-                    <span id="zb-icmpecho" class="z-badge z-normal">0.0000</span>
-                </div>
-                <div class="chart-wrap"><canvas id="c-z-icmpecho"></canvas></div>
-            </div>
-        </div>
-
-        <div class="panel panel-pie m-traffic">
-            <div class="panel-header"><span>Traffic Direction</span></div>
-            <div class="chart-wrap"><canvas id="c-direction-pie"></canvas></div>
-        </div>
-
-        <div class="panel panel-raw m-analysis">
-            <div class="panel-header">
-                <span>Data Points</span>
-                <span id="val-datapoints" class="panel-value">0</span>
-            </div>
-            <div class="chart-wrap"><canvas id="c-timeline"></canvas></div>
-        </div>
-    </div>
-
-    <!-- Status bar -->
-    <div class="status-bar">
-        <div class="s-item"><span>IP:</span><span id="s-ip" class="s-val">—</span></div>
-        <div class="s-item"><span>Records:</span><span id="s-rec" class="s-val">0</span></div>
-        <div class="s-item"><span>Updated:</span><span id="s-time" class="s-val">—</span></div>
-        <div class="s-item" style="color:#2a2a2a;font-size:9px;">
-            SYN&gt;80% SYN-Flood · UDP-Flows&gt;&gt;1K Amp · Burst&gt;2 Spike · SrcIPs&gt;&gt;100 Botnet · Z&gt;3 EWMA-Anomaly
-        </div>
-    </div>
-
-</div><!-- /container -->
-
-<script>
-// ============================================================================
-// CONFIGURATION
-// ============================================================================
-const MAX_PTS    = 60;
-const REFRESH_MS = 1000;
-
-const CS   = getComputedStyle(document.documentElement);
-const cv   = n => CS.getPropertyValue(n).trim();
-
-// Palette
-const COL_BLUE   = cv('--c-blue');
-const COL_GREEN  = cv('--c-green');
-const COL_ORANGE = cv('--c-orange');
-const COL_PURPLE = cv('--c-purple');
-const COL_RED    = cv('--c-red');
-const COL_CYAN   = cv('--c-cyan');
-const COL_EWMA   = cv('--c-ewma');   // amber — EWMA mean on every dual chart
-
-const Z_LEVELS = [
-    { min: 3, cls: 'z-critical' },
-    { min: 2, cls: 'z-alert'    },
-    { min: 1, cls: 'z-warn'     },
-    { min: 0, cls: 'z-normal'   },
-];
-
-const Z_FIELDS = [
-    { key: 'z_pps',              label: 'PPS'       },
-    { key: 'z_bps',              label: 'BPS'       },
-    { key: 'z_fps',              label: 'FPS'       },
-    { key: 'z_burst_factor',     label: 'BURST'     },
-    { key: 'z_inbound_bits',     label: 'INBOUND'   },
-    { key: 'z_outbound_bits',    label: 'OUTBOUND'  },
-    { key: 'z_udp',              label: 'UDP'       },
-    { key: 'z_tcp',              label: 'TCP'       },
-    { key: 'z_icmp',             label: 'ICMP'      },
-    { key: 'z_syn_pps',          label: 'SYN'       },
-    { key: 'z_synack_pps',       label: 'SYN-ACK'   },
-    { key: 'z_finack_pps',       label: 'FIN-ACK'   },
-    { key: 'z_rst_pps',          label: 'RST'       },
-    { key: 'z_udp_flows',        label: 'UDP FLOWS' },
-    { key: 'z_unique_src_ips',   label: 'SRC IPs'   },
-    { key: 'z_unique_dst_ports', label: 'DST PORTS' },
-    { key: 'z_icmp_echo_rate',   label: 'ICMP ECHO' },
-];
-
-// ============================================================================
-// CHART STORE
-// ============================================================================
-const C = {};
-let currentIP = null;
-
-// ============================================================================
-// OPTION BUILDERS
-// ============================================================================
-
-function mkLineOpts(isPct) {
-    const yAxis = {
-        display: true,
-        grid: { color: '#1c1c1c' },
-        ticks: { color: '#555', font: { size: 10 } },
-    };
-    if (isPct) {
-        yAxis.min = 0;
-        yAxis.max = 100;
-        yAxis.ticks.callback = v => v + '%';
-    }
-    return {
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: { duration: 250 },
-        elements: { point: { radius: 0 }, line: { tension: 0.4 } },
-        scales: {
-            x: {
-                display: true,
-                grid: { color: '#141414' },
-                ticks: { color: '#383838', maxTicksLimit: 6, font: { size: 9 } },
-            },
-            y: yAxis,
-        },
-        plugins: {
-            legend: { display: false },
-            tooltip: {
-                mode: 'index',
-                intersect: false,
-                callbacks: {
-                    label: ctx => {
-                        const sfx = isPct ? '%' : '';
-                        const dp  = isPct ? 2 : 4;
-                        return `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(dp)}${sfx}`;
-                    },
-                },
-            },
-        },
-    };
-}
-
-function mkZOpts() {
-    return {
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: { duration: 250 },
-        elements: { point: { radius: 0 }, line: { tension: 0.4 } },
-        scales: {
-            x: {
-                display: true,
-                grid: { color: '#141414' },
-                ticks: { color: '#383838', maxTicksLimit: 6, font: { size: 9 } },
-            },
-            y: {
-                display: true,
-                suggestedMin: -4,
-                suggestedMax:  4,
-                grid: { color: '#1c1c1c' },
-                ticks: {
-                    color: ctx => {
-                        const v = Math.abs(ctx.tick.value);
-                        if (v >= 3) return '#ff2e63';
-                        if (v >= 2) return '#ff9f1c';
-                        if (v >= 1) return '#ffe600';
-                        return '#444';
-                    },
-                    font: { size: 10 },
-                    callback: v => v + 'σ',
-                },
-            },
-        },
-        plugins: {
-            legend: { display: false },
-            tooltip: {
-                mode: 'index',
-                intersect: false,
-                callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(4)}σ` },
-            },
-        },
-    };
-}
-
-const PIE_OPTS = {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: { duration: 250 },
-    plugins: {
-        legend: { display: true, position: 'bottom', labels: { color: '#777', font: { size: 11 } } },
-    },
-};
-
-// ============================================================================
-// CHART FACTORIES
-// ============================================================================
-
-/**
- * Dual-line chart:
- *   dataset[0] = raw measurement  (rawColor, filled)
- *   dataset[1] = EWMA mean        (COL_EWMA, dashed, no fill, slightly thicker)
- *
- * Both share the same y-axis so they are directly comparable.
- * The EWMA line is drawn dashed so it reads as a "baseline / trend" rather
- * than a second raw signal.
- */
-function mkDual(id, rawLabel, rawColor, isPct) {
-    const el = document.getElementById(id);
-    if (!el) return null;
-    return new Chart(el, {
-        type: 'line',
-        data: {
-            labels: [],
-            datasets: [
-                {
-                    label: rawLabel,
-                    data: [],
-                    borderColor: rawColor,
-                    backgroundColor: rawColor + '1a',
-                    fill: true,
-                    borderWidth: 1.8,
-                    order: 1,
-                },
-                {
-                    label: 'EWMA mean',
-                    data: [],
-                    borderColor: COL_EWMA,
-                    backgroundColor: 'transparent',
-                    fill: false,
-                    borderWidth: 2.4,
-                    borderDash: [6, 3],
-                    order: 0,   // draw on top so it is never obscured by fill
-                },
+        // Define chart groups to map to layout sections
+        const METRIC_GROUPS = {
+            anomaly: [
+                { label: 'Tier 0 Distance (Norm)', key: 'tier0_distance_norm', color: '#0dcaf0' }, // Bootstrap Info
+                { label: 'Tier 1 Distance (Norm)', key: 'tier1_distance_norm', color: '#6f42c1' }  // Bootstrap Purple
             ],
-        },
-        options: mkLineOpts(isPct),
-    });
-}
-
-/**
- * Z-score chart:
- *   dataset[0]   = Z-score time series (cyan)
- *   datasets[1-6] = constant threshold lines at ±1σ, ±2σ, ±3σ
- */
-function mkZChart(id, label) {
-    const el = document.getElementById(id);
-    if (!el) return null;
-    const rules = [
-        [  3, '#ff2e6375' ], [ -3, '#ff2e6375' ],
-        [  2, '#ff9f1c65' ], [ -2, '#ff9f1c65' ],
-        [  1, '#ffe60050' ], [ -1, '#ffe60050' ],
-    ].map(([v, col]) => ({
-        label: v + 'σ', data: [],
-        borderColor: col, borderWidth: 1, borderDash: [4, 4],
-        pointRadius: 0, fill: false, tension: 0, spanGaps: true, order: 2,
-    }));
-
-    return new Chart(el, {
-        type: 'line',
-        data: {
-            labels: [],
-            datasets: [
-                {
-                    label,
-                    data: [],
-                    borderColor: COL_CYAN,
-                    backgroundColor: COL_CYAN + '14',
-                    fill: true,
-                    borderWidth: 1.8,
-                    pointRadius: 0,
-                    tension: 0.4,
-                    order: 1,
-                },
-                ...rules,
+            volumetrics: [
+                { label: 'Packets / Sec', key: 'pps', ewma: 'em_pps', color: '#0d6efd' },       // Bootstrap Primary
+                { label: 'Bits / Sec', key: 'bps', ewma: 'em_bps', color: '#6610f2' },          // Bootstrap Indigo
+                { label: 'Burst Factor', key: 'burst_factor', ewma: 'em_burst_factor', color: '#ffc107' }, // Bootstrap Warning
+                { label: 'Flows / Sec', key: 'fps', ewma: 'em_fps', color: '#d63384' },          // Bootstrap Pink
             ],
-        },
-        options: mkZOpts(),
-    });
-}
+            vectors: [
+                { label: 'SYN PPS', key: 'syn_pps', ewma: 'em_syn_pps', color: '#dc3545' },       // Bootstrap Danger
+                { label: 'SYN-ACK PPS', key: 'synack_pps', ewma: 'em_synack_pps', color: '#fd7e14' }, // Bootstrap Orange
+                { label: 'UDP Ratio', key: 'udp', ewma: 'em_udp', color: '#ffc107' },             // Bootstrap Warning
+                { label: 'Unique Src IPs', key: 'unique_src_ips', ewma: 'em_unique_src_ips', color: '#198754' } // Bootstrap Success
+            ]
+        };
 
-function mkPie(id, labels, colors) {
-    const el = document.getElementById(id);
-    if (!el) return null;
-    return new Chart(el, {
-        type: 'doughnut',
-        data: { labels, datasets: [{ data: [], backgroundColor: colors, borderColor: '#0a0a0a', borderWidth: 2 }] },
-        options: PIE_OPTS,
-    });
-}
+        // ---------------------------------------------------------
+        // Initialization
+        // ---------------------------------------------------------
+        async function init() {
+            createChartStructure();
+            await fetchTargets();
+            setInterval(refreshData, 1000);
+        }
 
-// ============================================================================
-// INITIALISE ALL CHARTS
-// ============================================================================
-function initCharts() {
-    // Traffic volume — raw numeric values
-    C.bps      = mkDual('c-bps',      'BPS',      COL_BLUE,   false);
-    C.pps      = mkDual('c-pps',      'PPS',      COL_GREEN,  false);
-    C.fps      = mkDual('c-fps',      'FPS',      COL_ORANGE, false);
+        // Generate HTML for chart cards
+        function createChartStructure() {
+            const createCards = (metrics, containerId) => {
+                const container = document.getElementById(containerId);
+                container.innerHTML = '';
 
-    // Burst / direction
-    C.burst    = mkDual('c-burst',    'Burst',    COL_CYAN,   false);
-    C.inbound  = mkDual('c-inbound',  'Inbound',  COL_RED,    false);
-    C.outbound = mkDual('c-outbound', 'Outbound', COL_BLUE,   false);
+                metrics.forEach(metric => {
+                    const colDiv = document.createElement('div');
+                    // Use Bootstrap grid classes
+                    colDiv.className = 'col-12 col-lg-6 col-xl-3';
+                    // Special case for Anomaly charts to be wider (2 per row)
+                    if (containerId === 'anomalyContainer') colDiv.className = 'col-12 col-lg-6';
 
-    // Protocol mix — percentage axis
-    C.tcp      = mkDual('c-tcp',      'TCP %',    COL_PURPLE, true);
-    C.udp      = mkDual('c-udp',      'UDP %',    COL_ORANGE, true);
-    C.icmp     = mkDual('c-icmp',     'ICMP %',   COL_GREEN,  true);
+                    colDiv.innerHTML = `
+                    <div class="card h-100 border-0 shadow-sm">
+                        <div class="card-header bg-transparent border-0 d-flex align-items-center">
+                            <span style="width: 8px; height: 8px; background-color: ${metric.color}; border-radius: 50%; display: inline-block; margin-right: 8px;"></span>
+                            <span class="fw-bold small">${metric.label}</span>
+                        </div>
+                        <div class="card-body p-2">
+                            <div style="height: 200px; width: 100%;">
+                                <canvas id="chart_${metric.key}"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                    container.appendChild(colDiv);
+                });
+            };
 
-    // TCP flags — percentage axis
-    C.syn      = mkDual('c-syn',      'SYN %',    COL_RED,    true);
-    C.synack   = mkDual('c-synack',   'SYN-ACK %',COL_GREEN,  true);
-    C.finack   = mkDual('c-finack',   'FIN-ACK %',COL_ORANGE, true);
-    C.rst      = mkDual('c-rst',      'RST %',    COL_PURPLE, true);
+            createCards(METRIC_GROUPS.anomaly, 'anomalyContainer');
+            createCards(METRIC_GROUPS.volumetrics, 'volumetricsContainer');
+            createCards(METRIC_GROUPS.vectors, 'vectorsContainer');
+        }
 
-    // Flow / cardinality
-    C.udpflows = mkDual('c-udpflows', 'UDP Flows',COL_ORANGE, false);
-    C.srcips   = mkDual('c-srcips',   'Src IPs',  COL_CYAN,   false);
-    C.dstports = mkDual('c-dstports', 'Dst Ports',COL_CYAN,   false);
+        // ---------------------------------------------------------
+        // Data Fetching & Updates
+        // ---------------------------------------------------------
+        async function fetchTargets() {
+            try {
+                const response = await fetch(`${API_BASE}/targets`);
+                const targets = await response.json();
+                const select = document.getElementById('targetSelect');
 
-    // ICMP echo — percentage axis
-    C.icmpecho = mkDual('c-icmpecho', 'Echo %',   COL_GREEN,  true);
+                select.innerHTML = '';
 
-    // Timeline (single line — no EWMA pair)
-    const tlEl = document.getElementById('c-timeline');
-    if (tlEl) {
-        C.timeline = new Chart(tlEl, {
-            type: 'line',
-            data: { labels: [], datasets: [{
-                label: 'Records', data: [],
-                borderColor: COL_CYAN, backgroundColor: COL_CYAN + '18',
-                fill: true, borderWidth: 1.8, pointRadius: 0, tension: 0.4,
-            }] },
-            options: mkLineOpts(false),
+                if (targets.length === 0) {
+                    select.add(new Option("No traffic detected", ""));
+                    return;
+                }
+
+                targets.forEach(ip => {
+                    select.add(new Option(ip, ip));
+                });
+
+                if (!currentTarget && targets.length > 0) {
+                    currentTarget = targets[0];
+                    select.value = currentTarget;
+                }
+            } catch (error) {
+                console.error("Target fetch failed", error);
+            }
+        }
+
+        document.getElementById('targetSelect').addEventListener('change', (e) => {
+            currentTarget = e.target.value;
+            // Destroy old charts to reset
+            Object.values(charts).forEach(c => c.destroy());
+            charts = {};
+            refreshData();
         });
-    }
 
-    // Z-score charts
-    C.z_bps      = mkZChart('c-z-bps',      'Z·BPS');
-    C.z_pps      = mkZChart('c-z-pps',      'Z·PPS');
-    C.z_fps      = mkZChart('c-z-fps',      'Z·FPS');
-    C.z_burst    = mkZChart('c-z-burst',    'Z·Burst');
-    C.z_inbound  = mkZChart('c-z-inbound',  'Z·Inbound');
-    C.z_outbound = mkZChart('c-z-outbound', 'Z·Outbound');
-    C.z_tcp      = mkZChart('c-z-tcp',      'Z·TCP');
-    C.z_udp      = mkZChart('c-z-udp',      'Z·UDP');
-    C.z_icmp     = mkZChart('c-z-icmp',     'Z·ICMP');
-    C.z_syn      = mkZChart('c-z-syn',      'Z·SYN');
-    C.z_synack   = mkZChart('c-z-synack',   'Z·SYN-ACK');
-    C.z_finack   = mkZChart('c-z-finack',   'Z·FIN-ACK');
-    C.z_rst      = mkZChart('c-z-rst',      'Z·RST');
-    C.z_udpflows = mkZChart('c-z-udpflows', 'Z·UDPFlows');
-    C.z_srcips   = mkZChart('c-z-srcips',   'Z·SrcIPs');
-    C.z_dstports = mkZChart('c-z-dstports', 'Z·DstPorts');
-    C.z_icmpecho = mkZChart('c-z-icmpecho', 'Z·ICMPEcho');
-
-    // Pies
-    C.protoPie     = mkPie('c-proto-pie',     ['TCP','UDP','ICMP'],              [COL_PURPLE, COL_ORANGE, COL_GREEN]);
-    C.flagsPie     = mkPie('c-flags-pie',     ['SYN','SYN-ACK','FIN-ACK','RST'],[COL_RED, COL_GREEN, COL_ORANGE, COL_PURPLE]);
-    C.directionPie = mkPie('c-direction-pie', ['Inbound','Outbound'],            [COL_RED, COL_BLUE]);
-}
-
-// ============================================================================
-// UPDATE HELPERS
-// ============================================================================
-
-/**
- * Push data into a dual chart.
- * ds[0] = raw values, ds[1] = EWMA mean values.
- * Both arrays must have the same length as labels.
- */
-function setDual(chart, labels, rawArr, emArr) {
-    if (!chart) return;
-    chart.data.labels           = labels;
-    chart.data.datasets[0].data = rawArr;
-    chart.data.datasets[1].data = emArr;
-    chart.update('none');
-}
-
-/**
- * Push data into a Z-score chart.
- * ds[0] = z-score series, ds[1-6] = threshold constants.
- */
-function setZ(chart, labels, zArr) {
-    if (!chart) return;
-    chart.data.labels           = labels;
-    chart.data.datasets[0].data = zArr;
-    [3, -3, 2, -2, 1, -1].forEach((v, i) => {
-        chart.data.datasets[i + 1].data = labels.map(() => v);
-    });
-    chart.update('none');
-}
-
-function setPie(chart, data) {
-    if (!chart) return;
-    chart.data.datasets[0].data = data;
-    chart.update('none');
-}
-
-// ============================================================================
-// ANOMALY BAR
-// ============================================================================
-function buildAnomalyBar() {
-    const bar = document.getElementById('anomaly-bar');
-    bar.innerHTML = '';
-    Z_FIELDS.forEach(f => {
-        const t = document.createElement('div');
-        t.className = 'anomaly-tile z-normal';
-        t.id        = `at-${f.key}`;
-        t.innerHTML = `<span class="tile-label">${f.label}</span><span class="tile-z" id="atz-${f.key}">0.00</span>`;
-        bar.appendChild(t);
-    });
-}
-
-function zCls(absZ) {
-    for (const t of Z_LEVELS) if (absZ >= t.min) return t.cls;
-    return 'z-normal';
-}
-
-function zCol(absZ) {
-    if (absZ >= 3) return cv('--z-critical');
-    if (absZ >= 2) return cv('--z-alert');
-    if (absZ >= 1) return cv('--z-warn');
-    return cv('--z-normal');
-}
-
-function refreshAnomalyBar(rec) {
-    Z_FIELDS.forEach(f => {
-        const z = rec[f.key] ?? 0;
-        const a = Math.abs(z);
-        const tile = document.getElementById(`at-${f.key}`);
-        const span = document.getElementById(`atz-${f.key}`);
-        if (!tile || !span) return;
-        tile.className   = `anomaly-tile ${zCls(a)}`;
-        span.style.color = zCol(a);
-        span.textContent = z.toFixed(2);
-    });
-}
-
-function setZBadge(id, z) {
-    const el = document.getElementById(id);
-    if (!el) return;
-    const a = Math.abs(z);
-    el.className   = `z-badge ${zCls(a)}`;
-    el.style.color = zCol(a);
-    el.textContent = z.toFixed(4);
-}
-
-// ============================================================================
-// IP SELECTOR
-// ============================================================================
-function updateIPSelector() {
-    fetch('/api/targets')
-        .then(r => r.json())
-        .then(targets => {
-            const sel = document.getElementById('ip-selector');
-            const cur = sel.value;
-            sel.innerHTML = '';
-            if (!targets.length) { sel.innerHTML = '<option value="">No IPs detected</option>'; return; }
-            targets.forEach(ip => {
-                const o = document.createElement('option');
-                o.value = ip; o.textContent = ip;
-                sel.appendChild(o);
-            });
-            if (cur && targets.includes(cur)) sel.value = cur;
-            else if (!currentIP && targets.length) { sel.value = targets[0]; currentIP = targets[0]; }
-        })
-        .catch(e => console.error('targets:', e));
-}
-
-function changeTarget() {
-    currentIP = document.getElementById('ip-selector').value;
-    document.getElementById('s-ip').textContent = currentIP || '—';
-    updateDashboard();
-}
-
-// ============================================================================
-// MAIN UPDATE
-// ============================================================================
-function updateDashboard() {
-    if (!currentIP) return;
-
-    fetch(`/api/stats/${currentIP}`)
-        .then(r => r.json())
-        .then(data => {
-            if (!data || !data.length) return;
-
-            const d   = data.slice(-MAX_PTS);
-            const lbl = d.map(r => new Date(r.timestamp).toLocaleTimeString());
-            const l   = d[d.length - 1];
-
-            // Status
-            document.getElementById('s-rec').textContent  = d.length;
-            document.getElementById('s-time').textContent = new Date().toLocaleTimeString();
-
-            // Value readouts
-            document.getElementById('val-bps').textContent      = fmtN(l.bps);
-            document.getElementById('val-pps').textContent      = fmtN(l.pps);
-            document.getElementById('val-fps').textContent      = fmtN(l.fps);
-            document.getElementById('val-burst').textContent    = l.burst_factor.toFixed(3);
-            document.getElementById('val-inbound').textContent  = fmtN(l.inbound_bits);
-            document.getElementById('val-outbound').textContent = fmtN(l.outbound_bits);
-            document.getElementById('val-tcp').textContent      = fmtR(l.tcp);
-            document.getElementById('val-udp').textContent      = fmtR(l.udp);
-            document.getElementById('val-icmp').textContent     = fmtR(l.icmp);
-            document.getElementById('val-syn').textContent      = fmtR(l.syn_pps);
-            document.getElementById('val-synack').textContent   = fmtR(l.synack_pps);
-            document.getElementById('val-finack').textContent   = fmtR(l.finack_pps);
-            document.getElementById('val-rst').textContent      = fmtR(l.rst_pps);
-            document.getElementById('val-udpflows').textContent = fmtN(l.udp_flows);
-            document.getElementById('val-srcips').textContent   = fmtN(l.unique_src_ips);
-            document.getElementById('val-dstports').textContent = fmtN(l.unique_dst_ports);
-            document.getElementById('val-icmpecho').textContent = fmtR(l.icmp_echo_rate);
-            document.getElementById('val-datapoints').textContent = d.length;
-
-            // Z-score badges
-            setZBadge('zb-bps',      l.z_bps);
-            setZBadge('zb-pps',      l.z_pps);
-            setZBadge('zb-fps',      l.z_fps);
-            setZBadge('zb-burst',    l.z_burst_factor);
-            setZBadge('zb-inbound',  l.z_inbound_bits);
-            setZBadge('zb-outbound', l.z_outbound_bits);
-            setZBadge('zb-tcp',      l.z_tcp);
-            setZBadge('zb-udp',      l.z_udp);
-            setZBadge('zb-icmp',     l.z_icmp);
-            setZBadge('zb-syn',      l.z_syn_pps);
-            setZBadge('zb-synack',   l.z_synack_pps);
-            setZBadge('zb-finack',   l.z_finack_pps);
-            setZBadge('zb-rst',      l.z_rst_pps);
-            setZBadge('zb-udpflows', l.z_udp_flows);
-            setZBadge('zb-srcips',   l.z_unique_src_ips);
-            setZBadge('zb-dstports', l.z_unique_dst_ports);
-            setZBadge('zb-icmpecho', l.z_icmp_echo_rate);
-
-            refreshAnomalyBar(l);
-
-            // ── Dual charts: raw (col 0) + EWMA mean (col 1) ────────────
-            // Both raw and em_ fields for ratio features are in [0,1],
-            // so we multiply both by 100 to land on the percent axis.
-
-            setDual(C.bps,      lbl, d.map(r=>r.bps),          d.map(r=>r.em_bps));
-            setDual(C.pps,      lbl, d.map(r=>r.pps),          d.map(r=>r.em_pps));
-            setDual(C.fps,      lbl, d.map(r=>r.fps),          d.map(r=>r.em_fps));
-            setDual(C.burst,    lbl, d.map(r=>r.burst_factor), d.map(r=>r.em_burst_factor));
-            setDual(C.inbound,  lbl, d.map(r=>r.inbound_bits), d.map(r=>r.em_inbound_bits));
-            setDual(C.outbound, lbl, d.map(r=>r.outbound_bits),d.map(r=>r.em_outbound_bits));
-
-            setDual(C.tcp,    lbl, d.map(r=>r.tcp*100),      d.map(r=>r.em_tcp*100));
-            setDual(C.udp,    lbl, d.map(r=>r.udp*100),      d.map(r=>r.em_udp*100));
-            setDual(C.icmp,   lbl, d.map(r=>r.icmp*100),     d.map(r=>r.em_icmp*100));
-
-            setDual(C.syn,    lbl, d.map(r=>r.syn_pps*100),    d.map(r=>r.em_syn_pps*100));
-            setDual(C.synack, lbl, d.map(r=>r.synack_pps*100), d.map(r=>r.em_synack_pps*100));
-            setDual(C.finack, lbl, d.map(r=>r.finack_pps*100), d.map(r=>r.em_finack_pps*100));
-            setDual(C.rst,    lbl, d.map(r=>r.rst_pps*100),    d.map(r=>r.em_rst_pps*100));
-
-            setDual(C.udpflows, lbl, d.map(r=>r.udp_flows),       d.map(r=>r.em_udp_flows));
-            setDual(C.srcips,   lbl, d.map(r=>r.unique_src_ips),  d.map(r=>r.em_unique_src_ips));
-            setDual(C.dstports, lbl, d.map(r=>r.unique_dst_ports),d.map(r=>r.em_unique_dst_ports));
-
-            setDual(C.icmpecho, lbl, d.map(r=>r.icmp_echo_rate*100), d.map(r=>r.em_icmp_echo_rate*100));
-
-            if (C.timeline) {
-                C.timeline.data.labels           = lbl;
-                C.timeline.data.datasets[0].data = d.map((_,i)=>i+1);
-                C.timeline.update('none');
+        async function refreshData() {
+            if (!currentTarget) {
+                await fetchTargets();
+                if (!currentTarget) return;
             }
 
-            // ── Z-score charts ───────────────────────────────────────────
-            setZ(C.z_bps,      lbl, d.map(r=>r.z_bps));
-            setZ(C.z_pps,      lbl, d.map(r=>r.z_pps));
-            setZ(C.z_fps,      lbl, d.map(r=>r.z_fps));
-            setZ(C.z_burst,    lbl, d.map(r=>r.z_burst_factor));
-            setZ(C.z_inbound,  lbl, d.map(r=>r.z_inbound_bits));
-            setZ(C.z_outbound, lbl, d.map(r=>r.z_outbound_bits));
-            setZ(C.z_tcp,      lbl, d.map(r=>r.z_tcp));
-            setZ(C.z_udp,      lbl, d.map(r=>r.z_udp));
-            setZ(C.z_icmp,     lbl, d.map(r=>r.z_icmp));
-            setZ(C.z_syn,      lbl, d.map(r=>r.z_syn_pps));
-            setZ(C.z_synack,   lbl, d.map(r=>r.z_synack_pps));
-            setZ(C.z_finack,   lbl, d.map(r=>r.z_finack_pps));
-            setZ(C.z_rst,      lbl, d.map(r=>r.z_rst_pps));
-            setZ(C.z_udpflows, lbl, d.map(r=>r.z_udp_flows));
-            setZ(C.z_srcips,   lbl, d.map(r=>r.z_unique_src_ips));
-            setZ(C.z_dstports, lbl, d.map(r=>r.z_unique_dst_ports));
-            setZ(C.z_icmpecho, lbl, d.map(r=>r.z_icmp_echo_rate));
+            try {
+                const response = await fetch(`${API_BASE}/stats/${currentTarget}`);
+                const data = await response.json();
+                if (!data || data.length === 0) return;
 
-            // ── Pies ─────────────────────────────────────────────────────
-            setPie(C.protoPie,     [l.tcp*l.pps, l.udp*l.pps, l.icmp*l.pps]);
-            setPie(C.flagsPie,     [l.syn_pps, l.synack_pps, l.finack_pps, l.rst_pps]);
-            setPie(C.directionPie, [l.inbound_bits, l.outbound_bits]);
-        })
-        .catch(e => console.error('dashboard update failed:', e));
-}
+                const latest = data[0];
+                updateHUD(latest);
+                updateCharts(data);
 
-// ============================================================================
-// FORMATTERS
-// ============================================================================
-function fmtN(n) {
-    n = Number(n);
-    if (n >= 1e9) return (n/1e9).toFixed(2)+'G';
-    if (n >= 1e6) return (n/1e6).toFixed(2)+'M';
-    if (n >= 1e3) return (n/1e3).toFixed(2)+'K';
-    return n.toFixed(0);
-}
+            } catch (error) {
+                console.error("Stats fetch failed", error);
+            }
+        }
 
-function fmtR(r) { return (r*100).toFixed(2)+'%'; }
+        function updateHUD(data) {
+            // Formatter for large numbers
+            const numFmt = new Intl.NumberFormat('en-US');
 
-// ============================================================================
-// BOOT
-// ============================================================================
-buildAnomalyBar();
-initCharts();
-updateIPSelector();
-setInterval(updateIPSelector, 5000);
-setInterval(updateDashboard,  REFRESH_MS);
-</script>
+            document.getElementById('hud_pps').textContent = numFmt.format(Math.round(data.pps));
+            document.getElementById('hud_bps').textContent = formatBytes(data.bps);
+            document.getElementById('hud_t0').textContent = (data.tier0_distance_norm || 0).toFixed(4);
+            document.getElementById('hud_flows').textContent = numFmt.format(Math.round(data.fps));
+
+            // Update Badge Color based on state
+            const statusEl = document.getElementById('detectionStatus');
+            const state = data.detection_state || "UNKNOWN";
+            statusEl.textContent = state;
+
+            // Remove old color classes
+            statusEl.classList.remove('bg-secondary', 'bg-success', 'bg-warning', 'bg-danger');
+
+            if (state === 'NORMAL' || state === 'LEARNING') {
+                statusEl.classList.add('bg-success');
+            } else if (state === 'SUSPICIOUS') {
+                statusEl.classList.add('bg-warning', 'text-dark');
+            } else {
+                statusEl.classList.add('bg-danger');
+            }
+        }
+
+        function formatBytes(bits) {
+            if (bits === 0) return '0';
+            const k = 1000;
+            const sizes = ['b', 'Kb', 'Mb', 'Gb'];
+            const i = Math.floor(Math.log(bits) / Math.log(k));
+            return parseFloat((bits / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        }
+
+        function updateCharts(data) {
+            const labels = data.map(d => new Date(d.timestamp));
+
+            const allMetrics = [
+                ...METRIC_GROUPS.anomaly,
+                ...METRIC_GROUPS.volumetrics,
+                ...METRIC_GROUPS.vectors
+            ];
+
+            allMetrics.forEach(metric => {
+                const ctx = document.getElementById(`chart_${metric.key}`);
+                if (!ctx) return;
+
+                const rawData = data.map(d => d[metric.key]);
+                const ewmaData = metric.ewma ? data.map(d => d[metric.ewma]) : [];
+
+                if (charts[metric.key]) {
+                    const chart = charts[metric.key];
+                    chart.data.labels = labels;
+                    chart.data.datasets[0].data = rawData;
+                    if (ewmaData.length > 0 && chart.data.datasets[1]) {
+                        chart.data.datasets[1].data = ewmaData;
+                    }
+                    chart.update('none'); // No animation for performance
+                } else {
+                    // Initialize Chart
+                    const datasets = [{
+                        label: 'Current',
+                        data: rawData,
+                        borderColor: metric.color,
+                        backgroundColor: metric.color + '20', // Add transparency for fill
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 0
+                    }];
+
+                    if (metric.ewma) {
+                        datasets.push({
+                            label: 'Baseline',
+                            data: ewmaData,
+                            borderColor: '#adb5bd', // Bootstrap Gray-500
+                            borderWidth: 1,
+                            borderDash: [5, 5],
+                            pointRadius: 0,
+                            fill: false
+                        });
+                    }
+
+                    charts[metric.key] = new Chart(ctx, {
+                        type: 'line',
+                        data: { labels, datasets },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            animation: false,
+                            interaction: { mode: 'index', intersect: false },
+                            plugins: {
+                                legend: { display: false }, // Clean look
+                                tooltip: {
+                                    mode: 'index',
+                                    intersect: false
+                                }
+                            },
+                            scales: {
+                                x: {
+                                    type: 'time',
+                                    time: { unit: 'second' },
+                                    grid: { display: false },
+                                    ticks: { display: false }
+                                },
+                                y: {
+                                    beginAtZero: true,
+                                    grid: {
+                                        color: '#495057' // Darker grid lines for dark mode
+                                    },
+                                    ticks: {
+                                        color: '#adb5bd', // Lighter text for dark mode
+                                        font: { size: 10 }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+        }
+
+        // Start
+        init();
+
+    </script>
 </body>
+
 </html>

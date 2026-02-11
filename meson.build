@@ -15,6 +15,7 @@ add_project_arguments('-march=native', '-O3', '-funroll-loops', language: 'c')
 src = [
   'main.c',
   'l2fwd_ddos_collector.c',
+  'l2fwd_detection_engine.c',
   ]
 
 executable('l2fwd',

@@ -12,12 +12,13 @@ import shared_state
 #  17  raw features
 #  17  EWMA mean values (prefixed em_)
 #  17  EWMA Z-scores    (prefixed z_)
-EXPECTED_CSV_FIELDS = 54
+#   3  detection fields (detection_state, tier0_distance_norm, tier1_distance_norm)
+EXPECTED_CSV_FIELDS = 57
 
 
 def parse_csv_line(line):
     """
-    Parse a CSV line into a dictionary with all 54 fields.
+    Parse a CSV line into a dictionary with all 57 fields (54 original + 3 detection).
 
     Column order (mirrors ddos_log_and_reset_stats in l2fwd_ddos_collector.c):
 
@@ -78,6 +79,10 @@ def parse_csv_line(line):
       51 z_unique_src_ips
       52 z_unique_dst_ports
       53 z_icmp_echo_rate
+      --- 3 detection fields ---
+      54 detection_state
+      55 tier0_distance_norm
+      56 tier1_distance_norm
     """
     try:
         parts = line.strip().split(',')
@@ -149,6 +154,11 @@ def parse_csv_line(line):
             'z_unique_src_ips':     float(parts[51]),
             'z_unique_dst_ports':   float(parts[52]),
             'z_icmp_echo_rate':     float(parts[53]),
+
+            # ── detection fields ──────────────────────────────────────────
+            'detection_state':      parts[54],
+            'tier0_distance_norm':  float(parts[55]),
+            'tier1_distance_norm':  float(parts[56]),
         }
 
         return data
@@ -210,6 +220,14 @@ def dpdk_collector_thread():
                         record = parse_csv_line(line)
 
                         if record:
+                            # Print detection alerts to console
+                            if record['detection_state'] in ['SUSPICIOUS', 'ATTACK']:
+                                # print(f"\n[ALERT] {record['detection_state']} detected for IP {record['dst_ip']}")
+                                # print(f"        Tier-0 distance: {record['tier0_distance_norm']:.4f}")
+                                if record['tier1_distance_norm'] > 0:
+                                    print(f"        Tier-1 distance: {record['tier1_distance_norm']:.4f}")
+                                print()
+
                             # 1. UPDATE SHARED MEMORY (for real-time dashboard)
                             with shared_state.data_lock:
                                 shared_state.latest_traffic_data.insert(0, record)

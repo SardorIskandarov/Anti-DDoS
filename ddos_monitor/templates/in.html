@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DDoS Detection Dashboard</title>
+    
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/moment@2.29.1/moment.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@1.0.0/dist/chartjs-adapter-moment.min.js"></script>
+
+    <style>
+        body {
+            background-color: #121212;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        .navbar {
+            background-color: #1f1f1f;
+            border-bottom: 1px solid #333;
+        }
+        .card {
+            background-color: #1e1e1e;
+            border: 1px solid #333;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        .card-header {
+            background-color: #252525;
+            border-bottom: 1px solid #333;
+            font-weight: 600;
+            font-size: 0.9rem;
+            color: #aaa;
+        }
+        .status-indicator {
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        .status-normal { background-color: #198754; color: white; }
+        .status-suspicious { background-color: #ffc107; color: black; }
+        .status-attack { background-color: #dc3545; color: white; }
+        
+        canvas {
+            max-height: 250px;
+        }
+        
+        select.form-select {
+            background-color: #2c2c2c;
+            color: white;
+            border: 1px solid #444;
+        }
+    </style>
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg navbar-dark mb-4">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="#">
+            <span style="color: #0d6efd;">🛡️</span> DPDK DDoS Sentinel
+        </a>
+        <div class="d-flex align-items-center">
+            <label class="me-2 text-muted">Target IP:</label>
+            <select id="targetSelect" class="form-select form-select-sm" style="width: 200px;">
+                <option value="" disabled selected>Loading targets...</option>
+            </select>
+        </div>
+    </div>
+</nav>
+
+<div class="container-fluid">
+    <div class="row mb-3">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-body d-flex justify-content-between align-items-center">
+                    <div>
+                        <h5 class="card-title mb-0 ">Live Traffic Monitor</h5>
+                        <small class="text-muted" id="lastUpdated">Waiting for data...</small>
+                    </div>
+                    <div id="detectionStatus" class="status-indicator status-normal">
+                        waiting...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="chartsContainer" class="row">
+        </div>
+</div>
+
+<script>
+    // ---------------------------------------------------------
+    // Configuration
+    // ---------------------------------------------------------
+    const API_BASE = '/api';
+    let currentTarget = null;
+    let charts = {}; // Store Chart.js instances
+    let updateInterval = null;
+
+    // Mapping Raw Features to their EWMA Baseline counterparts
+    const METRICS = [
+        { label: 'Packets Per Second', key: 'pps', ewma: 'em_pps', color: '#0d6efd' }, // Blue
+        { label: 'Bits Per Second', key: 'bps', ewma: 'em_bps', color: '#6610f2' },   // Purple
+        { label: 'Flows Per Second', key: 'fps', ewma: 'em_fps', color: '#d63384' },   // Pink
+        { label: 'Burst Factor', key: 'burst_factor', ewma: 'em_burst_factor', color: '#fd7e14' }, // Orange
+        
+        // Traffic Volume
+        { label: 'Inbound Bits', key: 'inbound_bits', ewma: 'em_inbound_bits', color: '#0dcaf0' },
+        { label: 'Outbound Bits', key: 'outbound_bits', ewma: 'em_outbound_bits', color: '#20c997' },
+        
+        // Protocol Breakdown
+        { label: 'UDP Ratio', key: 'udp', ewma: 'em_udp', color: '#ffc107' },
+        { label: 'TCP Ratio', key: 'tcp', ewma: 'em_tcp', color: '#198754' },
+        { label: 'ICMP Ratio', key: 'icmp', ewma: 'em_icmp', color: '#adb5bd' },
+        
+        // TCP Flags (Attack Vectors)
+        { label: 'SYN PPS', key: 'syn_pps', ewma: 'em_syn_pps', color: '#dc3545' }, // Red (Danger)
+        { label: 'SYN-ACK PPS', key: 'synack_pps', ewma: 'em_synack_pps', color: '#e83e8c' },
+        { label: 'FIN-ACK PPS', key: 'finack_pps', ewma: 'em_finack_pps', color: '#6f42c1' },
+        { label: 'RST PPS', key: 'rst_pps', ewma: 'em_rst_pps', color: '#fd7e14' },
+        
+        // Flow & Identity
+        { label: 'UDP Flows', key: 'udp_flows', ewma: 'em_udp_flows', color: '#0d6efd' },
+        { label: 'Unique Src IPs', key: 'unique_src_ips', ewma: 'em_unique_src_ips', color: '#20c997' },
+        { label: 'Unique Dst Ports', key: 'unique_dst_ports', ewma: 'em_unique_dst_ports', color: '#ffc107' },
+        { label: 'ICMP Echo Rate', key: 'icmp_echo_rate', ewma: 'em_icmp_echo_rate', color: '#adb5bd' }
+    ];
+
+    // ---------------------------------------------------------
+    // Initialization
+    // ---------------------------------------------------------
+    async function init() {
+        createChartPlaceholders();
+        await fetchTargets();
+        
+        // Auto-refresh loop (1 second)
+        setInterval(refreshData, 1000);
+    }
+
+    // 1. Create HTML containers for all charts
+    function createChartPlaceholders() {
+        const container = document.getElementById('chartsContainer');
+        container.innerHTML = '';
+
+        METRICS.forEach((metric, index) => {
+            const colDiv = document.createElement('div');
+            colDiv.className = 'col-md-6 col-lg-4 col-xl-3'; // Responsive grid
+            
+            const cardHtml = `
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between">
+                        <span>${metric.label}</span>
+                        <small class="text-muted" style="font-size: 0.7em">Raw vs EWMA</small>
+                    </div>
+                    <div class="card-body p-2">
+                        <canvas id="chart_${metric.key}"></canvas>
+                    </div>
+                </div>
+            `;
+            colDiv.innerHTML = cardHtml;
+            container.appendChild(colDiv);
+        });
+    }
+
+    // 2. Fetch Active IPs for Dropdown
+    async function fetchTargets() {
+        try {
+            const response = await fetch(`${API_BASE}/targets`);
+            const targets = await response.json();
+            const select = document.getElementById('targetSelect');
+            
+            select.innerHTML = '';
+            
+            if (targets.length === 0) {
+                const opt = document.createElement('option');
+                opt.text = "No active traffic";
+                select.add(opt);
+                return;
+            }
+
+            targets.forEach(ip => {
+                const opt = document.createElement('option');
+                opt.value = ip;
+                opt.text = ip;
+                select.add(opt);
+            });
+
+            // Automatically select the first one if not set
+            if (!currentTarget && targets.length > 0) {
+                currentTarget = targets[0];
+                select.value = currentTarget;
+            }
+        } catch (error) {
+            console.error("Error fetching targets:", error);
+        }
+    }
+
+    // Handle Dropdown Change
+    document.getElementById('targetSelect').addEventListener('change', (e) => {
+        currentTarget = e.target.value;
+        // Clear existing charts to prevent visual glitches when switching
+        Object.values(charts).forEach(c => c.destroy());
+        charts = {};
+        refreshData();
+    });
+
+    // ---------------------------------------------------------
+    // Data Fetching & Chart Rendering
+    // ---------------------------------------------------------
+    async function refreshData() {
+        if (!currentTarget) {
+            // Try to fetch targets again if we have none
+            await fetchTargets();
+            if (!currentTarget) return;
+        }
+
+        try {
+            const response = await fetch(`${API_BASE}/stats/${currentTarget}`);
+            const data = await response.json();
+
+            if (!data || data.length === 0) return;
+
+            updateStatus(data[data.length - 1]); // Update status based on latest record
+            updateCharts(data);
+
+        } catch (error) {
+            console.error("Error fetching stats:", error);
+        }
+    }
+
+    function updateStatus(latestRecord) {
+        const statusDiv = document.getElementById('detectionStatus');
+        const lastUpdated = document.getElementById('lastUpdated');
+        
+        // Timestamp
+        if(latestRecord.timestamp) {
+            // Handle parsing depending on if backend sends ISO string or timestamp
+             const date = new Date(latestRecord.timestamp); 
+             lastUpdated.textContent = "Last update: " + date.toLocaleTimeString();
+        }
+
+        // Detection State
+        const state = latestRecord.detection_state || "UNKNOWN";
+        statusDiv.textContent = state;
+        statusDiv.className = 'status-indicator'; // reset
+
+        if (state === 'NORMAL' || state === 'LEARNING') {
+            statusDiv.classList.add('status-normal');
+        } else if (state === 'SUSPICIOUS') {
+            statusDiv.classList.add('status-suspicious');
+        } else {
+            statusDiv.classList.add('status-attack');
+        }
+    }
+
+    function updateCharts(data) {
+        // Extract timestamps once
+        const labels = data.map(d => new Date(d.timestamp));
+
+        METRICS.forEach(metric => {
+            const ctx = document.getElementById(`chart_${metric.key}`).getContext('2d');
+            
+            const rawData = data.map(d => d[metric.key]);
+            const ewmaData = data.map(d => d[metric.ewma]);
+
+            if (charts[metric.key]) {
+                // Update existing chart
+                const chart = charts[metric.key];
+                chart.data.labels = labels;
+                chart.data.datasets[0].data = rawData;
+                chart.data.datasets[1].data = ewmaData;
+                chart.update('none'); // 'none' mode for performance
+            } else {
+                // Create new chart
+                charts[metric.key] = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            {
+                                label: 'Real-time',
+                                data: rawData,
+                                borderColor: metric.color,
+                                backgroundColor: metric.color, // For legend
+                                borderWidth: 1.5,
+                                tension: 0.3,
+                                pointRadius: 0 // Hide points for cleaner look
+                            },
+                            {
+                                label: 'Baseline (EWMA)',
+                                data: ewmaData,
+                                borderColor: '#6c757d', // Grey for baseline
+                                borderWidth: 1,
+                                borderDash: [5, 5], // Dashed line
+                                pointRadius: 0,
+                                tension: 0.3
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        animation: false, // Disable animation for real-time feel
+                        interaction: {
+                            mode: 'index',
+                            intersect: false,
+                        },
+                        plugins: {
+                            legend: {
+                                display: false // Save space, label is in header
+                            },
+                            tooltip: {
+                                enabled: true
+                            }
+                        },
+                        scales: {
+                            x: {
+                                type: 'time',
+                                time: {
+                                    unit: 'second',
+                                    displayFormats: {
+                                        second: 'HH:mm:ss'
+                                    }
+                                },
+                                ticks: {
+                                    display: false // Hide X axis labels to save space
+                                },
+                                grid: {
+                                    display: false,
+                                    color: '#333'
+                                }
+                            },
+                            y: {
+                                beginAtZero: true,
+                                grid: {
+                                    color: '#333'
+                                },
+                                ticks: {
+                                    color: '#888',
+                                    font: { size: 10 }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    // Run
+    init();
+
+</script>
+</body>
+</html>

@@ -4,6 +4,9 @@
 #include <stdint.h>
 #include <rte_mbuf.h>
 
+// Forward declaration to avoid circular dependency
+struct detection_engine;
+
 // Time period over which statistics are collected (1 second)
 #define STATS_PERIOD_US 1000000ULL
 
@@ -247,6 +250,11 @@ struct dst_ip_stats {
     /* read them without recomputing.                                      */
     /* ------------------------------------------------------------------ */
     struct zscore_snapshot zscore;
+
+    /* ------------------------------------------------------------------ */
+    /* Detection engine — behavioral anomaly detection                     */
+    /* ------------------------------------------------------------------ */
+    struct detection_engine *detection;
 
     /* Active flag */
     uint8_t active;

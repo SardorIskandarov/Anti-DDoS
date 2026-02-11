@@ -20,11 +20,12 @@ def get_db_client():
     # -------------------------------------------------------------------------
     # Create Table
     #
-    # Schema mirrors the 54-field CSV produced by l2fwd_ddos_collector.c:
+    # Schema mirrors the 57-field CSV produced by l2fwd_ddos_collector.c:
     #   - 3  header fields
     #   - 17 raw traffic features
     #   - 17 EWMA mean values      (prefixed em_)
     #   - 17 EWMA Z-score features (prefixed z_)
+    #   - 3  detection engine fields
     # -------------------------------------------------------------------------
     create_table_query = f"""
     CREATE TABLE IF NOT EXISTS {config.CH_DB}.{config.CH_TABLE} (
@@ -93,7 +94,15 @@ def get_db_client():
         z_udp_flows         Float64,
         z_unique_src_ips    Float64,
         z_unique_dst_ports  Float64,
-        z_icmp_echo_rate    Float64
+        z_icmp_echo_rate    Float64,
+
+        -- Detection engine fields
+        -- detection_state: WARMUP, NORMAL, SUSPICIOUS, ATTACK, RECOVERING
+        -- tier0_distance_norm: Normalized Manhattan distance for Tier-0 features [0, 1]
+        -- tier1_distance_norm: Normalized Manhattan distance for Tier-1 features [0, 1]
+        detection_state     String,
+        tier0_distance_norm Float64,
+        tier1_distance_norm Float64
     ) ENGINE = MergeTree()
     PARTITION BY toYYYYMMDD(timestamp)
     ORDER BY (dst_ip, timestamp)

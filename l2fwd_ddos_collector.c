@@ -1,4 +1,5 @@
 #include "l2fwd_ddos_collector.h"
+#include "l2fwd_detection_engine.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -217,6 +218,17 @@ struct dst_ip_stats *dst_ip_table_get_or_create(struct dst_ip_table *table,
              * ewma_state.n == 0 triggers the cold-start seed on first update.
              */
 
+            // *** INITIALIZE DETECTION ENGINE ***
+            entry->detection = (struct detection_engine *)malloc(sizeof(struct detection_engine));
+            if (entry->detection) {
+                detection_engine_init(entry->detection, timestamp);
+                printf("[Detection] Engine initialized for IP: %u.%u.%u.%u\n",
+                       (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF,
+                       (dst_ip >> 8) & 0xFF, dst_ip & 0xFF);
+            } else {
+                printf("[Detection] ERROR: Failed to allocate detection engine\n");
+            }
+
             return entry;
         }
 
@@ -370,11 +382,11 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
 
         hll_add(&dst_stats->unique_dst_ports, &tcp_dst_port, sizeof(tcp_dst_port));
 
-        if (tcp_flags & RTE_TCP_SYN_FLAG) {
+        if (tcp_flags & RTE_TCP_SYN_FLAG && !(tcp_flags & RTE_TCP_ACK_FLAG)) {
             dst_stats->syn_pkts++;
-            if (tcp_flags & RTE_TCP_ACK_FLAG)
-                dst_stats->syn_ack_pkts++;
         }
+        if (tcp_flags & RTE_TCP_ACK_FLAG && tcp_flags & RTE_TCP_SYN_FLAG) 
+                dst_stats->syn_ack_pkts++;
         if (tcp_flags & RTE_TCP_FIN_FLAG) {
             if (tcp_flags & RTE_TCP_ACK_FLAG)
                 dst_stats->fin_ack_pkts++;
@@ -402,41 +414,33 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
 }
 
 // ============================================================================
-// STATISTICS LOGGING AND EXPORT
+// STATISTICS LOGGING AND EXPORT WITH DETECTION ENGINE
 // ============================================================================
 
 /**
- * Main logging and statistics export function.
+ * Main logging and statistics export function with detection engine integration.
  * Only exports statistics for port 0.
  *
  * For every active destination IP the function:
  *   1. Computes the 17 traffic features for the current 1-second window.
  *   2. Updates the per-feature EWMA baseline (mean + variance).
  *   3. Derives a Z-score for each feature using the updated baseline.
- *   4. Emits a CSV line containing raw features AND their Z-scores.
- *   5. Resets the per-window counters and HLL estimators.
+ *   4. **RUNS DETECTION ENGINE** to get behavioral anomaly detection result.
+ *   5. Emits a CSV line containing raw features, Z-scores, AND detection state.
+ *   6. Resets the per-window counters and HLL estimators.
  *
- * CSV column order:
- *   timestamp, port, dst_ip,
- *   pps, bps, fps, burst_factor, inbound_bits, outbound_bits,
- *   udp, tcp, icmp,
- *   syn_ratio, synack_ratio, finack_ratio, rst_ratio,
- *   udp_flows, unique_src_ips, unique_dst_ports, icmp_echo_rate,
- *   z_pps, z_bps, z_fps, z_burst_factor, z_inbound_bits, z_outbound_bits,
- *   z_udp, z_tcp, z_icmp,
- *   z_syn_ratio, z_synack_ratio, z_finack_ratio, z_rst_ratio,
- *   z_udp_flows, z_unique_src_ips, z_unique_dst_ports, z_icmp_echo_rate
+ * CSV format now includes detection fields:
+ *   ...(existing 54 fields)..., detection_state, tier0_dist_norm, tier1_dist_norm
  */
 void ddos_log_and_reset_stats(void) {
     struct timespec ts;
     long long  timestamp_ms;
 
     /*
-     * Buffer sized for 3 header + 17 raw + 17 EWMA-mean + 17 Z-score fields
-     * plus the IP string and formatting overhead.
-     * 54 fields × ~12 chars each + separators ≈ 700 bytes; 1024 is safe.
+     * Buffer sized for extended CSV with detection fields:
+     * 54 original fields + 3 detection fields = 57 fields
      */
-    char buffer[1024];
+    char buffer[1280];
     int  len;
 
     check_and_connect_socket();
@@ -456,9 +460,9 @@ void ddos_log_and_reset_stats(void) {
 
         double time_sec = (double)STATS_PERIOD_US / 1000000.0;
 
-        // ----------------------------------------------------------------
+        // ================================================================
         // STEP 1: COMPUTE RAW FEATURES
-        // ----------------------------------------------------------------
+        // ================================================================
 
         /* pps — packets per second */
         double pps = (double)stats->total_pkts / time_sec;
@@ -500,15 +504,9 @@ void ddos_log_and_reset_stats(void) {
             ? (double)stats->icmp_echo_pkts / (double)stats->icmp_pkts
             : 0.0;
 
-        // ----------------------------------------------------------------
+        // ================================================================
         // STEP 2: UPDATE EWMA BASELINES AND DERIVE Z-SCORES
-        //
-        // ewma_update_and_zscore() first incorporates x into the EWMA
-        // model, then returns how many standard deviations x sits from
-        // the newly-updated mean.  During the warm-up phase
-        // (ewma_state.n < EWMA_WARMUP_PERIODS) the helper returns 0.0
-        // so early anomaly scores stay quiet while the model stabilises.
-        // ----------------------------------------------------------------
+        // ================================================================
 
         double z_pps         = ewma_update_and_zscore(&stats->ewma.pps,         pps);
         double z_bps         = ewma_update_and_zscore(&stats->ewma.bps,         bps);
@@ -547,16 +545,9 @@ void ddos_log_and_reset_stats(void) {
         stats->zscore.unique_dst_ports= z_dst_ports;
         stats->zscore.icmp_echo_rate  = z_icmp_echo;
 
-        // ----------------------------------------------------------------
-        // STEP 2b: CAPTURE EWMA MEAN (moving-average baseline) VALUES
-        //
-        // ewma_update() has already run for every feature above, so
-        // ewma_state.mean now holds the post-update exponentially-smoothed
-        // average.  We copy each mean into a local variable for use in
-        // the snprintf call below, and also persist it in the snapshot
-        // struct so other in-process consumers can read the current
-        // baseline without touching the ewma_state directly.
-        // ----------------------------------------------------------------
+        // ================================================================
+        // STEP 2b: CAPTURE EWMA MEAN VALUES
+        // ================================================================
 
         double em_pps        = stats->ewma.pps.mean;
         double em_bps        = stats->ewma.bps.mean;
@@ -595,9 +586,21 @@ void ddos_log_and_reset_stats(void) {
         stats->ewma_mean.unique_dst_ports= em_dst_ports;
         stats->ewma_mean.icmp_echo_rate  = em_icmp_echo;
 
-        // ----------------------------------------------------------------
-        // STEP 3: FORMAT AND EMIT CSV LINE
-        // ----------------------------------------------------------------
+        // ================================================================
+        // STEP 3: RUN DETECTION ENGINE
+        // ================================================================
+        
+        struct detection_result detection_result;
+        memset(&detection_result, 0, sizeof(detection_result));
+        
+        if (stats->detection != NULL) {
+            detection_result = detection_engine_process(stats->detection, stats,
+                                                         rte_get_timer_cycles());
+        }
+
+        // ================================================================
+        // STEP 4: FORMAT AND EMIT CSV LINE WITH DETECTION DATA
+        // ================================================================
 
         /* Convert dst_ip to dotted-decimal string */
         struct in_addr addr;
@@ -606,30 +609,12 @@ void ddos_log_and_reset_stats(void) {
         inet_ntop(AF_INET, &addr, dst_ip_str, INET_ADDRSTRLEN);
 
         /*
-         * CSV format (54 data columns total):
+         * CSV format (57 data columns total):
          *   timestamp, port, dst_ip,
-         *
-         *   --- 17 raw features ---
-         *   pps, bps, fps, burst_factor, inbound_bits, outbound_bits,
-         *   udp, tcp, icmp,
-         *   syn_ratio, synack_ratio, finack_ratio, rst_ratio,
-         *   udp_flows, unique_src_ips, unique_dst_ports, icmp_echo_rate,
-         *
-         *   --- 17 EWMA mean values (prefixed "em_") ---
-         *   em_pps, em_bps, em_fps, em_burst_factor,
-         *   em_inbound_bits, em_outbound_bits,
-         *   em_udp, em_tcp, em_icmp,
-         *   em_syn_ratio, em_synack_ratio, em_finack_ratio, em_rst_ratio,
-         *   em_udp_flows, em_unique_src_ips, em_unique_dst_ports,
-         *   em_icmp_echo_rate,
-         *
-         *   --- 17 Z-scores (prefixed "z_") ---
-         *   z_pps, z_bps, z_fps, z_burst_factor,
-         *   z_inbound_bits, z_outbound_bits,
-         *   z_udp, z_tcp, z_icmp,
-         *   z_syn_ratio, z_synack_ratio, z_finack_ratio, z_rst_ratio,
-         *   z_udp_flows, z_unique_src_ips, z_unique_dst_ports,
-         *   z_icmp_echo_rate
+         *   ... 17 raw features ...
+         *   ... 17 EWMA mean values ...
+         *   ... 17 Z-scores ...
+         *   detection_state, tier0_distance_norm, tier1_distance_norm
          */
         len = snprintf(buffer, sizeof(buffer),
             /* header */
@@ -648,7 +633,9 @@ void ddos_log_and_reset_stats(void) {
             "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
             "%.4f,%.4f,%.4f,"
             "%.4f,%.4f,%.4f,%.4f,"
-            "%.4f,%.4f,%.4f,%.4f\n",
+            "%.4f,%.4f,%.4f,%.4f,"
+            /* detection fields */
+            "%s,%.4f,%.4f\n",
             /* header */
             timestamp_ms, portid, dst_ip_str,
             /* raw features */
@@ -665,7 +652,11 @@ void ddos_log_and_reset_stats(void) {
             z_pps, z_bps, z_fps, z_burst, z_inbound, z_outbound,
             z_udp, z_tcp, z_icmp,
             z_syn, z_synack, z_finack, z_rst,
-            z_udp_flows, z_src_ips, z_dst_ports, z_icmp_echo);
+            z_udp_flows, z_src_ips, z_dst_ports, z_icmp_echo,
+            /* detection fields */
+            detection_state_str(detection_result.state),
+            detection_result.tier0_distance_normalized,
+            detection_result.tier1_distance_normalized);
 
         /* Send to Python receiver */
         if (sock_fd >= 0) {
@@ -676,9 +667,9 @@ void ddos_log_and_reset_stats(void) {
             }
         }
 
-        // ----------------------------------------------------------------
-        // STEP 4: UPDATE BURST WINDOW (circular buffer) AND RESET COUNTERS
-        // ----------------------------------------------------------------
+        // ================================================================
+        // STEP 5: UPDATE BURST WINDOW AND RESET COUNTERS
+        // ================================================================
 
         stats->burst_window_total -= stats->burst_window_pkts[stats->burst_window_index];
         stats->burst_window_pkts[stats->burst_window_index] = stats->total_pkts;
@@ -708,6 +699,9 @@ void ddos_log_and_reset_stats(void) {
          * NOTE: EWMA states (stats->ewma) are intentionally NOT reset here.
          * They accumulate across periods to build up the long-running
          * baseline model for each destination IP.
+         * 
+         * NOTE: Detection engine state is also NOT reset - it maintains
+         * its learning history and state across windows.
          */
     }
 }
