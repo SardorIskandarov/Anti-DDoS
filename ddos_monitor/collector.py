@@ -7,171 +7,189 @@ import database
 import shared_state
 
 
-# CSV column count produced by l2fwd_ddos_collector.c:
-#   3  header fields   (timestamp, port, dst_ip)
-#  17  raw features
-#  17  EWMA mean values (prefixed em_)
-#  17  EWMA Z-scores    (prefixed z_)
-#   3  detection fields (detection_state, tier0_distance_norm, tier1_distance_norm)
-EXPECTED_CSV_FIELDS = 57
+# ============================================================================
+# CSV SCHEMA  (52 columns total)
+# ============================================================================
+#
+#  Header (3):
+#    0  timestamp_ms
+#    1  port
+#    2  dst_ip
+#
+#  Tier 0 raw features (6):
+#    3  pps
+#    4  bps
+#    5  fps
+#    6  burst_pps
+#    7  burst_bps
+#    8  burst_fps
+#
+#  Tier 1.1 TCP raw features (7):
+#    9  tcp_syn_ratio
+#   10  tcp_synack_ratio
+#   11  tcp_finack_ratio
+#   12  tcp_rst_ratio
+#   13  tcp_ack_data_ratio
+#   14  tcp_pps_ratio
+#   15  tcp_bps_ratio
+#
+#  Tier 1.2 UDP raw features (3):
+#   16  udp_bps_ratio
+#   17  udp_pps_ratio
+#   18  udp_flow_ratio
+#
+#  Tier 1.3 ICMP raw features (2):
+#   19  icmp_echo_ratio
+#   20  icmp_pps_ratio
+#
+#  Tier 1.4 Distribution raw features (2):
+#   21  src_ip_ratio
+#   22  dst_port_ratio
+#
+#  Tier 0 EWMA means (6):
+#   23  em_pps
+#   24  em_bps
+#   25  em_fps
+#   26  em_burst_pps
+#   27  em_burst_bps
+#   28  em_burst_fps
+#
+#  Tier 1.1 EWMA means (7):
+#   29  em_tcp_syn_ratio
+#   30  em_tcp_synack_ratio
+#   31  em_tcp_finack_ratio
+#   32  em_tcp_rst_ratio
+#   33  em_tcp_ack_data_ratio
+#   34  em_tcp_pps_ratio
+#   35  em_tcp_bps_ratio
+#
+#  Tier 1.2 EWMA means (3):
+#   36  em_udp_bps_ratio
+#   37  em_udp_pps_ratio
+#   38  em_udp_flow_ratio
+#
+#  Tier 1.3 EWMA means (2):
+#   39  em_icmp_echo_ratio
+#   40  em_icmp_pps_ratio
+#
+#  Tier 1.4 EWMA means (2):
+#   41  em_src_ip_ratio
+#   42  em_dst_port_ratio
+#
+#  Detection fields (9):
+#   43  detection_state         (string: WARMUP|NORMAL|SUSPICIOUS|ATTACK|RECOVERING)
+#   44  tier0_score             (float [0,1])
+#   45  tier1_tcp_score         (float [0,1])
+#   46  tier1_udp_score         (float [0,1])
+#   47  tier1_icmp_score        (float [0,1])
+#   48  tier1_dist_score        (float [0,1])
+#   49  tier1_final_score       (float [0,1], worst-case across sub-tiers)
+#   50  tier1_evaluated         (int 0|1)
+#   51  warmup_remaining        (int, windows left in warm-up phase)
+
+EXPECTED_CSV_FIELDS = 52
 
 
 def parse_csv_line(line):
-    """
-    Parse a CSV line into a dictionary with all 57 fields (54 original + 3 detection).
-
-    Column order (mirrors ddos_log_and_reset_stats in l2fwd_ddos_collector.c):
-
-      0  timestamp
-      1  port
-      2  dst_ip
-      --- 17 raw features ---
-      3  pps
-      4  bps
-      5  fps
-      6  burst_factor
-      7  inbound_bits
-      8  outbound_bits
-      9  udp
-      10 tcp
-      11 icmp
-      12 syn_pps
-      13 synack_pps
-      14 finack_pps
-      15 rst_pps
-      16 udp_flows
-      17 unique_src_ips
-      18 unique_dst_ports
-      19 icmp_echo_rate
-      --- 17 EWMA mean values (prefixed em_) ---
-      20 em_pps
-      21 em_bps
-      22 em_fps
-      23 em_burst_factor
-      24 em_inbound_bits
-      25 em_outbound_bits
-      26 em_udp
-      27 em_tcp
-      28 em_icmp
-      29 em_syn_pps
-      30 em_synack_pps
-      31 em_finack_pps
-      32 em_rst_pps
-      33 em_udp_flows
-      34 em_unique_src_ips
-      35 em_unique_dst_ports
-      36 em_icmp_echo_rate
-      --- 17 EWMA Z-scores (prefixed z_) ---
-      37 z_pps
-      38 z_bps
-      39 z_fps
-      40 z_burst_factor
-      41 z_inbound_bits
-      42 z_outbound_bits
-      43 z_udp
-      44 z_tcp
-      45 z_icmp
-      46 z_syn_pps
-      47 z_synack_pps
-      48 z_finack_pps
-      49 z_rst_pps
-      50 z_udp_flows
-      51 z_unique_src_ips
-      52 z_unique_dst_ports
-      53 z_icmp_echo_rate
-      --- 3 detection fields ---
-      54 detection_state
-      55 tier0_distance_norm
-      56 tier1_distance_norm
-    """
+    """Parse one CSV line emitted by ddos_log_and_reset_stats()."""
     try:
         parts = line.strip().split(',')
 
         if len(parts) != EXPECTED_CSV_FIELDS:
-            print(f"[Collector] Invalid CSV format: expected {EXPECTED_CSV_FIELDS} fields, "
+            print(f"[Collector] Bad CSV: expected {EXPECTED_CSV_FIELDS} fields, "
                   f"got {len(parts)}")
             return None
 
-        data = {
-            # ── header ────────────────────────────────────────────────────
-            'timestamp':            datetime.fromtimestamp(int(parts[0]) / 1000.0),
-            'port':                 int(parts[1]),
-            'dst_ip':               parts[2],
+        return {
+            # ── header ──────────────────────────────────────────────────
+            'timestamp':              datetime.fromtimestamp(int(parts[0]) / 1000.0),
+            'port':                   int(parts[1]),
+            'dst_ip':                 parts[2],
 
-            # ── raw features ──────────────────────────────────────────────
-            'pps':                  float(parts[3]),
-            'bps':                  float(parts[4]),
-            'fps':                  float(parts[5]),
-            'burst_factor':         float(parts[6]),
-            'inbound_bits':         float(parts[7]),
-            'outbound_bits':        float(parts[8]),
-            'udp':                  float(parts[9]),
-            'tcp':                  float(parts[10]),
-            'icmp':                 float(parts[11]),
-            'syn_pps':              float(parts[12]),
-            'synack_pps':           float(parts[13]),
-            'finack_pps':           float(parts[14]),
-            'rst_pps':              float(parts[15]),
-            'udp_flows':            int(float(parts[16])),
-            'unique_src_ips':       int(float(parts[17])),
-            'unique_dst_ports':     int(float(parts[18])),
-            'icmp_echo_rate':       float(parts[19]),
+            # ── Tier 0 raw ───────────────────────────────────────────────
+            'pps':                    float(parts[3]),
+            'bps':                    float(parts[4]),
+            'fps':                    float(parts[5]),
+            'burst_pps':              float(parts[6]),
+            'burst_bps':              float(parts[7]),
+            'burst_fps':              float(parts[8]),
 
-            # ── EWMA mean values ──────────────────────────────────────────
-            'em_pps':               float(parts[20]),
-            'em_bps':               float(parts[21]),
-            'em_fps':               float(parts[22]),
-            'em_burst_factor':      float(parts[23]),
-            'em_inbound_bits':      float(parts[24]),
-            'em_outbound_bits':     float(parts[25]),
-            'em_udp':               float(parts[26]),
-            'em_tcp':               float(parts[27]),
-            'em_icmp':              float(parts[28]),
-            'em_syn_pps':           float(parts[29]),
-            'em_synack_pps':        float(parts[30]),
-            'em_finack_pps':        float(parts[31]),
-            'em_rst_pps':           float(parts[32]),
-            'em_udp_flows':         float(parts[33]),
-            'em_unique_src_ips':    float(parts[34]),
-            'em_unique_dst_ports':  float(parts[35]),
-            'em_icmp_echo_rate':    float(parts[36]),
+            # ── Tier 1.1 TCP raw ─────────────────────────────────────────
+            'tcp_syn_ratio':          float(parts[9]),
+            'tcp_synack_ratio':       float(parts[10]),
+            'tcp_finack_ratio':       float(parts[11]),
+            'tcp_rst_ratio':          float(parts[12]),
+            'tcp_ack_data_ratio':     float(parts[13]),
+            'tcp_pps_ratio':          float(parts[14]),
+            'tcp_bps_ratio':          float(parts[15]),
 
-            # ── EWMA Z-scores ─────────────────────────────────────────────
-            'z_pps':                float(parts[37]),
-            'z_bps':                float(parts[38]),
-            'z_fps':                float(parts[39]),
-            'z_burst_factor':       float(parts[40]),
-            'z_inbound_bits':       float(parts[41]),
-            'z_outbound_bits':      float(parts[42]),
-            'z_udp':                float(parts[43]),
-            'z_tcp':                float(parts[44]),
-            'z_icmp':               float(parts[45]),
-            'z_syn_pps':            float(parts[46]),
-            'z_synack_pps':         float(parts[47]),
-            'z_finack_pps':         float(parts[48]),
-            'z_rst_pps':            float(parts[49]),
-            'z_udp_flows':          float(parts[50]),
-            'z_unique_src_ips':     float(parts[51]),
-            'z_unique_dst_ports':   float(parts[52]),
-            'z_icmp_echo_rate':     float(parts[53]),
+            # ── Tier 1.2 UDP raw ─────────────────────────────────────────
+            'udp_bps_ratio':          float(parts[16]),
+            'udp_pps_ratio':          float(parts[17]),
+            'udp_flow_ratio':         float(parts[18]),
 
-            # ── detection fields ──────────────────────────────────────────
-            'detection_state':      parts[54],
-            'tier0_distance_norm':  float(parts[55]),
-            'tier1_distance_norm':  float(parts[56]),
+            # ── Tier 1.3 ICMP raw ────────────────────────────────────────
+            'icmp_echo_ratio':        float(parts[19]),
+            'icmp_pps_ratio':         float(parts[20]),
+
+            # ── Tier 1.4 Distribution raw ────────────────────────────────
+            'src_ip_ratio':           float(parts[21]),
+            'dst_port_ratio':         float(parts[22]),
+
+            # ── Tier 0 EWMA means ────────────────────────────────────────
+            'em_pps':                 float(parts[23]),
+            'em_bps':                 float(parts[24]),
+            'em_fps':                 float(parts[25]),
+            'em_burst_pps':           float(parts[26]),
+            'em_burst_bps':           float(parts[27]),
+            'em_burst_fps':           float(parts[28]),
+
+            # ── Tier 1.1 TCP EWMA means ──────────────────────────────────
+            'em_tcp_syn_ratio':       float(parts[29]),
+            'em_tcp_synack_ratio':    float(parts[30]),
+            'em_tcp_finack_ratio':    float(parts[31]),
+            'em_tcp_rst_ratio':       float(parts[32]),
+            'em_tcp_ack_data_ratio':  float(parts[33]),
+            'em_tcp_pps_ratio':       float(parts[34]),
+            'em_tcp_bps_ratio':       float(parts[35]),
+
+            # ── Tier 1.2 UDP EWMA means ──────────────────────────────────
+            'em_udp_bps_ratio':       float(parts[36]),
+            'em_udp_pps_ratio':       float(parts[37]),
+            'em_udp_flow_ratio':      float(parts[38]),
+
+            # ── Tier 1.3 ICMP EWMA means ─────────────────────────────────
+            'em_icmp_echo_ratio':     float(parts[39]),
+            'em_icmp_pps_ratio':      float(parts[40]),
+
+            # ── Tier 1.4 Distribution EWMA means ─────────────────────────
+            'em_src_ip_ratio':        float(parts[41]),
+            'em_dst_port_ratio':      float(parts[42]),
+
+            # ── Detection fields ─────────────────────────────────────────
+            'detection_state':        parts[43],
+            'tier0_score':            float(parts[44]),
+            'tier1_tcp_score':        float(parts[45]),
+            'tier1_udp_score':        float(parts[46]),
+            'tier1_icmp_score':       float(parts[47]),
+            'tier1_dist_score':       float(parts[48]),
+            'tier1_final_score':      float(parts[49]),
+            'tier1_evaluated':        bool(int(parts[50])),
+            'warmup_remaining':       int(parts[51]),
         }
 
-        return data
-
     except Exception as e:
-        print(f"[Collector] Failed to parse CSV line: {e}")
+        print(f"[Collector] Parse error: {e}")
         return None
 
 
-def dpdk_collector_thread():
-    """Background thread to collect stats from Unix Socket."""
+# ============================================================================
+# COLLECTOR THREAD
+# ============================================================================
 
-    # Initialize DB connection for this thread
+def dpdk_collector_thread():
+    """Background thread — receives CSV lines from the DPDK process."""
+
     try:
         client = database.get_db_client()
         print("[Collector] Database connection established")
@@ -179,76 +197,76 @@ def dpdk_collector_thread():
         print(f"[Collector] Database connection failed: {e}")
         return
 
-    # Setup Unix Socket
     if os.path.exists(config.SOCK_PATH):
         os.unlink(config.SOCK_PATH)
 
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(config.SOCK_PATH)
     server.listen(1)
-    print(f"[Collector] Listening on {config.SOCK_PATH}...")
-    print("[Collector] Waiting for DPDK application to connect...")
+    print(f"[Collector] Listening on {config.SOCK_PATH} …")
 
     while True:
         try:
             conn, _ = server.accept()
-            print("[Collector] DPDK application connected!")
+            print("[Collector] DPDK application connected")
 
-            buffer = ""
-            db_batch = []
+            buf              = ""
+            db_batch         = []
             records_received = 0
 
             while True:
                 data = conn.recv(config.BUFFER_SIZE)
                 if not data:
-                    print("[Collector] DPDK application disconnected")
-
-                    # Insert remaining batch before closing
+                    print("[Collector] DPDK disconnected")
                     if db_batch:
                         database.batch_insert(client, db_batch)
                         db_batch = []
                     break
 
-                buffer += data.decode('utf-8', errors='ignore')
+                buf += data.decode('utf-8', errors='ignore')
 
-                while '\n' in buffer:
-                    line, buffer = buffer.split('\n', 1)
+                while '\n' in buf:
+                    line, buf = buf.split('\n', 1)
                     if not line.strip():
                         continue
-
                     try:
                         record = parse_csv_line(line)
+                        if not record:
+                            continue
 
-                        if record:
-                            # Print detection alerts to console
-                            if record['detection_state'] in ['SUSPICIOUS', 'ATTACK']:
-                                # print(f"\n[ALERT] {record['detection_state']} detected for IP {record['dst_ip']}")
-                                # print(f"        Tier-0 distance: {record['tier0_distance_norm']:.4f}")
-                                if record['tier1_distance_norm'] > 0:
-                                    print(f"        Tier-1 distance: {record['tier1_distance_norm']:.4f}")
-                                print()
+                        state = record['detection_state']
+                        if state in ('SUSPICIOUS', 'ATTACK'):
+                            t1_ev = record['tier1_evaluated']
+                            print(f"[ALERT] {state} | IP={record['dst_ip']} "
+                                  f"t0={record['tier0_score']:.3f}",
+                                  end="")
+                            if t1_ev:
+                                print(f" tcp={record['tier1_tcp_score']:.3f}"
+                                      f" udp={record['tier1_udp_score']:.3f}"
+                                      f" icmp={record['tier1_icmp_score']:.3f}"
+                                      f" dist={record['tier1_dist_score']:.3f}"
+                                      f" final={record['tier1_final_score']:.3f}",
+                                      end="")
+                            print()
 
-                            # 1. UPDATE SHARED MEMORY (for real-time dashboard)
-                            with shared_state.data_lock:
-                                shared_state.latest_traffic_data.insert(0, record)
-                                # Keep only last N records in RAM
-                                shared_state.latest_traffic_data = \
-                                    shared_state.latest_traffic_data[:config.RAM_BUFFER_SIZE]
+                        with shared_state.data_lock:
+                            shared_state.latest_traffic_data.insert(0, record)
+                            shared_state.latest_traffic_data = \
+                                shared_state.latest_traffic_data[:config.RAM_BUFFER_SIZE]
 
-                            # 2. BATCH FOR DATABASE (for historical analysis)
-                            db_batch.append(record)
-                            records_received += 1
+                        db_batch.append(record)
+                        records_received += 1
 
-                            if len(db_batch) >= config.BATCH_SIZE:
-                                database.batch_insert(client, db_batch)
-                                print(f"[Collector] Total records received: {records_received}")
-                                db_batch = []
+                        if len(db_batch) >= config.BATCH_SIZE:
+                            database.batch_insert(client, db_batch)
+                            print(f"[Collector] Records so far: {records_received}")
+                            db_batch = []
 
                     except Exception as e:
-                        print(f"[Collector] Parse error: {e}")
+                        print(f"[Collector] Record error: {e}")
 
-            print("[Collector] Connection closed. Waiting for new connection...")
             conn.close()
+            print("[Collector] Waiting for next connection …")
 
         except Exception as e:
             print(f"[Collector] Error: {e}")

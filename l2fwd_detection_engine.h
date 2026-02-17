@@ -10,193 +10,173 @@
 // ============================================================================
 
 /**
- * Warm-up period before detection engine becomes active (in seconds).
- * During warm-up, both tiers learn traffic patterns but do not trigger alerts.
+ * Warm-up: engine learns but does not trigger alerts for this many windows.
+ * At 1 s/window that is 30 seconds of silent learning before decisions start.
  */
-#define DETECTION_WARMUP_SECONDS 300 // 5 minutes
+#define DETECTION_WARMUP_WINDOWS 30
 
 /**
- * Sigmoid normalization parameters for Manhattan distance.
- * distance_normalized = 1 / (1 + exp(-k * (distance - midpoint)))
- * 
- * k controls steepness, midpoint is the inflection point.
+ * Sigmoid normalisation:  score = 1 / (1 + exp(-k * (distance - d0)))
+ *
+ *   k  = steepness (higher → sharper transition)
+ *   d0 = inflection point (the "average normal" distance)
+ *
+ * Starting values per spec: k = 3, d0 = 0.5
  */
-#define SIGMOID_K        2.0
-#define SIGMOID_MIDPOINT 3.0
+#define SIGMOID_K   3.0
+#define SIGMOID_D0  0.5
 
 /**
- * Detection thresholds for normalized distance [0, 1]:
- *   [0.0, 0.3)  → NORMAL
- *   [0.3, 0.6)  → SUSPICIOUS  
- *   [0.6, 1.0]  → ATTACK
+ * Decision thresholds on the normalised score ∈ [0, 1]:
+ *   [0.0 , 0.4)  → NORMAL
+ *   [0.4 , 0.6]  → SUSPICIOUS
+ *   (0.6 , 1.0]  → ATTACK
  */
-#define THRESHOLD_SUSPICIOUS 0.3
-#define THRESHOLD_ATTACK     0.6
+#define THRESHOLD_NORMAL     0.4
+#define THRESHOLD_SUSPICIOUS 0.6
 
 /**
- * Baseline freeze duration after attack detection (seconds).
- * After an attack is detected, baseline learning is frozen for this period
- * to prevent baseline poisoning.
+ * After an attack is detected, freeze baselines for this many windows to
+ * prevent baseline poisoning during an ongoing attack.
  */
-#define BASELINE_FREEZE_DURATION 300  // 5 minutes
+#define BASELINE_FREEZE_WINDOWS 300   /* 5 minutes at 1 s/window */
 
 /**
- * Gradual recovery rate after attack ends.
- * When traffic returns to normal, learning resumes gradually.
- * recovery_weight starts at 0 and increases by this amount per second.
+ * Gradual recovery: weight rises from 0 → 1 over this many windows.
+ * Baseline update during recovery uses: alpha * recovery_weight
  */
-#define RECOVERY_RATE_PER_SECOND 0.01  // Full recovery after 100 seconds
+#define RECOVERY_WINDOWS 100
 
 // ============================================================================
 // DETECTION STATES
 // ============================================================================
 
 typedef enum {
-    DETECTION_STATE_WARMUP,      /* Learning initial baseline, no alerts */
-    DETECTION_STATE_NORMAL,      /* Normal operation */
-    DETECTION_STATE_SUSPICIOUS,  /* Tier-0 detected suspicious pattern */
-    DETECTION_STATE_ATTACK,      /* Tier-1 confirmed attack */
-    DETECTION_STATE_RECOVERING,  /* Attack ended, gradually resuming learning */
+    DETECTION_STATE_WARMUP,      /* Silently learning, no decisions yet      */
+    DETECTION_STATE_NORMAL,      /* All clear                                 */
+    DETECTION_STATE_SUSPICIOUS,  /* Tier-0 triggered; Tier-1 says suspicious */
+    DETECTION_STATE_ATTACK,      /* Tier-0 triggered; Tier-1 confirmed attack */
+    DETECTION_STATE_RECOVERING,  /* Post-attack gradual baseline recovery     */
 } detection_state_t;
 
 // ============================================================================
 // FEATURE VECTORS
 // ============================================================================
 
-/**
- * Tier-0 feature vector: fast, coarse-grained traffic characteristics.
- * Used for initial anomaly detection.
- */
-#define TIER0_FEATURE_COUNT 7
-
+/** Tier 0: 6 volume features (always active) */
 struct tier0_features {
     double pps;
     double bps;
     double fps;
-    double inbound_bits;
-    double outbound_bits;
-    double udp_ratio;
-    double tcp_ratio;
-    double icmp_ratio;
+    double burst_pps;
+    double burst_bps;
+    double burst_fps;
 };
+#define TIER0_N 6
 
-/**
- * Tier-1 feature vector: detailed behavioral characteristics.
- * Used for attack confirmation and detailed analysis.
- */
-#define TIER1_FEATURE_COUNT 8
-
-struct tier1_features {
+/** Tier 1.1: 7 TCP behavioural features (passive → activated by Tier 0) */
+struct tier1_tcp_features {
     double syn_ratio;
     double synack_ratio;
     double finack_ratio;
     double rst_ratio;
-    double udp_flow_rate;        /* UDP flows / total UDP packets */
-    double unique_src_ip_rate;   /* Unique src IPs / PPS */
-    double unique_dst_port_rate; /* Unique dst ports / PPS */
-    double icmp_echo_rate;
+    double ack_data_ratio;
+    double tcp_pps_ratio;
+    double tcp_bps_ratio;
 };
+#define TIER1_TCP_N 7
+
+/** Tier 1.2: 3 UDP behavioural features */
+struct tier1_udp_features {
+    double udp_bps_ratio;
+    double udp_pps_ratio;
+    double udp_flow_ratio;
+};
+#define TIER1_UDP_N 3
+
+/** Tier 1.3: 2 ICMP behavioural features */
+struct tier1_icmp_features {
+    double icmp_echo_ratio;
+    double icmp_pps_ratio;
+};
+#define TIER1_ICMP_N 2
+
+/** Tier 1.4: 2 distribution features */
+struct tier1_dist_features {
+    double src_ip_ratio;
+    double dst_port_ratio;
+};
+#define TIER1_DIST_N 2
 
 // ============================================================================
-// BASELINE MODELS (DoM - Degree of Membership)
+// TIER BASELINE  (frozen during attacks, thawed during recovery)
 // ============================================================================
 
 /**
- * Baseline vector for Tier-0 features.
- * Learned via EWMA, frozen during attacks to prevent poisoning.
+ * Each tier's detection state and freeze metadata.
+ * The actual EWMA means live in dst_ip_stats (ewma_t0, ewma_t1_tcp, …)
+ * so that the collector can update them even when the detection engine is
+ * not deciding.  The baseline struct here only tracks operational state.
  */
-struct tier0_baseline {
-    struct ewma_state pps;
-    struct ewma_state bps;
-    struct ewma_state fps;
-    struct ewma_state inbound_bits;
-    struct ewma_state outbound_bits;
-    struct ewma_state udp_ratio;
-    struct ewma_state tcp_ratio;
-    struct ewma_state icmp_ratio;
-    
-    /* Baseline is frozen when true (during/after attack) */
-    bool frozen;
-    
-    /* Timestamp when baseline was frozen (TSC cycles) */
-    uint64_t freeze_timestamp;
-};
-
-/**
- * Baseline vector for Tier-1 features.
- * Learns passively, only activates when Tier-0 triggers.
- */
-struct tier1_baseline {
-    struct ewma_state syn_ratio;
-    struct ewma_state synack_ratio;
-    struct ewma_state finack_ratio;
-    struct ewma_state rst_ratio;
-    struct ewma_state udp_flow_rate;
-    struct ewma_state unique_src_ip_rate;
-    struct ewma_state unique_dst_port_rate;
-    struct ewma_state icmp_echo_rate;
-    
-    /* Baseline is frozen when true (during/after attack) */
-    bool frozen;
-    
-    /* Timestamp when baseline was frozen (TSC cycles) */
-    uint64_t freeze_timestamp;
+struct tier_state {
+    bool     frozen;             /* True while baseline updates are paused   */
+    uint32_t freeze_counter;     /* Windows remaining in freeze period        */
 };
 
 // ============================================================================
-// DETECTION RESULT
+// PER-WINDOW DETECTION RESULT
 // ============================================================================
 
-/**
- * Detection result for a single time window.
- */
 struct detection_result {
     detection_state_t state;
-    
-    /* Tier-0 metrics */
-    double tier0_distance;           /* Raw Manhattan distance */
-    double tier0_distance_normalized;/* Sigmoid-normalized [0, 1] */
-    
-    /* Tier-1 metrics (only valid if tier-0 triggered) */
-    bool tier1_evaluated;
-    double tier1_distance;
-    double tier1_distance_normalized;
-    
-    /* Timestamps */
-    uint64_t timestamp;              /* TSC cycles */
-    
-    /* Recovery progress [0.0, 1.0] during RECOVERING state */
-    double recovery_weight;
+
+    /* Tier-0 metrics — always computed */
+    double tier0_raw_dist;           /* Unnormalised Manhattan distance        */
+    double tier0_score;              /* Sigmoid-normalised [0, 1]              */
+
+    /* Tier-1 metrics — computed only when Tier-0 triggers */
+    bool   tier1_evaluated;
+    double tier1_tcp_raw_dist;
+    double tier1_tcp_score;
+    double tier1_udp_raw_dist;
+    double tier1_udp_score;
+    double tier1_icmp_raw_dist;
+    double tier1_icmp_score;
+    double tier1_dist_raw_dist;
+    double tier1_dist_score;
+
+    /* Overall Tier-1 score (worst-case across all Tier-1 sub-tiers) */
+    double tier1_final_score;
+
+    uint64_t timestamp;          /* TSC cycles */
 };
 
 // ============================================================================
 // PER-DESTINATION DETECTION ENGINE
 // ============================================================================
 
-/**
- * Detection engine state for a single destination IP.
- */
 struct detection_engine {
-    /* Current detection state */
     detection_state_t state;
-    
-    /* Baseline models */
-    struct tier0_baseline tier0;
-    struct tier1_baseline tier1;
-    
-    /* Warm-up tracking */
-    uint64_t warmup_start_time;      /* TSC cycles */
-    uint32_t warmup_windows;         /* Number of 1s windows elapsed */
-    
+
+    /* Tier baseline operational state (freeze tracking) */
+    struct tier_state tier0_state;
+    struct tier_state tier1_tcp_state;
+    struct tier_state tier1_udp_state;
+    struct tier_state tier1_icmp_state;
+    struct tier_state tier1_dist_state;
+
+    /* Warm-up counter */
+    uint32_t warmup_counter;     /* Windows elapsed since creation           */
+
     /* Recovery tracking */
-    uint64_t recovery_start_time;    /* TSC cycles when recovery began */
-    double recovery_weight;          /* Current recovery weight [0, 1] */
-    
+    uint32_t recovery_counter;   /* Windows elapsed since recovery began     */
+    double   recovery_weight;    /* 0.0 → 1.0 (alpha multiplier during reco) */
+
     /* Attack history */
-    uint64_t last_attack_time;       /* TSC cycles of last attack */
-    uint32_t attack_count;           /* Total number of attacks detected */
-    
-    /* Latest detection result */
+    uint32_t attack_count;
+    uint64_t last_attack_time;   /* TSC cycles */
+
+    /* Latest result (cached for CSV export) */
     struct detection_result last_result;
 };
 
@@ -204,79 +184,62 @@ struct detection_engine {
 // PUBLIC API
 // ============================================================================
 
-/**
- * Initialize detection engine for a destination IP.
- * Called when a new dst_ip_stats entry is created.
- */
+/** Initialise engine for a new destination IP entry. */
 void detection_engine_init(struct detection_engine *engine, uint64_t timestamp);
 
 /**
- * Extract Tier-0 features from current stats window.
+ * Extract per-tier feature vectors from the current stats window.
+ * Called once per second for every active dst_ip.
  */
-void extract_tier0_features(const struct dst_ip_stats *stats,
-                             struct tier0_features *features,
-                             double time_sec);
+void extract_tier0_features   (const struct dst_ip_stats *stats,
+                                struct tier0_features *out,
+                                double time_sec);
+void extract_tier1_tcp_features(const struct dst_ip_stats *stats,
+                                 struct tier1_tcp_features *out,
+                                 double time_sec);
+void extract_tier1_udp_features(const struct dst_ip_stats *stats,
+                                 struct tier1_udp_features *out,
+                                 double time_sec);
+void extract_tier1_icmp_features(const struct dst_ip_stats *stats,
+                                  struct tier1_icmp_features *out,
+                                  double time_sec);
+void extract_tier1_dist_features(const struct dst_ip_stats *stats,
+                                  struct tier1_dist_features *out,
+                                  double time_sec);
 
 /**
- * Extract Tier-1 features from current stats window.
+ * Compute normalised Manhattan distance between a feature vector and its EWMA
+ * baseline means.
+ *
+ * distance_i = |current_i - mean_i| / (mean_i + EWMA_EPSILON)
+ * total_distance = Σ distance_i
+ * score = sigmoid(total_distance)
  */
-void extract_tier1_features(const struct dst_ip_stats *stats,
-                             struct tier1_features *features,
-                             double time_sec);
+double compute_tier0_score   (const struct tier0_ewma      *ewma,
+                               const struct tier0_features   *cur);
+double compute_tier1_tcp_score(const struct tier1_tcp_ewma  *ewma,
+                                const struct tier1_tcp_features *cur);
+double compute_tier1_udp_score(const struct tier1_udp_ewma  *ewma,
+                                const struct tier1_udp_features *cur);
+double compute_tier1_icmp_score(const struct tier1_icmp_ewma *ewma,
+                                 const struct tier1_icmp_features *cur);
+double compute_tier1_dist_score(const struct tier1_dist_ewma *ewma,
+                                 const struct tier1_dist_features *cur);
+
+/** Sigmoid: maps [0, ∞) → [0, 1] using SIGMOID_K and SIGMOID_D0. */
+double sigmoid_score(double distance);
 
 /**
- * Update Tier-0 baseline with new observation.
- * Respects freeze state - no update if baseline is frozen.
+ * Main entry point — call once per second per dst_ip after updating counters.
+ * Reads EWMA means from stats->ewma_t* structs; updates them if not frozen;
+ * returns a detection_result.
  */
-void update_tier0_baseline(struct tier0_baseline *baseline,
-                            const struct tier0_features *features,
-                            uint64_t timestamp,
-                            double recovery_weight);
+struct detection_result detection_engine_process(
+    struct detection_engine *engine,
+    struct dst_ip_stats     *stats,   /* non-const: updates EWMA means       */
+    uint64_t timestamp);
 
-/**
- * Update Tier-1 baseline with new observation (passive learning).
- * Respects freeze state - no update if baseline is frozen.
- */
-void update_tier1_baseline(struct tier1_baseline *baseline,
-                            const struct tier1_features *features,
-                            uint64_t timestamp,
-                            double recovery_weight);
-
-/**
- * Compute Manhattan distance between current features and baseline.
- */
-double compute_tier0_distance(const struct tier0_baseline *baseline,
-                               const struct tier0_features *current);
-
-double compute_tier1_distance(const struct tier1_baseline *baseline,
-                               const struct tier1_features *current);
-
-/**
- * Normalize distance using sigmoid function.
- * Maps [0, ∞) → [0, 1]
- */
-double sigmoid_normalize(double distance);
-
-/**
- * Main detection logic: processes one time window and returns detection result.
- * 
- * @param engine   Detection engine state
- * @param stats    Current destination IP stats
- * @param timestamp Current timestamp (TSC cycles)
- * @return         Detection result for this window
- */
-struct detection_result detection_engine_process(struct detection_engine *engine,
-                                                   const struct dst_ip_stats *stats,
-                                                   uint64_t timestamp);
-
-/**
- * Check if baseline freeze period has expired and initiate recovery if needed.
- */
-void check_and_update_recovery(struct detection_engine *engine, uint64_t timestamp);
-
-/**
- * Get human-readable state string.
- */
+/** Human-readable state label. */
 const char *detection_state_str(detection_state_t state);
 
 #endif /* __L2FWD_DETECTION_ENGINE_H__ */

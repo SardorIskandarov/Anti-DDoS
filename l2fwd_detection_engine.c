@@ -5,32 +5,41 @@
 #include <rte_cycles.h>
 
 // ============================================================================
-// HELPER: TSC CYCLES TO SECONDS
+// SIGMOID
 // ============================================================================
 
-static inline double cycles_to_seconds(uint64_t cycles) {
-    return (double)cycles / rte_get_timer_hz();
+/**
+ * sigmoid_score — maps a non-negative Manhattan distance to [0, 1].
+ *
+ *   score = 1 / (1 + exp(-k * (distance - d0)))
+ *
+ * Parameters from spec: k = 3, d0 = 0.5
+ */
+double sigmoid_score(double distance) {
+    return 1.0 / (1.0 + exp(-SIGMOID_K * (distance - SIGMOID_D0)));
 }
 
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
 
+/*
+ * ewma_update / ewma_mean / burst_window_push / burst_window_avg are defined
+ * once in l2fwd_ddos_collector.c and declared in the shared header.
+ * They must NOT be defined here — doing so causes "multiple definition" linker
+ * errors when both translation units are linked together.
+ *
+ * The init_tier*_alpha helpers live only in l2fwd_ddos_collector.c (called
+ * from dst_ip_table_get_or_create).  They are not needed here.
+ */
+
 void detection_engine_init(struct detection_engine *engine, uint64_t timestamp) {
     memset(engine, 0, sizeof(struct detection_engine));
-    
-    engine->state = DETECTION_STATE_WARMUP;
-    engine->warmup_start_time = timestamp;
-    engine->warmup_windows = 0;
-    
-    /* Baselines start unfrozen */
-    engine->tier0.frozen = false;
-    engine->tier1.frozen = false;
-    
-    /* Initialize all EWMA states to zero (n=0 triggers cold start) */
-    /* This is already done by memset, but being explicit */
-    
-    engine->recovery_weight = 1.0;  /* Start at full learning rate */
+    engine->state           = DETECTION_STATE_WARMUP;
+    engine->recovery_weight = 0.0;
+    engine->last_attack_time = timestamp;
+    /* Note: EWMA alpha values are set when dst_ip_stats is initialised
+     * via the init_tier*_alpha helpers called from dst_ip_table_get_or_create */
 }
 
 // ============================================================================
@@ -38,408 +47,441 @@ void detection_engine_init(struct detection_engine *engine, uint64_t timestamp) 
 // ============================================================================
 
 void extract_tier0_features(const struct dst_ip_stats *stats,
-                             struct tier0_features *features,
-                             double time_sec) {
-    /* Packets per second */
-    features->pps = (double)stats->total_pkts / time_sec;
-    
-    /* Bits per second */
-    features->bps = (double)stats->total_bytes * 8.0 / time_sec;
-    
-    /* Flows per second (approximated as PPS for now) */
-    features->fps = features->pps;
-    
-    /* Inbound/outbound bits */
-    features->inbound_bits = (double)stats->inbound_bytes * 8.0;
-    features->outbound_bits = (double)stats->outbound_bytes * 8.0;
-    
-    /* Protocol ratios */
-    double total_safe = (stats->total_pkts > 0) ? (double)stats->total_pkts : 1.0;
-    features->udp_ratio = (double)stats->udp_pkts / total_safe;
-    features->tcp_ratio = (double)stats->tcp_pkts / total_safe;
-    features->icmp_ratio = (double)stats->icmp_pkts / total_safe;
+                              struct tier0_features *out,
+                              double time_sec) {
+    out->pps = (double)stats->total_pkts / time_sec;
+    out->bps = (double)stats->total_bytes * 8.0 / time_sec;
+
+    /* FPS = HLL estimate of unique five-tuples per second */
+    out->fps = (double)hll_count(&stats->unique_flows) / time_sec;
+
+    /* Burst factors: ratio of current 1-s value to long-window average */
+    double avg_pps = burst_window_avg(&stats->bw_pps);
+    double avg_bps = burst_window_avg(&stats->bw_bps);
+    double avg_fps = burst_window_avg(&stats->bw_fps);
+
+    out->burst_pps = (avg_pps > 0.0) ? out->pps / avg_pps : 1.0;
+    out->burst_bps = (avg_bps > 0.0) ? out->bps / avg_bps : 1.0;
+    out->burst_fps = (avg_fps > 0.0) ? out->fps / avg_fps : 1.0;
 }
 
-void extract_tier1_features(const struct dst_ip_stats *stats,
-                             struct tier1_features *features,
-                             double time_sec) {
-    /* TCP flag ratios (as fraction of TCP packets) */
-    double tcp_total = (stats->tcp_pkts > 0) ? (double)stats->tcp_pkts : 1.0;
-    features->syn_ratio = (double)stats->syn_pkts / tcp_total;
-    features->synack_ratio = (double)stats->syn_ack_pkts / tcp_total;
-    features->finack_ratio = (double)stats->fin_ack_pkts / tcp_total;
-    features->rst_ratio = (double)stats->rst_pkts / tcp_total;
-    
-    /* UDP flow rate: unique UDP flows / total UDP packets */
-    uint64_t udp_flows = hll_count(&stats->udp_flows);
-    double udp_pkt_safe = (stats->udp_pkts > 0) ? (double)stats->udp_pkts : 1.0;
-    features->udp_flow_rate = (double)udp_flows / udp_pkt_safe;
-    
-    /* Unique source IPs / PPS */
-    uint64_t unique_src_ips = hll_count(&stats->unique_src_ips);
-    double pps = (double)stats->total_pkts / time_sec;
-    double pps_safe = (pps > 0) ? pps : 1.0;
-    features->unique_src_ip_rate = (double)unique_src_ips / pps_safe;
-    
-    /* Unique destination ports / PPS */
-    uint64_t unique_dst_ports = hll_count(&stats->unique_dst_ports);
-    features->unique_dst_port_rate = (double)unique_dst_ports / pps_safe;
-    
-    /* ICMP echo rate */
-    double icmp_safe = (stats->icmp_pkts > 0) ? (double)stats->icmp_pkts : 1.0;
-    features->icmp_echo_rate = (double)stats->icmp_echo_pkts / icmp_safe;
+void extract_tier1_tcp_features(const struct dst_ip_stats *stats,
+                                  struct tier1_tcp_features *out,
+                                  double time_sec) {
+    double tcp_safe = (stats->tcp_pkts > 0) ? (double)stats->tcp_pkts : 1.0;
+    double tot_safe = (stats->total_pkts > 0) ? (double)stats->total_pkts : 1.0;
+    double tot_bytes_safe = (stats->total_bytes > 0) ? (double)stats->total_bytes : 1.0;
+
+    out->syn_ratio      = (double)stats->syn_pkts      / tcp_safe;
+    out->synack_ratio   = (double)stats->syn_ack_pkts  / tcp_safe;
+    out->finack_ratio   = (double)stats->fin_ack_pkts  / tcp_safe;
+    out->rst_ratio      = (double)stats->rst_pkts      / tcp_safe;
+    out->ack_data_ratio = (double)stats->ack_data_pkts / tcp_safe;
+    out->tcp_pps_ratio  = (double)stats->tcp_pkts      / tot_safe;
+    out->tcp_bps_ratio  = (double)stats->tcp_bytes     / tot_bytes_safe;
 }
 
-// ============================================================================
-// BASELINE UPDATE
-// ============================================================================
+void extract_tier1_udp_features(const struct dst_ip_stats *stats,
+                                  struct tier1_udp_features *out,
+                                  double time_sec) {
+    double tot_safe       = (stats->total_pkts  > 0) ? (double)stats->total_pkts  : 1.0;
+    double tot_bytes_safe = (stats->total_bytes > 0) ? (double)stats->total_bytes : 1.0;
+    double udp_pps_safe   = (stats->udp_pkts    > 0) ? (double)stats->udp_pkts    : 1.0;
 
-void update_tier0_baseline(struct tier0_baseline *baseline,
-                            const struct tier0_features *features,
-                            uint64_t timestamp,
-                            double recovery_weight) {
-    /* Check freeze state */
-    if (baseline->frozen) {
-        /* Check if freeze period has expired */
-        double elapsed = cycles_to_seconds(timestamp - baseline->freeze_timestamp);
-        if (elapsed < BASELINE_FREEZE_DURATION) {
-            return;  /* Still frozen, no update */
-        }
-        /* Freeze expired, unfreeze and continue with recovery weight */
-        baseline->frozen = false;
-    }
-    
-    /* Update with recovery weight applied to alpha */
-    /* During recovery, we reduce the learning rate proportionally */
-    double original_alpha = EWMA_ALPHA;
-    double adjusted_alpha = original_alpha * recovery_weight;
-    
-    /* Temporarily modify alpha for this update */
-    /* Note: This is a simplified approach. In production, you might want
-     * to pass alpha as a parameter to ewma_update() */
-    
-    /* For now, we'll just update normally and scale the delta afterwards */
-    /* This is mathematically equivalent to scaling alpha */
-    
-    ewma_update(&baseline->pps, features->pps);
-    ewma_update(&baseline->bps, features->bps);
-    ewma_update(&baseline->fps, features->fps);
-    ewma_update(&baseline->inbound_bits, features->inbound_bits);
-    ewma_update(&baseline->outbound_bits, features->outbound_bits);
-    ewma_update(&baseline->udp_ratio, features->udp_ratio);
-    ewma_update(&baseline->tcp_ratio, features->tcp_ratio);
-    ewma_update(&baseline->icmp_ratio, features->icmp_ratio);
+    out->udp_bps_ratio  = (double)stats->udp_bytes / tot_bytes_safe;
+    out->udp_pps_ratio  = (double)stats->udp_pkts  / tot_safe;
+
+    double udp_flows    = (double)hll_count(&stats->udp_flows);
+    out->udp_flow_ratio = udp_flows / udp_pps_safe;
 }
 
-void update_tier1_baseline(struct tier1_baseline *baseline,
-                            const struct tier1_features *features,
-                            uint64_t timestamp,
-                            double recovery_weight) {
-    /* Check freeze state */
-    if (baseline->frozen) {
-        /* Check if freeze period has expired */
-        double elapsed = cycles_to_seconds(timestamp - baseline->freeze_timestamp);
-        if (elapsed < BASELINE_FREEZE_DURATION) {
-            return;  /* Still frozen, no update */
-        }
-        /* Freeze expired, unfreeze and continue with recovery weight */
-        baseline->frozen = false;
-    }
-    
-    /* Update with recovery weight (passive learning) */
-    ewma_update(&baseline->syn_ratio, features->syn_ratio);
-    ewma_update(&baseline->synack_ratio, features->synack_ratio);
-    ewma_update(&baseline->finack_ratio, features->finack_ratio);
-    ewma_update(&baseline->rst_ratio, features->rst_ratio);
-    ewma_update(&baseline->udp_flow_rate, features->udp_flow_rate);
-    ewma_update(&baseline->unique_src_ip_rate, features->unique_src_ip_rate);
-    ewma_update(&baseline->unique_dst_port_rate, features->unique_dst_port_rate);
-    ewma_update(&baseline->icmp_echo_rate, features->icmp_echo_rate);
+void extract_tier1_icmp_features(const struct dst_ip_stats *stats,
+                                   struct tier1_icmp_features *out,
+                                   double time_sec) {
+    double icmp_safe = (stats->icmp_pkts  > 0) ? (double)stats->icmp_pkts  : 1.0;
+    double tot_safe  = (stats->total_pkts > 0) ? (double)stats->total_pkts : 1.0;
+
+    out->icmp_echo_ratio = (double)stats->icmp_echo_pkts / icmp_safe;
+    out->icmp_pps_ratio  = (double)stats->icmp_pkts      / tot_safe;
+}
+
+void extract_tier1_dist_features(const struct dst_ip_stats *stats,
+                                   struct tier1_dist_features *out,
+                                   double time_sec) {
+    double pps_safe = ((double)stats->total_pkts / time_sec > 0)
+                        ? (double)stats->total_pkts / time_sec
+                        : 1.0;
+
+    out->src_ip_ratio   = (double)hll_count(&stats->unique_src_ips)   / pps_safe;
+    out->dst_port_ratio = (double)hll_count(&stats->unique_dst_ports) / pps_safe;
 }
 
 // ============================================================================
-// DISTANCE COMPUTATION (DoM - Degree of Membership)
+// DISTANCE COMPUTATION
 // ============================================================================
 
 /**
- * Compute normalized deviation: (x - mean) / sqrt(var + epsilon)
- * This is essentially the Z-score but we use it as a component for distance.
+ * Normalised Manhattan distance for a single feature component:
+ *
+ *   d_i = |current_i - baseline_mean_i| / (baseline_mean_i + epsilon)
+ *
+ * During warm-up (n < EWMA_WARMUP_PERIODS) the component contributes 0
+ * so it doesn't pollute the distance until the baseline is stable.
  */
-static inline double normalized_deviation(const struct ewma_state *state, double x) {
-    if (state->n < EWMA_WARMUP_PERIODS) {
-        return 0.0;  /* Not enough data for reliable deviation */
-    }
-    return (x - state->mean) / sqrt(state->var + EWMA_VAR_EPSILON);
+static inline double norm_dist(const struct ewma_state *s, double current) {
+    if (s->n < EWMA_WARMUP_PERIODS) return 0.0;
+    return fabs(current - s->mean) / (s->mean + EWMA_EPSILON);
 }
 
-double compute_tier0_distance(const struct tier0_baseline *baseline,
-                               const struct tier0_features *current) {
+double compute_tier0_score(const struct tier0_ewma *ewma,
+                            const struct tier0_features *cur) {
+    double d = 0.0;
+    d += norm_dist(&ewma->pps,       cur->pps);
+    d += norm_dist(&ewma->bps,       cur->bps);
+    d += norm_dist(&ewma->fps,       cur->fps);
+    d += norm_dist(&ewma->burst_pps, cur->burst_pps);
+    d += norm_dist(&ewma->burst_bps, cur->burst_bps);
+    d += norm_dist(&ewma->burst_fps, cur->burst_fps);
+    return sigmoid_score(d);
+}
+
+double compute_tier1_tcp_score(const struct tier1_tcp_ewma *ewma,
+                                const struct tier1_tcp_features *cur) {
+    double d = 0.0;
+    d += norm_dist(&ewma->syn_ratio,      cur->syn_ratio);
+    d += norm_dist(&ewma->synack_ratio,   cur->synack_ratio);
+    d += norm_dist(&ewma->finack_ratio,   cur->finack_ratio);
+    d += norm_dist(&ewma->rst_ratio,      cur->rst_ratio);
+    d += norm_dist(&ewma->ack_data_ratio, cur->ack_data_ratio);
+    d += norm_dist(&ewma->tcp_pps_ratio,  cur->tcp_pps_ratio);
+    d += norm_dist(&ewma->tcp_bps_ratio,  cur->tcp_bps_ratio);
+    return sigmoid_score(d);
+}
+
+double compute_tier1_udp_score(const struct tier1_udp_ewma *ewma,
+                                const struct tier1_udp_features *cur) {
+    double d = 0.0;
+    d += norm_dist(&ewma->udp_bps_ratio,  cur->udp_bps_ratio);
+    d += norm_dist(&ewma->udp_pps_ratio,  cur->udp_pps_ratio);
+    d += norm_dist(&ewma->udp_flow_ratio, cur->udp_flow_ratio);
+    return sigmoid_score(d);
+}
+
+double compute_tier1_icmp_score(const struct tier1_icmp_ewma *ewma,
+                                 const struct tier1_icmp_features *cur) {
+    double d = 0.0;
+    d += norm_dist(&ewma->icmp_echo_ratio, cur->icmp_echo_ratio);
+    d += norm_dist(&ewma->icmp_pps_ratio,  cur->icmp_pps_ratio);
+    return sigmoid_score(d);
+}
+
+double compute_tier1_dist_score(const struct tier1_dist_ewma *ewma,
+                                 const struct tier1_dist_features *cur) {
+    double d = 0.0;
+    d += norm_dist(&ewma->src_ip_ratio,   cur->src_ip_ratio);
+    d += norm_dist(&ewma->dst_port_ratio, cur->dst_port_ratio);
+    return sigmoid_score(d);
+}
+
+// ============================================================================
+// EWMA BASELINE UPDATE HELPERS (respect freeze + recovery weight)
+// ============================================================================
+
+static void update_ewma_if_active(struct ewma_state *s, double value,
+                                   const struct tier_state *ts,
+                                   double recovery_weight) {
+    if (ts->frozen) return;
     /*
-     * Manhattan distance in normalized feature space:
-     * distance = Σ |z_i| where z_i is the normalized deviation for feature i
+     * During recovery we scale alpha down by recovery_weight [0..1].
+     * We temporarily store the real alpha, override, update, then restore.
      */
-    double distance = 0.0;
-    
-    distance += fabs(normalized_deviation(&baseline->pps, current->pps));
-    distance += fabs(normalized_deviation(&baseline->bps, current->bps));
-    distance += fabs(normalized_deviation(&baseline->fps, current->fps));
-    distance += fabs(normalized_deviation(&baseline->inbound_bits, current->inbound_bits));
-    distance += fabs(normalized_deviation(&baseline->outbound_bits, current->outbound_bits));
-    distance += fabs(normalized_deviation(&baseline->udp_ratio, current->udp_ratio));
-    distance += fabs(normalized_deviation(&baseline->tcp_ratio, current->tcp_ratio));
-    distance += fabs(normalized_deviation(&baseline->icmp_ratio, current->icmp_ratio));
-    
-    return distance;
+    double saved_alpha = s->alpha;
+    s->alpha *= recovery_weight;
+    if (s->alpha < 1e-6) s->alpha = 1e-6;   /* floor to keep updates alive */
+    ewma_update(s, value);
+    s->alpha = saved_alpha;
 }
 
-double compute_tier1_distance(const struct tier1_baseline *baseline,
-                               const struct tier1_features *current) {
-    /*
-     * Manhattan distance in normalized feature space (Tier-1)
-     */
-    double distance = 0.0;
-    
-    distance += fabs(normalized_deviation(&baseline->syn_ratio, current->syn_ratio));
-    distance += fabs(normalized_deviation(&baseline->synack_ratio, current->synack_ratio));
-    distance += fabs(normalized_deviation(&baseline->finack_ratio, current->finack_ratio));
-    distance += fabs(normalized_deviation(&baseline->rst_ratio, current->rst_ratio));
-    distance += fabs(normalized_deviation(&baseline->udp_flow_rate, current->udp_flow_rate));
-    distance += fabs(normalized_deviation(&baseline->unique_src_ip_rate, current->unique_src_ip_rate));
-    distance += fabs(normalized_deviation(&baseline->unique_dst_port_rate, current->unique_dst_port_rate));
-    distance += fabs(normalized_deviation(&baseline->icmp_echo_rate, current->icmp_echo_rate));
-    
-    return distance;
+static void update_tier0_ewma(struct tier0_ewma *e,
+                               const struct tier0_features *f,
+                               const struct tier_state *ts,
+                               double rw) {
+    update_ewma_if_active(&e->pps,       f->pps,       ts, rw);
+    update_ewma_if_active(&e->bps,       f->bps,       ts, rw);
+    update_ewma_if_active(&e->fps,       f->fps,       ts, rw);
+    update_ewma_if_active(&e->burst_pps, f->burst_pps, ts, rw);
+    update_ewma_if_active(&e->burst_bps, f->burst_bps, ts, rw);
+    update_ewma_if_active(&e->burst_fps, f->burst_fps, ts, rw);
+}
+
+static void update_tier1_tcp_ewma(struct tier1_tcp_ewma *e,
+                                   const struct tier1_tcp_features *f,
+                                   const struct tier_state *ts,
+                                   double rw) {
+    update_ewma_if_active(&e->syn_ratio,      f->syn_ratio,      ts, rw);
+    update_ewma_if_active(&e->synack_ratio,   f->synack_ratio,   ts, rw);
+    update_ewma_if_active(&e->finack_ratio,   f->finack_ratio,   ts, rw);
+    update_ewma_if_active(&e->rst_ratio,      f->rst_ratio,      ts, rw);
+    update_ewma_if_active(&e->ack_data_ratio, f->ack_data_ratio, ts, rw);
+    update_ewma_if_active(&e->tcp_pps_ratio,  f->tcp_pps_ratio,  ts, rw);
+    update_ewma_if_active(&e->tcp_bps_ratio,  f->tcp_bps_ratio,  ts, rw);
+}
+
+static void update_tier1_udp_ewma(struct tier1_udp_ewma *e,
+                                   const struct tier1_udp_features *f,
+                                   const struct tier_state *ts,
+                                   double rw) {
+    update_ewma_if_active(&e->udp_bps_ratio,  f->udp_bps_ratio,  ts, rw);
+    update_ewma_if_active(&e->udp_pps_ratio,  f->udp_pps_ratio,  ts, rw);
+    update_ewma_if_active(&e->udp_flow_ratio, f->udp_flow_ratio, ts, rw);
+}
+
+static void update_tier1_icmp_ewma(struct tier1_icmp_ewma *e,
+                                    const struct tier1_icmp_features *f,
+                                    const struct tier_state *ts,
+                                    double rw) {
+    update_ewma_if_active(&e->icmp_echo_ratio, f->icmp_echo_ratio, ts, rw);
+    update_ewma_if_active(&e->icmp_pps_ratio,  f->icmp_pps_ratio,  ts, rw);
+}
+
+static void update_tier1_dist_ewma(struct tier1_dist_ewma *e,
+                                    const struct tier1_dist_features *f,
+                                    const struct tier_state *ts,
+                                    double rw) {
+    update_ewma_if_active(&e->src_ip_ratio,   f->src_ip_ratio,   ts, rw);
+    update_ewma_if_active(&e->dst_port_ratio, f->dst_port_ratio, ts, rw);
 }
 
 // ============================================================================
-// SIGMOID NORMALIZATION
+// FREEZE / THAW HELPERS
 // ============================================================================
 
-double sigmoid_normalize(double distance) {
-    /*
-     * Sigmoid function: 1 / (1 + exp(-k * (x - midpoint)))
-     * Maps [0, ∞) to [0, 1]
-     * 
-     * - k controls steepness
-     * - midpoint is the inflection point
-     */
-    return 1.0 / (1.0 + exp(-SIGMOID_K * (distance - SIGMOID_MIDPOINT)));
-}
-
-// ============================================================================
-// RECOVERY MANAGEMENT
-// ============================================================================
-
-void check_and_update_recovery(struct detection_engine *engine, uint64_t timestamp) {
-    if (engine->state != DETECTION_STATE_RECOVERING) {
-        return;
+static void freeze_tier(struct tier_state *ts) {
+    if (!ts->frozen) {
+        ts->frozen         = true;
+        ts->freeze_counter = BASELINE_FREEZE_WINDOWS;
     }
-    
-    /* Calculate time since recovery started */
-    double elapsed = cycles_to_seconds(timestamp - engine->recovery_start_time);
-    
-    /* Gradually increase recovery weight */
-    engine->recovery_weight = elapsed * RECOVERY_RATE_PER_SECOND;
-    
-    /* Cap at 1.0 (full recovery) */
-    if (engine->recovery_weight >= 1.0) {
-        engine->recovery_weight = 1.0;
-        engine->state = DETECTION_STATE_NORMAL;
-        printf("[Detection] IP recovered to NORMAL state\n");
+}
+
+static void tick_freeze(struct tier_state *ts) {
+    if (!ts->frozen) return;
+    if (ts->freeze_counter > 0) {
+        ts->freeze_counter--;
     }
+    if (ts->freeze_counter == 0) {
+        ts->frozen = false;
+    }
+}
+
+// ============================================================================
+// CLASSIFY SCORE → STATE
+// ============================================================================
+
+static detection_state_t classify(double score) {
+    if (score < THRESHOLD_NORMAL)     return DETECTION_STATE_NORMAL;
+    if (score < THRESHOLD_SUSPICIOUS) return DETECTION_STATE_SUSPICIOUS;
+    return DETECTION_STATE_ATTACK;
 }
 
 // ============================================================================
 // MAIN DETECTION LOGIC
 // ============================================================================
 
-struct detection_result detection_engine_process(struct detection_engine *engine,
-                                                   const struct dst_ip_stats *stats,
-                                                   uint64_t timestamp) {
+struct detection_result detection_engine_process(
+    struct detection_engine *engine,
+    struct dst_ip_stats     *stats,
+    uint64_t timestamp)
+{
     struct detection_result result;
     memset(&result, 0, sizeof(result));
     result.timestamp = timestamp;
-    result.state = engine->state;
-    
+    result.state     = engine->state;
+
     double time_sec = (double)STATS_PERIOD_US / 1000000.0;
-    
-    // ========================================================================
-    // STEP 1: HANDLE WARM-UP STATE
-    // ========================================================================
-    
+
+    /* -----------------------------------------------------------------------
+     * Extract ALL features upfront — all tiers learn every window regardless
+     * of whether they are in "decision" mode or not.
+     * --------------------------------------------------------------------- */
+    struct tier0_features       t0;
+    struct tier1_tcp_features   t1_tcp;
+    struct tier1_udp_features   t1_udp;
+    struct tier1_icmp_features  t1_icmp;
+    struct tier1_dist_features  t1_dist;
+
+    extract_tier0_features     (stats, &t0,     time_sec);
+    extract_tier1_tcp_features (stats, &t1_tcp,  time_sec);
+    extract_tier1_udp_features (stats, &t1_udp,  time_sec);
+    extract_tier1_icmp_features(stats, &t1_icmp, time_sec);
+    extract_tier1_dist_features(stats, &t1_dist, time_sec);
+
+    /* -----------------------------------------------------------------------
+     * WARM-UP: learn everything, decide nothing.
+     * --------------------------------------------------------------------- */
     if (engine->state == DETECTION_STATE_WARMUP) {
-        engine->warmup_windows++;
-        
-        double elapsed = cycles_to_seconds(timestamp - engine->warmup_start_time);
-        
-        /* Extract and learn features (no detection yet) */
-        struct tier0_features t0_features;
-        struct tier1_features t1_features;
-        
-        extract_tier0_features(stats, &t0_features, time_sec);
-        extract_tier1_features(stats, &t1_features, time_sec);
-        
-        update_tier0_baseline(&engine->tier0, &t0_features, timestamp, 1.0);
-        update_tier1_baseline(&engine->tier1, &t1_features, timestamp, 1.0);
-        
-        /* Check if warm-up period is complete */
-        if (elapsed >= DETECTION_WARMUP_SECONDS) {
+        update_tier0_ewma     (&stats->ewma_t0,      &t0,     &engine->tier0_state,      1.0);
+        update_tier1_tcp_ewma (&stats->ewma_t1_tcp,  &t1_tcp,  &engine->tier1_tcp_state,  1.0);
+        update_tier1_udp_ewma (&stats->ewma_t1_udp,  &t1_udp,  &engine->tier1_udp_state,  1.0);
+        update_tier1_icmp_ewma(&stats->ewma_t1_icmp, &t1_icmp, &engine->tier1_icmp_state, 1.0);
+        update_tier1_dist_ewma(&stats->ewma_t1_dist, &t1_dist, &engine->tier1_dist_state, 1.0);
+
+        engine->warmup_counter++;
+        if (engine->warmup_counter >= DETECTION_WARMUP_WINDOWS) {
             engine->state = DETECTION_STATE_NORMAL;
-            result.state = DETECTION_STATE_NORMAL;
-            printf("[Detection] Warm-up complete, entering NORMAL state\n");
-        } else {
-            result.state = DETECTION_STATE_WARMUP;
+            printf("[Detection] Warm-up complete (%u windows), entering NORMAL\n",
+                   engine->warmup_counter);
         }
-        
+
+        result.state = DETECTION_STATE_WARMUP;
         engine->last_result = result;
         return result;
     }
-    
-    // ========================================================================
-    // STEP 2: UPDATE RECOVERY STATE IF APPLICABLE
-    // ========================================================================
-    
-    check_and_update_recovery(engine, timestamp);
-    result.recovery_weight = engine->recovery_weight;
-    
-    // ========================================================================
-    // STEP 3: EXTRACT TIER-0 FEATURES
-    // ========================================================================
-    
-    struct tier0_features t0_current;
-    extract_tier0_features(stats, &t0_current, time_sec);
-    
-    // ========================================================================
-    // STEP 4: COMPUTE TIER-0 DISTANCE AND DECISION
-    // ========================================================================
-    
-    result.tier0_distance = compute_tier0_distance(&engine->tier0, &t0_current);
-    result.tier0_distance_normalized = sigmoid_normalize(result.tier0_distance);
-    
-    detection_state_t tier0_decision;
-    
-    if (result.tier0_distance_normalized < THRESHOLD_SUSPICIOUS) {
-        tier0_decision = DETECTION_STATE_NORMAL;
-    } else if (result.tier0_distance_normalized < THRESHOLD_ATTACK) {
-        tier0_decision = DETECTION_STATE_SUSPICIOUS;
-    } else {
-        tier0_decision = DETECTION_STATE_ATTACK;
+
+    /* -----------------------------------------------------------------------
+     * RECOVERY: advance recovery counter, increase learning weight.
+     * --------------------------------------------------------------------- */
+    if (engine->state == DETECTION_STATE_RECOVERING) {
+        engine->recovery_counter++;
+        engine->recovery_weight = (double)engine->recovery_counter / RECOVERY_WINDOWS;
+        if (engine->recovery_weight >= 1.0) {
+            engine->recovery_weight = 1.0;
+            engine->state = DETECTION_STATE_NORMAL;
+            printf("[Detection] Recovery complete, returning to NORMAL\n");
+        }
+        /* During recovery, thaw frozen tiers on their own schedule */
+        tick_freeze(&engine->tier0_state);
+        tick_freeze(&engine->tier1_tcp_state);
+        tick_freeze(&engine->tier1_udp_state);
+        tick_freeze(&engine->tier1_icmp_state);
+        tick_freeze(&engine->tier1_dist_state);
     }
-    
-    // ========================================================================
-    // STEP 5: HANDLE TIER-0 DECISION
-    // ========================================================================
-    
+
+    double rw = (engine->state == DETECTION_STATE_RECOVERING)
+                    ? engine->recovery_weight
+                    : 1.0;
+
+    /* -----------------------------------------------------------------------
+     * Tier 0 is ALWAYS deciding (active mode).
+     * --------------------------------------------------------------------- */
+    result.tier0_score = compute_tier0_score(&stats->ewma_t0, &t0);
+    detection_state_t tier0_decision = classify(result.tier0_score);
+
+    /* -----------------------------------------------------------------------
+     * Update Tier 0 baseline ONLY when not flagging an attack.
+     * All Tier 1 sub-tiers update passively every window (they are always
+     * learning, regardless of Tier 0 decision).
+     * --------------------------------------------------------------------- */
     if (tier0_decision == DETECTION_STATE_NORMAL) {
-        /* Normal traffic: update baselines and return */
-        update_tier0_baseline(&engine->tier0, &t0_current, timestamp, 
-                              engine->recovery_weight);
-        
-        /* Also update Tier-1 passively */
-        struct tier1_features t1_current;
-        extract_tier1_features(stats, &t1_current, time_sec);
-        update_tier1_baseline(&engine->tier1, &t1_current, timestamp,
-                              engine->recovery_weight);
-        
-        /* If we were in attack/suspicious state, transition to recovery */
-        if (engine->state == DETECTION_STATE_ATTACK || 
-            engine->state == DETECTION_STATE_SUSPICIOUS) {
-            engine->state = DETECTION_STATE_RECOVERING;
-            engine->recovery_start_time = timestamp;
-            engine->recovery_weight = 0.0;
-            result.state = DETECTION_STATE_RECOVERING;
-            printf("[Detection] Transitioning to RECOVERY state\n");
-        } else {
-            engine->state = DETECTION_STATE_NORMAL;
-            result.state = DETECTION_STATE_NORMAL;
-        }
-        
-        engine->last_result = result;
-        return result;
+        update_tier0_ewma(&stats->ewma_t0, &t0, &engine->tier0_state, rw);
     }
-    
-    // ========================================================================
-    // STEP 6: TIER-0 DETECTED ANOMALY - ACTIVATE TIER-1
-    // ========================================================================
-    
-    struct tier1_features t1_current;
-    extract_tier1_features(stats, &t1_current, time_sec);
-    
-    /* Compute Tier-1 distance */
-    result.tier1_distance = compute_tier1_distance(&engine->tier1, &t1_current);
-    result.tier1_distance_normalized = sigmoid_normalize(result.tier1_distance);
-    result.tier1_evaluated = true;
-    
-    /* Tier-1 makes final decision */
-    detection_state_t tier1_decision;
-    
-    if (result.tier1_distance_normalized < THRESHOLD_SUSPICIOUS) {
-        tier1_decision = DETECTION_STATE_NORMAL;
-    } else if (result.tier1_distance_normalized < THRESHOLD_ATTACK) {
-        tier1_decision = DETECTION_STATE_SUSPICIOUS;
-    } else {
-        tier1_decision = DETECTION_STATE_ATTACK;
-    }
-    
-    result.state = tier1_decision;
-    
-    // ========================================================================
-    // STEP 7: HANDLE TIER-1 DECISION
-    // ========================================================================
-    
-    if (tier1_decision == DETECTION_STATE_ATTACK || 
-        tier1_decision == DETECTION_STATE_SUSPICIOUS) {
-        
-        /* Freeze both baselines to prevent poisoning */
-        if (!engine->tier0.frozen) {
-            engine->tier0.frozen = true;
-            engine->tier0.freeze_timestamp = timestamp;
-            printf("[Detection] Tier-0 baseline FROZEN\n");
-        }
-        
-        if (!engine->tier1.frozen) {
-            engine->tier1.frozen = true;
-            engine->tier1.freeze_timestamp = timestamp;
-            printf("[Detection] Tier-1 baseline FROZEN\n");
-        }
-        
-        /* Update attack tracking */
-        if (engine->state != tier1_decision) {
-            engine->attack_count++;
-            engine->last_attack_time = timestamp;
-            
-            printf("[Detection] *** %s DETECTED *** (count: %u)\n",
-                   tier1_decision == DETECTION_STATE_ATTACK ? "ATTACK" : "SUSPICIOUS",
-                   engine->attack_count);
-            printf("             Tier-0 dist: %.4f (norm: %.4f)\n",
-                   result.tier0_distance, result.tier0_distance_normalized);
-            printf("             Tier-1 dist: %.4f (norm: %.4f)\n",
-                   result.tier1_distance, result.tier1_distance_normalized);
-        }
-        
-        engine->state = tier1_decision;
-        
-    } else {
-        /* Tier-1 says normal despite Tier-0 suspicion */
-        /* This is a false positive from Tier-0, continue updating */
-        update_tier0_baseline(&engine->tier0, &t0_current, timestamp,
-                              engine->recovery_weight);
-        update_tier1_baseline(&engine->tier1, &t1_current, timestamp,
-                              engine->recovery_weight);
-        
-        /* Transition to recovery if coming from attack state */
+    /* Tier 1 passive update — always runs */
+    update_tier1_tcp_ewma (&stats->ewma_t1_tcp,  &t1_tcp,  &engine->tier1_tcp_state,  rw);
+    update_tier1_udp_ewma (&stats->ewma_t1_udp,  &t1_udp,  &engine->tier1_udp_state,  rw);
+    update_tier1_icmp_ewma(&stats->ewma_t1_icmp, &t1_icmp, &engine->tier1_icmp_state, rw);
+    update_tier1_dist_ewma(&stats->ewma_t1_dist, &t1_dist, &engine->tier1_dist_state, rw);
+
+    /* -----------------------------------------------------------------------
+     * If Tier 0 is NORMAL → final state follows.
+     * --------------------------------------------------------------------- */
+    if (tier0_decision == DETECTION_STATE_NORMAL) {
+        /* If we were in attack/suspicious, begin recovery */
         if (engine->state == DETECTION_STATE_ATTACK ||
             engine->state == DETECTION_STATE_SUSPICIOUS) {
-            engine->state = DETECTION_STATE_RECOVERING;
-            engine->recovery_start_time = timestamp;
-            engine->recovery_weight = 0.0;
-            result.state = DETECTION_STATE_RECOVERING;
-        } else {
+            engine->state            = DETECTION_STATE_RECOVERING;
+            engine->recovery_counter = 0;
+            engine->recovery_weight  = 0.0;
+            printf("[Detection] Attack ended, entering RECOVERY\n");
+        } else if (engine->state != DETECTION_STATE_RECOVERING) {
             engine->state = DETECTION_STATE_NORMAL;
-            result.state = DETECTION_STATE_NORMAL;
         }
+        result.state = engine->state;
+        engine->last_result = result;
+        return result;
     }
-    
+
+    /* -----------------------------------------------------------------------
+     * Tier 0 triggered (SUSPICIOUS or ATTACK): evaluate all Tier 1 sub-tiers.
+     * Final decision = worst classification across all Tier 1 sub-tiers.
+     * --------------------------------------------------------------------- */
+    result.tier1_evaluated = true;
+
+    result.tier1_tcp_score  = compute_tier1_tcp_score (&stats->ewma_t1_tcp,  &t1_tcp);
+    result.tier1_udp_score  = compute_tier1_udp_score (&stats->ewma_t1_udp,  &t1_udp);
+    result.tier1_icmp_score = compute_tier1_icmp_score(&stats->ewma_t1_icmp, &t1_icmp);
+    result.tier1_dist_score = compute_tier1_dist_score(&stats->ewma_t1_dist, &t1_dist);
+
+    /* Worst-case across Tier 1 */
+    double worst = result.tier1_tcp_score;
+    if (result.tier1_udp_score  > worst) worst = result.tier1_udp_score;
+    if (result.tier1_icmp_score > worst) worst = result.tier1_icmp_score;
+    if (result.tier1_dist_score > worst) worst = result.tier1_dist_score;
+    result.tier1_final_score = worst;
+
+    /* Final classification from Tier 1 */
+    detection_state_t final_state = classify(worst);
+
+    /*
+     * Per spec:
+     *   if any tier1 says ATTACK  → ATTACK
+     *   elif any tier1 says SUSPICIOUS → SUSPICIOUS
+     *   else → NORMAL
+     */
+    detection_state_t tcp_st  = classify(result.tier1_tcp_score);
+    detection_state_t udp_st  = classify(result.tier1_udp_score);
+    detection_state_t icmp_st = classify(result.tier1_icmp_score);
+    detection_state_t dist_st = classify(result.tier1_dist_score);
+
+    if (tcp_st  == DETECTION_STATE_ATTACK ||
+        udp_st  == DETECTION_STATE_ATTACK ||
+        icmp_st == DETECTION_STATE_ATTACK ||
+        dist_st == DETECTION_STATE_ATTACK) {
+        final_state = DETECTION_STATE_ATTACK;
+    } else if (tcp_st  == DETECTION_STATE_SUSPICIOUS ||
+               udp_st  == DETECTION_STATE_SUSPICIOUS ||
+               icmp_st == DETECTION_STATE_SUSPICIOUS ||
+               dist_st == DETECTION_STATE_SUSPICIOUS) {
+        final_state = DETECTION_STATE_SUSPICIOUS;
+    } else {
+        final_state = DETECTION_STATE_NORMAL;
+    }
+
+    result.state = final_state;
+
+    /* Freeze baselines when attack is confirmed */
+    if (final_state == DETECTION_STATE_ATTACK ||
+        final_state == DETECTION_STATE_SUSPICIOUS) {
+
+        freeze_tier(&engine->tier0_state);
+        freeze_tier(&engine->tier1_tcp_state);
+        freeze_tier(&engine->tier1_udp_state);
+        freeze_tier(&engine->tier1_icmp_state);
+        freeze_tier(&engine->tier1_dist_state);
+
+        if (engine->state != final_state) {
+            engine->attack_count++;
+            engine->last_attack_time = timestamp;
+            printf("[Detection] *** %s *** t0=%.3f tcp=%.3f udp=%.3f icmp=%.3f dist=%.3f\n",
+                   detection_state_str(final_state),
+                   result.tier0_score,
+                   result.tier1_tcp_score, result.tier1_udp_score,
+                   result.tier1_icmp_score, result.tier1_dist_score);
+        }
+        engine->state = final_state;
+
+    } else {
+        /* Tier 1 cleared what Tier 0 flagged — treat as normal */
+        update_tier0_ewma(&stats->ewma_t0, &t0, &engine->tier0_state, rw);
+        if (engine->state == DETECTION_STATE_ATTACK ||
+            engine->state == DETECTION_STATE_SUSPICIOUS) {
+            engine->state            = DETECTION_STATE_RECOVERING;
+            engine->recovery_counter = 0;
+            engine->recovery_weight  = 0.0;
+        } else if (engine->state != DETECTION_STATE_RECOVERING) {
+            engine->state = DETECTION_STATE_NORMAL;
+        }
+        result.state = engine->state;
+    }
+
     engine->last_result = result;
     return result;
 }

@@ -1,7 +1,7 @@
 from flask import Flask, render_template, jsonify
 import threading
 import config
-import database
+# import database
 import collector
 import shared_state
 import web

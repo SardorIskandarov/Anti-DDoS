@@ -1,439 +1,475 @@
 <!DOCTYPE html>
-<html lang="en" data-bs-theme="dark">
-
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title> Dashboard</title>
-
+    <title>DDoS Detection Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/moment@2.29.1/moment.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@1.0.0/dist/chartjs-adapter-moment.min.js"></script>
     <style>
-        :root {
-            --fg-bg-main: #0f1419;
-            --fg-bg-card: #161b22;
-            --fg-bg-header: #1c2128;
-            --fg-border: #2a2f36;
+        body            { background:#121212; color:#e0e0e0; font-family:'Segoe UI',sans-serif; }
+        .navbar         { background:#1f1f1f; border-bottom:1px solid #333; }
+        .card           { background:#1e1e1e; border:1px solid #333; margin-bottom:16px;
+                          box-shadow:0 4px 6px rgba(0,0,0,.3); }
+        .card-header    { background:#252525; border-bottom:1px solid #333;
+                          font-weight:600; font-size:.85rem; color:#aaa; }
+        .section-head   { font-size:.7rem; letter-spacing:2px; text-transform:uppercase;
+                          color:#555; padding:8px 0 4px 4px; margin-top:4px; }
 
-            --fg-green: #00d084;
-            --fg-amber: #ffb020;
-            --fg-red: #ff4d4f;
-            --fg-cyan: #00c2ff;
-            --fg-purple: #8b5cf6;
+        /* Detection status badge */
+        #detectionBadge {
+            font-size:1.1rem; font-weight:700; padding:6px 18px;
+            border-radius:6px; letter-spacing:1px; transition:all .3s;
+        }
+        .st-warmup     { background:#0d6efd33; color:#6ea8fe; border:1px solid #0d6efd; }
+        .st-normal     { background:#19875433; color:#75b798; border:1px solid #198754; }
+        .st-recovering { background:#0dcaf033; color:#6edff6; border:1px solid #0dcaf0; }
+        .st-suspicious { background:#ffc10733; color:#ffda6a; border:1px solid #ffc107; }
+        .st-attack     { background:#dc354533; color:#ea868f; border:1px solid #dc3545;
+                         animation:pulse .8s infinite; }
+        @keyframes pulse {
+            0%,100% { box-shadow:0 0 0 0 #dc354566; }
+            50%      { box-shadow:0 0 0 8px #dc354500; }
         }
 
-        /* Background */
-        body {
-            background-color: var(--fg-bg-main) !important;
-            color: #e6edf3;
-        }
+        /* Score bars (Tier 0 / Tier 1 sub-scores) */
+        .score-row      { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+        .score-label    { font-size:.72rem; color:#888; width:110px; flex-shrink:0; }
+        .score-bar-wrap { flex:1; background:#2a2a2a; border-radius:3px; height:10px; }
+        .score-bar      { height:10px; border-radius:3px; transition:width .4s; }
+        .score-val      { font-size:.72rem; color:#aaa; width:38px; text-align:right; }
 
-        /* Navbar */
-        .navbar {
-            background-color: var(--fg-bg-header) !important;
-            border-bottom: 1px solid var(--fg-border);
-        }
+        /* Warmup progress */
+        #warmupRow      { font-size:.75rem; color:#666; display:none; }
 
-        /* Cards */
-        .card {
-            background-color: var(--fg-bg-card);
-            border: 1px solid var(--fg-border);
-            border-radius: 10px;
-            transition: all 0.2s ease;
-        }
-
-        .card:hover {
-            border-color: var(--fg-cyan);
-            box-shadow: 0 0 10px rgba(0, 194, 255, 0.15);
-        }
-
-        /* Section Headers */
-        h6.text-primary {
-            color: var(--fg-cyan) !important;
-            border-color: var(--fg-cyan) !important;
-        }
-
-        /* HUD Numbers */
-        .card-title {
-            letter-spacing: 1px;
-        }
-
-        /* Status Badge Glow */
-        .badge {
-            font-weight: 600;
-            letter-spacing: 0.5px;
-        }
-
-        .status-normal {
-            background-color: var(--fg-green) !important;
-            box-shadow: 0 0 10px rgba(0, 208, 132, 0.4);
-        }
-
-        .status-warning {
-            background-color: var(--fg-amber) !important;
-            color: #000 !important;
-            box-shadow: 0 0 10px rgba(255, 176, 32, 0.4);
-        }
-
-        .status-danger {
-            background-color: var(--fg-red) !important;
-            box-shadow: 0 0 10px rgba(255, 77, 79, 0.4);
-        }
-
-        /* Chart Grid */
-        canvas {
-            background: linear-gradient(180deg,
-                    rgba(255, 255, 255, 0.02),
-                    rgba(0, 0, 0, 0.1));
-            border-radius: 6px;
-        }
+        /* Charts */
+        canvas          { max-height:200px; }
+        select.form-select { background:#2c2c2c; color:#fff; border:1px solid #444; }
+        .chart-tier-label { font-size:.65rem; letter-spacing:1px;
+                            text-transform:uppercase; color:#555; }
     </style>
-
 </head>
+<body>
 
-<body class="bg-body-tertiary">
-
-    <nav class="navbar navbar-expand-lg bg-body-tertiary border-bottom mb-4">
-        <div class="container-fluid">
-            <a class="navbar-brand fw-bold" href="#">
-                <span class="text-primary">🛡️</span> Dashboard
-            </a>
-
-            <div class="d-flex align-items-center gap-3">
-                <div class="input-group input-group-sm">
-                    <span class="input-group-text">MONITORING</span>
-                    <select id="targetSelect" class="form-select" style="max-width: 200px;">
-                        <option value="" disabled selected>Loading...</option>
-                    </select>
-                </div>
-                <span id="detectionStatus" class="badge rounded-pill bg-secondary px-3 py-2">
-                    WAITING...
-                </span>
-            </div>
+<!-- ── Navbar ──────────────────────────────────────────────────────────── -->
+<nav class="navbar navbar-expand-lg navbar-dark mb-3">
+    <div class="container-fluid">
+        <span class="navbar-brand">
+            <span style="color:#0d6efd">🛡</span> DPDK DDoS Sentinel
+        </span>
+        <div class="d-flex align-items-center gap-3">
+            <label class="text-muted small">Target IP:</label>
+            <select id="targetSelect" class="form-select form-select-sm" style="width:200px">
+                <option>Loading…</option>
+            </select>
         </div>
-    </nav>
-
-    <div class="container-fluid px-4">
-
-        <div class="row g-3 mb-4">
-            <div class="col-md-3">
-                <div class="card h-100 border-0 shadow-sm">
-                    <div class="card-body">
-                        <h6 class="card-subtitle mb-2 text-body-secondary text-uppercase small">Packet Rate</h6>
-                        <div class="d-flex align-items-baseline">
-                            <h2 class="card-title fw-bold text-primary mb-0 me-1" id="hud_pps">0</h2>
-                            <span class="small text-body-secondary">pps</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card h-100 border-0 shadow-sm">
-                    <div class="card-body">
-                        <h6 class="card-subtitle mb-2 text-body-secondary text-uppercase small">Bandwidth</h6>
-                        <div class="d-flex align-items-baseline">
-                            <h2 class="card-title fw-bold mb-0 me-1" id="hud_bps">0</h2>
-                            <span class="small text-body-secondary">bps</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card h-100 border-0 shadow-sm">
-                    <div class="card-body">
-                        <h6 class="card-subtitle mb-2 text-body-secondary text-uppercase small">Anomaly Score (T0)</h6>
-                        <div class="d-flex align-items-baseline">
-                            <h2 class="card-title fw-bold text-info mb-0 me-1" id="hud_t0">0.0000</h2>
-                            <span class="small text-body-secondary">Norm Distance</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card h-100 border-0 shadow-sm">
-                    <div class="card-body">
-                        <h6 class="card-subtitle mb-2 text-body-secondary text-uppercase small">Active Flows</h6>
-                        <div class="d-flex align-items-baseline">
-                            <h2 class="card-title fw-bold mb-0 me-1" id="hud_flows">0</h2>
-                            <span class="small text-body-secondary">flows/sec</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <h6 class="text-primary text-uppercase fw-bold mb-3 border-start border-primary border-4 ps-2">Anomaly Detection
-            Engines</h6>
-        <div class="row g-3 mb-4" id="anomalyContainer"></div>
-
-        <h6 class="text-primary text-uppercase fw-bold mb-3 border-start border-primary border-4 ps-2">Traffic
-            Volumetrics</h6>
-        <div class="row g-3 mb-4" id="volumetricsContainer"></div>
-
-        <h6 class="text-primary text-uppercase fw-bold mb-3 border-start border-primary border-4 ps-2">Attack Vectors
-            (TCP/UDP)</h6>
-        <div class="row g-3 mb-5" id="vectorsContainer"></div>
-
     </div>
+</nav>
 
-    <script>
-        // ---------------------------------------------------------
-        // Configuration
-        // ---------------------------------------------------------
-        const API_BASE = '/api';
-        let currentTarget = null;
-        let charts = {};
+<div class="container-fluid">
 
-        // Define chart groups to map to layout sections
-        const METRIC_GROUPS = {
-            anomaly: [
-                { label: 'Tier 0 Distance (Norm)', key: 'tier0_distance_norm', color: '#0dcaf0' }, // Bootstrap Info
-                { label: 'Tier 1 Distance (Norm)', key: 'tier1_distance_norm', color: '#6f42c1' }  // Bootstrap Purple
-            ],
-            volumetrics: [
-                { label: 'Packets / Sec', key: 'pps', ewma: 'em_pps', color: '#0d6efd' },       // Bootstrap Primary
-                { label: 'Bits / Sec', key: 'bps', ewma: 'em_bps', color: '#6610f2' },          // Bootstrap Indigo
-                { label: 'Burst Factor', key: 'burst_factor', ewma: 'em_burst_factor', color: '#ffc107' }, // Bootstrap Warning
-                { label: 'Flows / Sec', key: 'fps', ewma: 'em_fps', color: '#d63384' },          // Bootstrap Pink
-            ],
-            vectors: [
-                { label: 'SYN PPS', key: 'syn_pps', ewma: 'em_syn_pps', color: '#dc3545' },       // Bootstrap Danger
-                { label: 'SYN-ACK PPS', key: 'synack_pps', ewma: 'em_synack_pps', color: '#fd7e14' }, // Bootstrap Orange
-                { label: 'UDP Ratio', key: 'udp', ewma: 'em_udp', color: '#ffc107' },             // Bootstrap Warning
-                { label: 'Unique Src IPs', key: 'unique_src_ips', ewma: 'em_unique_src_ips', color: '#198754' } // Bootstrap Success
-            ]
-        };
+    <!-- ── Status row ──────────────────────────────────────────────────── -->
+    <div class="row mb-3">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3">
 
-        // ---------------------------------------------------------
-        // Initialization
-        // ---------------------------------------------------------
-        async function init() {
-            createChartStructure();
-            await fetchTargets();
-            setInterval(refreshData, 1000);
-        }
-
-        // Generate HTML for chart cards
-        function createChartStructure() {
-            const createCards = (metrics, containerId) => {
-                const container = document.getElementById(containerId);
-                container.innerHTML = '';
-
-                metrics.forEach(metric => {
-                    const colDiv = document.createElement('div');
-                    // Use Bootstrap grid classes
-                    colDiv.className = 'col-12 col-lg-6 col-xl-3';
-                    // Special case for Anomaly charts to be wider (2 per row)
-                    if (containerId === 'anomalyContainer') colDiv.className = 'col-12 col-lg-6';
-
-                    colDiv.innerHTML = `
-                    <div class="card h-100 border-0 shadow-sm">
-                        <div class="card-header bg-transparent border-0 d-flex align-items-center">
-                            <span style="width: 8px; height: 8px; background-color: ${metric.color}; border-radius: 50%; display: inline-block; margin-right: 8px;"></span>
-                            <span class="fw-bold small">${metric.label}</span>
-                        </div>
-                        <div class="card-body p-2">
-                            <div style="height: 200px; width: 100%;">
-                                <canvas id="chart_${metric.key}"></canvas>
+                    <!-- Left: overall status -->
+                    <div>
+                        <div class="d-flex align-items-center gap-3">
+                            <span id="detectionBadge" class="st-warmup">WARMUP</span>
+                            <div>
+                                <div class="small text-muted" id="lastUpdated">Waiting…</div>
+                                <div id="warmupRow" class="mt-1">
+                                    Warm-up:
+                                    <span id="warmupBar" style="color:#0d6efd">·</span>
+                                    <span id="warmupVal"></span> windows remaining
+                                </div>
                             </div>
                         </div>
                     </div>
-                `;
-                    container.appendChild(colDiv);
-                });
-            };
 
-            createCards(METRIC_GROUPS.anomaly, 'anomalyContainer');
-            createCards(METRIC_GROUPS.volumetrics, 'volumetricsContainer');
-            createCards(METRIC_GROUPS.vectors, 'vectorsContainer');
+                    <!-- Right: per-tier score bars -->
+                    <div style="min-width:280px">
+                        <div class="score-row">
+                            <span class="score-label">Tier 0 (volume)</span>
+                            <div class="score-bar-wrap">
+                                <div class="score-bar" id="bar-t0" style="width:0%;background:#0d6efd"></div>
+                            </div>
+                            <span class="score-val" id="val-t0">—</span>
+                        </div>
+                        <div class="score-row">
+                            <span class="score-label">Tier 1.1 (TCP)</span>
+                            <div class="score-bar-wrap">
+                                <div class="score-bar" id="bar-tcp" style="width:0%;background:#dc3545"></div>
+                            </div>
+                            <span class="score-val" id="val-tcp">—</span>
+                        </div>
+                        <div class="score-row">
+                            <span class="score-label">Tier 1.2 (UDP)</span>
+                            <div class="score-bar-wrap">
+                                <div class="score-bar" id="bar-udp" style="width:0%;background:#ffc107"></div>
+                            </div>
+                            <span class="score-val" id="val-udp">—</span>
+                        </div>
+                        <div class="score-row">
+                            <span class="score-label">Tier 1.3 (ICMP)</span>
+                            <div class="score-bar-wrap">
+                                <div class="score-bar" id="bar-icmp" style="width:0%;background:#adb5bd"></div>
+                            </div>
+                            <span class="score-val" id="val-icmp">—</span>
+                        </div>
+                        <div class="score-row">
+                            <span class="score-label">Tier 1.4 (Dist)</span>
+                            <div class="score-bar-wrap">
+                                <div class="score-bar" id="bar-dist" style="width:0%;background:#20c997"></div>
+                            </div>
+                            <span class="score-val" id="val-dist">—</span>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Charts ──────────────────────────────────────────────────────── -->
+    <div id="chartsContainer" class="row"></div>
+
+</div><!-- /container -->
+
+<script>
+// ============================================================================
+// METRIC DEFINITIONS — exactly mirrors the new CSV schema
+// ============================================================================
+
+const TIER_COLOR = {
+    '0':   '#0d6efd',   // blue   — volume
+    '1.1': '#dc3545',   // red    — TCP
+    '1.2': '#ffc107',   // yellow — UDP
+    '1.3': '#adb5bd',   // grey   — ICMP
+    '1.4': '#20c997',   // teal   — distribution
+};
+
+const EWMA_COLOR = '#ff9944';   // amber — same for all EWMA baseline lines
+
+const METRICS = [
+    // ── Tier 0: Volume ─────────────────────────────────────────────────
+    { tier:'0', label:'PPS',            key:'pps',              em:'em_pps' },
+    { tier:'0', label:'BPS',            key:'bps',              em:'em_bps' },
+    { tier:'0', label:'FPS (HLL)',       key:'fps',              em:'em_fps' },
+    { tier:'0', label:'Burst (PPS)',     key:'burst_pps',        em:'em_burst_pps' },
+    { tier:'0', label:'Burst (BPS)',     key:'burst_bps',        em:'em_burst_bps' },
+    { tier:'0', label:'Burst (FPS)',     key:'burst_fps',        em:'em_burst_fps' },
+
+    // ── Tier 1.1: TCP ──────────────────────────────────────────────────
+    { tier:'1.1', label:'SYN/TCP',        key:'tcp_syn_ratio',      em:'em_tcp_syn_ratio' },
+    { tier:'1.1', label:'SYN-ACK/TCP',    key:'tcp_synack_ratio',   em:'em_tcp_synack_ratio' },
+    { tier:'1.1', label:'FIN-ACK/TCP',    key:'tcp_finack_ratio',   em:'em_tcp_finack_ratio' },
+    { tier:'1.1', label:'RST/TCP',        key:'tcp_rst_ratio',      em:'em_tcp_rst_ratio' },
+    { tier:'1.1', label:'ACK-Data/TCP',   key:'tcp_ack_data_ratio', em:'em_tcp_ack_data_ratio' },
+    { tier:'1.1', label:'TCP PPS/Total',  key:'tcp_pps_ratio',      em:'em_tcp_pps_ratio' },
+    { tier:'1.1', label:'TCP BPS/Total',  key:'tcp_bps_ratio',      em:'em_tcp_bps_ratio' },
+
+    // ── Tier 1.2: UDP ──────────────────────────────────────────────────
+    { tier:'1.2', label:'UDP BPS/Total',  key:'udp_bps_ratio',      em:'em_udp_bps_ratio' },
+    { tier:'1.2', label:'UDP PPS/Total',  key:'udp_pps_ratio',      em:'em_udp_pps_ratio' },
+    { tier:'1.2', label:'UDP Flows/PPS',  key:'udp_flow_ratio',     em:'em_udp_flow_ratio' },
+
+    // ── Tier 1.3: ICMP ─────────────────────────────────────────────────
+    { tier:'1.3', label:'ICMP Echo Rate', key:'icmp_echo_ratio',    em:'em_icmp_echo_ratio' },
+    { tier:'1.3', label:'ICMP PPS/Total', key:'icmp_pps_ratio',     em:'em_icmp_pps_ratio' },
+
+    // ── Tier 1.4: Distribution ─────────────────────────────────────────
+    { tier:'1.4', label:'Src IPs/PPS',   key:'src_ip_ratio',        em:'em_src_ip_ratio' },
+    { tier:'1.4', label:'Dst Ports/PPS', key:'dst_port_ratio',      em:'em_dst_port_ratio' },
+];
+
+const API_BASE = '/api';
+let currentTarget = null;
+let charts        = {};
+
+// ============================================================================
+// BUILD CHART GRID
+// ============================================================================
+
+function buildGrid() {
+    const container = document.getElementById('chartsContainer');
+    container.innerHTML = '';
+
+    let currentTier = null;
+
+    METRICS.forEach(m => {
+        // Insert a full-width tier label when tier changes
+        if (m.tier !== currentTier) {
+            currentTier = m.tier;
+            const headRow = document.createElement('div');
+            headRow.className = 'col-12';
+            headRow.innerHTML = `
+                <div class="section-head" style="color:${TIER_COLOR[m.tier]}">
+                    ◆ Tier ${m.tier}
+                </div>`;
+            container.appendChild(headRow);
         }
 
-        // ---------------------------------------------------------
-        // Data Fetching & Updates
-        // ---------------------------------------------------------
-        async function fetchTargets() {
-            try {
-                const response = await fetch(`${API_BASE}/targets`);
-                const targets = await response.json();
-                const select = document.getElementById('targetSelect');
+        const col = document.createElement('div');
+        col.className = 'col-md-6 col-lg-4 col-xl-3';
 
-                select.innerHTML = '';
+        const color = TIER_COLOR[m.tier];
+        col.innerHTML = `
+            <div class="card">
+                <div class="card-header d-flex justify-content-between">
+                    <span>${m.label}</span>
+                    <span class="chart-tier-label" style="color:${color}">Tier ${m.tier}</span>
+                </div>
+                <div class="card-body p-2">
+                    <canvas id="chart_${m.key}"></canvas>
+                </div>
+            </div>`;
+        container.appendChild(col);
+    });
+}
 
-                if (targets.length === 0) {
-                    select.add(new Option("No traffic detected", ""));
-                    return;
-                }
+// ============================================================================
+// CHART CREATION (dual-line: raw + EWMA mean)
+// ============================================================================
 
-                targets.forEach(ip => {
-                    select.add(new Option(ip, ip));
-                });
+function makeChart(canvasId, rawColor) {
+    const ctx = document.getElementById(canvasId);
+    if (!ctx) return null;
+    return new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [
+                {
+                    label: 'Real-time',
+                    data: [],
+                    borderColor: rawColor,
+                    borderWidth: 1.8,
+                    tension: 0.35,
+                    pointRadius: 0,
+                    fill: false,
+                },
+                {
+                    label: 'EWMA baseline',
+                    data: [],
+                    borderColor: EWMA_COLOR,
+                    borderWidth: 2,
+                    borderDash: [6, 3],
+                    tension: 0.35,
+                    pointRadius: 0,
+                    fill: false,
+                },
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            interaction: { mode:'index', intersect:false },
+            plugins: {
+                legend: { display: false },
+                tooltip: { enabled: true },
+            },
+            scales: {
+                x: {
+                    type: 'time',
+                    time: { unit:'second', displayFormats:{ second:'HH:mm:ss' } },
+                    ticks: { display: false },
+                    grid: { color:'#222' },
+                },
+                y: {
+                    beginAtZero: true,
+                    grid: { color:'#222' },
+                    ticks: { color:'#888', font:{ size:10 } },
+                },
+            },
+        },
+    });
+}
 
-                if (!currentTarget && targets.length > 0) {
-                    currentTarget = targets[0];
-                    select.value = currentTarget;
-                }
-            } catch (error) {
-                console.error("Target fetch failed", error);
-            }
+// ============================================================================
+// TARGET SELECTOR
+// ============================================================================
+
+async function fetchTargets() {
+    try {
+        const r   = await fetch(`${API_BASE}/targets`);
+        const ips = await r.json();
+        const sel = document.getElementById('targetSelect');
+
+        /* Remember what was selected before we touch the DOM */
+        const previous = currentTarget || sel.value;
+
+        sel.innerHTML = '';
+        if (!ips.length) {
+            sel.innerHTML = '<option>No active traffic</option>';
+            return;
         }
 
-        document.getElementById('targetSelect').addEventListener('change', (e) => {
-            currentTarget = e.target.value;
-            // Destroy old charts to reset
-            Object.values(charts).forEach(c => c.destroy());
-            charts = {};
-            refreshData();
+        ips.forEach(ip => {
+            const o = document.createElement('option');
+            o.value = o.text = ip;
+            sel.appendChild(o);
         });
 
-        async function refreshData() {
-            if (!currentTarget) {
-                await fetchTargets();
-                if (!currentTarget) return;
+        /*
+         * Always restore the previously selected IP if it still exists in the
+         * updated list.  Without this, rebuilding innerHTML resets the visual
+         * selection to the first option even when currentTarget is set.
+         */
+        if (previous && ips.includes(previous)) {
+            sel.value     = previous;
+            currentTarget = previous;
+        } else {
+            /* First load, or the previous IP disappeared — pick the first */
+            sel.value     = ips[0];
+            currentTarget = ips[0];
+        }
+    } catch (e) { console.error('fetchTargets:', e); }
+}
+
+document.getElementById('targetSelect').addEventListener('change', e => {
+    currentTarget = e.target.value;
+    /* Destroy existing charts so they are rebuilt for the new IP */
+    Object.values(charts).forEach(c => c.destroy());
+    charts = {};
+});
+
+// ============================================================================
+// SCORE BAR HELPER
+// ============================================================================
+
+function setScoreBar(barId, valId, score, active) {
+    const pct  = active ? (score * 100).toFixed(1) : 0;
+    const text = active ? score.toFixed(3) : '—';
+    const bar  = document.getElementById(barId);
+    const val  = document.getElementById(valId);
+    if (!bar || !val) return;
+    bar.style.width = pct + '%';
+    val.textContent = text;
+
+    /* Colour: green → yellow → red based on score */
+    let col = '#198754';
+    if (score >= 0.6) col = '#dc3545';
+    else if (score >= 0.4) col = '#ffc107';
+    bar.style.background = col;
+}
+
+// ============================================================================
+// STATUS PANEL
+// ============================================================================
+
+function updateStatus(rec) {
+    /* Timestamp */
+    const ts = new Date(rec.timestamp);
+    document.getElementById('lastUpdated').textContent =
+        'Last update: ' + ts.toLocaleTimeString();
+
+    /* Detection state badge */
+    const badge = document.getElementById('detectionBadge');
+    const state = (rec.detection_state || 'UNKNOWN').toUpperCase();
+    badge.textContent = state;
+    badge.className   = '';   /* reset */
+    const cls = {
+        WARMUP:     'st-warmup',
+        NORMAL:     'st-normal',
+        RECOVERING: 'st-recovering',
+        SUSPICIOUS: 'st-suspicious',
+        ATTACK:     'st-attack',
+    }[state] || 'st-warmup';
+    badge.classList.add(cls);
+
+    /* Warm-up progress */
+    const wr = rec.warmup_remaining || 0;
+    const warmupRow = document.getElementById('warmupRow');
+    if (state === 'WARMUP' && wr > 0) {
+        warmupRow.style.display = 'block';
+        document.getElementById('warmupVal').textContent = wr;
+        /* Simple text progress bar */
+        const total  = 30;   /* matches DETECTION_WARMUP_WINDOWS */
+        const filled = total - wr;
+        document.getElementById('warmupBar').textContent =
+            '█'.repeat(filled) + '░'.repeat(wr);
+    } else {
+        warmupRow.style.display = 'none';
+    }
+
+    /* Score bars */
+    const t1ev = rec.tier1_evaluated;
+    setScoreBar('bar-t0',   'val-t0',   rec.tier0_score        || 0, true);
+    setScoreBar('bar-tcp',  'val-tcp',  rec.tier1_tcp_score    || 0, t1ev);
+    setScoreBar('bar-udp',  'val-udp',  rec.tier1_udp_score    || 0, t1ev);
+    setScoreBar('bar-icmp', 'val-icmp', rec.tier1_icmp_score   || 0, t1ev);
+    setScoreBar('bar-dist', 'val-dist', rec.tier1_dist_score   || 0, t1ev);
+}
+
+// ============================================================================
+// CHART UPDATE
+// ============================================================================
+
+function updateCharts(data) {
+    const labels = data.map(d => new Date(d.timestamp));
+
+    METRICS.forEach(m => {
+        const rawColor = TIER_COLOR[m.tier];
+        const rawArr   = data.map(d => d[m.key]  ?? 0);
+        const emArr    = data.map(d => d[m.em]    ?? 0);
+
+        if (charts[m.key]) {
+            const c = charts[m.key];
+            c.data.labels           = labels;
+            c.data.datasets[0].data = rawArr;
+            c.data.datasets[1].data = emArr;
+            c.update('none');
+        } else {
+            charts[m.key] = makeChart(`chart_${m.key}`, rawColor);
+            if (charts[m.key]) {
+                charts[m.key].data.labels           = labels;
+                charts[m.key].data.datasets[0].data = rawArr;
+                charts[m.key].data.datasets[1].data = emArr;
+                charts[m.key].update('none');
             }
-
-            try {
-                const response = await fetch(`${API_BASE}/stats/${currentTarget}`);
-                const data = await response.json();
-                if (!data || data.length === 0) return;
-
-                const latest = data[0];
-                updateHUD(latest);
-                updateCharts(data);
-
-            } catch (error) {
-                console.error("Stats fetch failed", error);
-            }
         }
+    });
+}
 
-        function updateHUD(data) {
-            // Formatter for large numbers
-            const numFmt = new Intl.NumberFormat('en-US');
+// ============================================================================
+// MAIN REFRESH LOOP
+// ============================================================================
 
-            document.getElementById('hud_pps').textContent = numFmt.format(Math.round(data.pps));
-            document.getElementById('hud_bps').textContent = formatBytes(data.bps);
-            document.getElementById('hud_t0').textContent = (data.tier0_distance_norm || 0).toFixed(4);
-            document.getElementById('hud_flows').textContent = numFmt.format(Math.round(data.fps));
+async function refresh() {
+    /* currentTarget is set by fetchTargets() or the change event listener.
+     * Do NOT call fetchTargets() here — doing so rebuilds the <select> DOM
+     * every second, which resets the visual selection to the first option
+     * even when the user has chosen a different IP. */
+    if (!currentTarget) return;
 
-            // Update Badge Color based on state
-            const statusEl = document.getElementById('detectionStatus');
-            const state = data.detection_state || "UNKNOWN";
-            statusEl.textContent = state;
+    try {
+        const r    = await fetch(`${API_BASE}/stats/${currentTarget}`);
+        const data = await r.json();
+        if (!data || !data.length) return;
 
-            // Remove old color classes
-            statusEl.classList.remove('bg-secondary', 'bg-success', 'bg-warning', 'bg-danger');
+        updateStatus(data[data.length - 1]);
+        updateCharts(data);
+    } catch (e) { console.error('refresh:', e); }
+}
 
-            if (state === 'NORMAL' || state === 'LEARNING') {
-                statusEl.classList.add('bg-success');
-            } else if (state === 'SUSPICIOUS') {
-                statusEl.classList.add('bg-warning', 'text-dark');
-            } else {
-                statusEl.classList.add('bg-danger');
-            }
-        }
+// ============================================================================
+// BOOT
+// ============================================================================
 
-        function formatBytes(bits) {
-            if (bits === 0) return '0';
-            const k = 1000;
-            const sizes = ['b', 'Kb', 'Mb', 'Gb'];
-            const i = Math.floor(Math.log(bits) / Math.log(k));
-            return parseFloat((bits / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-        }
+buildGrid();
 
-        function updateCharts(data) {
-            const labels = data.map(d => new Date(d.timestamp));
+/* Initial target load, then poll for new IPs every 5 s */
+fetchTargets();
+setInterval(fetchTargets, 5000);
 
-            const allMetrics = [
-                ...METRIC_GROUPS.anomaly,
-                ...METRIC_GROUPS.volumetrics,
-                ...METRIC_GROUPS.vectors
-            ];
-
-            allMetrics.forEach(metric => {
-                const ctx = document.getElementById(`chart_${metric.key}`);
-                if (!ctx) return;
-
-                const rawData = data.map(d => d[metric.key]);
-                const ewmaData = metric.ewma ? data.map(d => d[metric.ewma]) : [];
-
-                if (charts[metric.key]) {
-                    const chart = charts[metric.key];
-                    chart.data.labels = labels;
-                    chart.data.datasets[0].data = rawData;
-                    if (ewmaData.length > 0 && chart.data.datasets[1]) {
-                        chart.data.datasets[1].data = ewmaData;
-                    }
-                    chart.update('none'); // No animation for performance
-                } else {
-                    // Initialize Chart
-                    const datasets = [{
-                        label: 'Current',
-                        data: rawData,
-                        borderColor: metric.color,
-                        backgroundColor: metric.color + '20', // Add transparency for fill
-                        borderWidth: 2,
-                        fill: true,
-                        tension: 0.3,
-                        pointRadius: 0
-                    }];
-
-                    if (metric.ewma) {
-                        datasets.push({
-                            label: 'Baseline',
-                            data: ewmaData,
-                            borderColor: '#adb5bd', // Bootstrap Gray-500
-                            borderWidth: 1,
-                            borderDash: [5, 5],
-                            pointRadius: 0,
-                            fill: false
-                        });
-                    }
-
-                    charts[metric.key] = new Chart(ctx, {
-                        type: 'line',
-                        data: { labels, datasets },
-                        options: {
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            animation: false,
-                            interaction: { mode: 'index', intersect: false },
-                            plugins: {
-                                legend: { display: false }, // Clean look
-                                tooltip: {
-                                    mode: 'index',
-                                    intersect: false
-                                }
-                            },
-                            scales: {
-                                x: {
-                                    type: 'time',
-                                    time: { unit: 'second' },
-                                    grid: { display: false },
-                                    ticks: { display: false }
-                                },
-                                y: {
-                                    beginAtZero: true,
-                                    grid: {
-                                        color: '#495057' // Darker grid lines for dark mode
-                                    },
-                                    ticks: {
-                                        color: '#adb5bd', // Lighter text for dark mode
-                                        font: { size: 10 }
-                                    }
-                                }
-                            }
-                        }
-                    });
-                }
-            });
-        }
-
-        // Start
-        init();
-
-    </script>
+/* Data refresh every 1 s — independent of target polling */
+setInterval(refresh, 1000);
+</script>
 </body>
-
 </html>
