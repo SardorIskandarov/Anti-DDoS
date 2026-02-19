@@ -67,7 +67,7 @@ struct hll_counter {
  * The CUSUM variance estimator in the detection engine reuses
  * EWMA_ALPHA_TIER0 as its alpha_std initialiser (set in detection_engine_init).
  */
-#define EWMA_ALPHA_TIER0   0.20
+#define EWMA_ALPHA_TIER0   0.40
 #define EWMA_ALPHA_TIER1_1 0.20
 #define EWMA_ALPHA_TIER1_2 0.20
 #define EWMA_ALPHA_TIER1_3 0.20

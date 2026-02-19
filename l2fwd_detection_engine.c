@@ -39,6 +39,9 @@ void detection_engine_init(struct detection_engine *engine, uint64_t timestamp) 
     engine->recovery_weight  = 0.0;
     engine->last_attack_time = timestamp;
 
+    /* Initialize persistence filter counter */
+    engine->consecutive_attack_counter = 0;
+
     /*
      * Initialise CUSUM per-feature states.
      * alpha_std uses the same tier-0 smoothing factor so the variance
@@ -126,11 +129,16 @@ void extract_tier1_dist_features(const struct dst_ip_stats *stats,
 }
 
 // ============================================================================
-// TIER 0 — CUSUM DETECTION
+// TIER 0 — CUSUM DETECTION WITH VARIANCE FREEZE
 // ============================================================================
 
 /**
  * cusum_update_one — update a single feature's CUSUM state.
+ *
+ * CRITICAL: During baseline freeze (frozen == true), BOTH S_t AND variance
+ * are held constant. This prevents:
+ *   1. Unbounded S_t accumulation from attack traffic
+ *   2. Variance inflation from attack traffic (which raises H, weakening detection)
  *
  * During warm-up we only update the variance estimate (learning the baseline
  * spread) but do not accumulate S_t and do not flag alarms.
@@ -146,7 +154,7 @@ void extract_tier1_dist_features(const struct dst_ip_stats *stats,
  * @param ewma       Per-feature EWMA state (mean, n, alpha) — read-only here.
  * @param x          Current observed value for this feature.
  * @param in_warmup  True → only update variance, skip accumulation + alarm.
- * @param frozen     True → skip ALL updates (hold S_t, variance as-is).
+ * @param frozen     True → skip ALL updates (S_t AND variance held constant).
  * @param out_S      Written with the new S_t (or current if frozen/warmup).
  * @return           true if alarm fires (S_t > H_abs), false otherwise.
  */
@@ -156,7 +164,10 @@ static bool cusum_update_one(struct cusum_state *cs,
                               bool in_warmup,
                               bool frozen,
                               double *out_S) {
-    /* During baseline freeze: hold everything, no alarm */
+    /*
+     * CRITICAL FREEZE: Hold BOTH S_t AND variance constant.
+     * Without this, attack traffic inflates variance → H rises → detection weakens.
+     */
     if (frozen) {
         *out_S = cs->S;
         return false;
@@ -403,7 +414,7 @@ static detection_state_t classify(double score) {
 }
 
 // ============================================================================
-// MAIN DETECTION LOGIC
+// MAIN DETECTION LOGIC WITH PERSISTENCE FILTER
 // ============================================================================
 
 struct detection_result detection_engine_process(
@@ -485,20 +496,38 @@ struct detection_result detection_engine_process(
                     : 1.0;
 
     /* -----------------------------------------------------------------------
-     * TIER 0 — CUSUM decision.
+     * TIER 0 — CUSUM decision with PERSISTENCE FILTER.
      *
      * CUSUM accumulators are frozen when the baseline is frozen to prevent
      * the accumulator from growing unboundedly on attack traffic.
      *
-     * Decision rule:
-     *   attack_count >= TIER0_ATTACK_THRESHOLD  →  TIER0 = ATTACK
-     *   else                                    →  TIER0 = NORMAL
+     * PERSISTENCE FILTER:
+     *   Step 1: Count alarms this window
+     *   Step 2: If alarm_count >= TIER0_ATTACK_THRESHOLD:
+     *              consecutive_attack_counter++
+     *           else:
+     *              consecutive_attack_counter = 0
+     *   Step 3: Tier-0 ATTACK confirmed only when:
+     *              consecutive_attack_counter >= CONSECUTIVE_ATTACK_WINDOWS
+     *
+     * This prevents transient spikes (e.g. legitimate bursts) from
+     * immediately triggering attack mode.
      * --------------------------------------------------------------------- */
     bool tier0_frozen = engine->tier0_state.frozen;
 
     int alarm_count = cusum_update_tier0(engine, stats, &t0, &result, tier0_frozen);
 
-    bool tier0_triggered = (alarm_count >= TIER0_ATTACK_THRESHOLD);
+    /* -----------------------------------------------------------------------
+     * PERSISTENCE FILTER LOGIC
+     * --------------------------------------------------------------------- */
+    if (alarm_count >= TIER0_ATTACK_THRESHOLD) {
+        engine->consecutive_attack_counter++;
+    } else {
+        engine->consecutive_attack_counter = 0;
+    }
+
+    /* Attack confirmed only after persistent threshold violation */
+    bool tier0_triggered = (engine->consecutive_attack_counter >= CONSECUTIVE_ATTACK_WINDOWS);
 
     /* -----------------------------------------------------------------------
      * Update Tier 0 EWMA mean baseline when NOT under attack.
@@ -586,10 +615,11 @@ struct detection_result detection_engine_process(
         if (engine->state != final_state) {
             engine->attack_count++;
             engine->last_attack_time = timestamp;
-            printf("[Detection] *** %s *** cusum_alarms=%d/%d "
+            printf("[Detection] *** %s *** cusum_alarms=%d/%d (persisted: %u windows) "
                    "tcp=%.3f udp=%.3f icmp=%.3f dist=%.3f\n",
                    detection_state_str(final_state),
                    alarm_count, TIER0_N,
+                   engine->consecutive_attack_counter,
                    result.tier1_tcp_score, result.tier1_udp_score,
                    result.tier1_icmp_score, result.tier1_dist_score);
         }

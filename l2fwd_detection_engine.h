@@ -29,16 +29,35 @@
  *
  * Tunable at compile time.
  */
-#define CUSUM_K  0.5   /* allowance factor  (× ewma_std) */
-#define CUSUM_H  4.0   /* threshold factor  (× ewma_std) */
+#define CUSUM_K  0.1   /* allowance factor  (× ewma_std) */
+#define CUSUM_H  3.0   /* threshold factor  (× ewma_std) */
 
 /**
- * Tier 0 attack decision:
+ * Tier 0 attack decision with persistence filter:
+ *
  *   attack_count = number of Tier-0 features whose CUSUM exceeds H
- *   if attack_count >= TIER0_ATTACK_THRESHOLD → ATTACK (triggers Tier 1)
- *   else                                       → NORMAL
+ *
+ *   STEP 1 (Per-window check):
+ *     if attack_count >= TIER0_ATTACK_THRESHOLD:
+ *         consecutive_attack_counter++
+ *     else:
+ *         consecutive_attack_counter = 0
+ *
+ *   STEP 2 (Attack confirmation):
+ *     if consecutive_attack_counter >= CONSECUTIVE_ATTACK_WINDOWS:
+ *         Tier-0 ATTACK confirmed → triggers Tier-1 evaluation
+ *     else:
+ *         Tier-0 NORMAL
+ *
+ * Threshold raised to 3 (from 2) because burst features correlate with
+ * volume (pps/bps/fps vs burst_pps/burst_bps/burst_fps), reducing false
+ * positives from correlated alarms.
+ *
+ * Persistence filter prevents transient spikes (e.g. legitimate bursts)
+ * from immediately triggering attack mode.
  */
-#define TIER0_ATTACK_THRESHOLD 2   /* out of TIER0_N = 6 features */
+#define TIER0_ATTACK_THRESHOLD 3   /* out of TIER0_N = 6 features */
+#define CONSECUTIVE_ATTACK_WINDOWS 3   /* persist for 3 consecutive seconds */
 
 /**
  * Tier 1 sigmoid normalisation  (unchanged):
@@ -59,6 +78,10 @@
 /**
  * After an attack is detected, freeze baselines for this many windows to
  * prevent baseline poisoning during an ongoing attack.
+ *
+ * CRITICAL: Freezing applies to BOTH mean AND variance updates.
+ * Without freezing variance, attack traffic inflates std, weakening CUSUM
+ * detection (H = CUSUM_H * std rises, making alarms harder to trigger).
  */
 #define BASELINE_FREEZE_WINDOWS 300   /* 5 minutes at 1 s/window */
 
@@ -147,8 +170,11 @@ struct tier1_dist_features {
  *   variance_new = variance + alpha_std * ((x - mean)^2 - variance)
  *   std = sqrt(variance)
  *
- * Updates are skipped (S_t held, std not updated) while the baseline is
- * frozen during an attack, matching the behaviour of the EWMA mean.
+ * CRITICAL FREEZE BEHAVIOR:
+ * When tier_state.frozen == true (during attack):
+ *   - S_t is held constant (no accumulation)
+ *   - variance is NOT updated (prevents attack traffic inflating std)
+ *   - This keeps H = CUSUM_H * std stable, maintaining detection sensitivity
  */
 struct cusum_state {
     double S;            /* Upper CUSUM accumulator (≥ 0)              */
@@ -226,6 +252,9 @@ struct detection_engine {
     /* Warm-up counter */
     uint32_t warmup_counter;     /* Windows elapsed since creation           */
 
+    /* Persistence filter: consecutive windows with attack_count >= threshold */
+    uint32_t consecutive_attack_counter;
+
     /* Recovery tracking */
     uint32_t recovery_counter;   /* Windows elapsed since recovery began     */
     double   recovery_weight;    /* 0.0 → 1.0 (alpha multiplier during reco) */
@@ -266,13 +295,15 @@ void extract_tier1_dist_features(const struct dst_ip_stats *stats,
                                   double time_sec);
 
 /**
- * Tier 0: CUSUM-based anomaly detection.
+ * Tier 0: CUSUM-based anomaly detection with persistence filter.
  *
  * Updates each feature's CUSUM accumulator and EWMA std estimate.
  * Returns the number of features whose S_t exceeds H (0..TIER0_N).
  *
- * When frozen == true the CUSUM accumulators and std estimates are NOT
- * updated (baseline freeze during attack).
+ * CRITICAL: When frozen == true, BOTH S_t AND variance are held constant.
+ * This prevents attack traffic from:
+ *   - Accumulating unbounded S_t values
+ *   - Inflating std (which raises H, weakening detection)
  */
 int cusum_update_tier0(struct detection_engine *engine,
                        const struct dst_ip_stats *stats,
