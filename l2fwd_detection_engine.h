@@ -11,26 +11,47 @@
 
 /**
  * Warm-up: engine learns but does not trigger alerts for this many windows.
- * At 1 s/window that is 30 seconds of silent learning before decisions start.
+ * At 1 s/window that is 300 seconds of silent learning before decisions start.
  */
-#define DETECTION_WARMUP_WINDOWS 30
+#define DETECTION_WARMUP_WINDOWS 300
 
 /**
- * Sigmoid normalisation:  score = 1 / (1 + exp(-k * (distance - d0)))
+ * CUSUM parameters for Tier 0 volume anomaly detection.
  *
- *   k  = steepness (higher → sharper transition)
- *   d0 = inflection point (the "average normal" distance)
+ *   k  — allowance / slack factor (multiplied by ewma_std to get absolute k)
+ *        Controls sensitivity: lower k → more sensitive, more false positives.
+ *   h  — decision threshold factor (multiplied by ewma_std to get absolute H)
+ *        Controls how quickly accumulated deviations trigger an alarm.
  *
- * Starting values per spec: k = 3, d0 = 0.5
+ *   S_t = max(0,  S_{t-1}  +  (x_t − ewma_mean − k * ewma_std))
+ *   H   = cusum_h * ewma_std
+ *   Alarm when S_t > H
+ *
+ * Tunable at compile time.
  */
-#define SIGMOID_K   3.0
-#define SIGMOID_D0  0.5
+#define CUSUM_K  0.5   /* allowance factor  (× ewma_std) */
+#define CUSUM_H  4.0   /* threshold factor  (× ewma_std) */
 
 /**
- * Decision thresholds on the normalised score ∈ [0, 1]:
- *   [0.0 , 0.4)  → NORMAL
- *   [0.4 , 0.6]  → SUSPICIOUS
- *   (0.6 , 1.0]  → ATTACK
+ * Tier 0 attack decision:
+ *   attack_count = number of Tier-0 features whose CUSUM exceeds H
+ *   if attack_count >= TIER0_ATTACK_THRESHOLD → ATTACK (triggers Tier 1)
+ *   else                                       → NORMAL
+ */
+#define TIER0_ATTACK_THRESHOLD 2   /* out of TIER0_N = 6 features */
+
+/**
+ * Tier 1 sigmoid normalisation  (unchanged):
+ *   score = 1 / (1 + exp(-k * (distance - d0)))
+ */
+#define SIGMOID_K   1.4
+#define SIGMOID_D0  0.9
+
+/**
+ * Decision thresholds on Tier 1 normalised score ∈ [0, 1]:
+ *   [0.0, 0.4)   → NORMAL
+ *   [0.4, 0.6]   → SUSPICIOUS
+ *   (0.6, 1.0]   → ATTACK
  */
 #define THRESHOLD_NORMAL     0.4
 #define THRESHOLD_SUSPICIOUS 0.6
@@ -109,6 +130,33 @@ struct tier1_dist_features {
 #define TIER1_DIST_N 2
 
 // ============================================================================
+// CUSUM STATE  (one instance per Tier-0 feature)
+// ============================================================================
+
+/**
+ * Per-feature CUSUM state.
+ *
+ * The upper CUSUM accumulator S_t detects positive (upward) shifts in a
+ * feature relative to its EWMA mean baseline:
+ *
+ *   S_t = max(0,  S_{t-1}  +  (x_t − ewma_mean − k * ewma_std))
+ *
+ * An alarm fires when S_t > H  (H = CUSUM_H * ewma_std).
+ *
+ * ewma_std tracks a running exponentially-weighted standard deviation:
+ *   variance_new = variance + alpha_std * ((x - mean)^2 - variance)
+ *   std = sqrt(variance)
+ *
+ * Updates are skipped (S_t held, std not updated) while the baseline is
+ * frozen during an attack, matching the behaviour of the EWMA mean.
+ */
+struct cusum_state {
+    double S;            /* Upper CUSUM accumulator (≥ 0)              */
+    double variance;     /* EWMA-tracked variance (std = sqrt(variance)) */
+    double alpha_std;    /* Smoothing factor for variance estimate       */
+};
+
+// ============================================================================
 // TIER BASELINE  (frozen during attacks, thawed during recovery)
 // ============================================================================
 
@@ -130,9 +178,16 @@ struct tier_state {
 struct detection_result {
     detection_state_t state;
 
-    /* Tier-0 metrics — always computed */
-    double tier0_raw_dist;           /* Unnormalised Manhattan distance        */
-    double tier0_score;              /* Sigmoid-normalised [0, 1]              */
+    /* Tier-0 CUSUM metrics — always computed after warm-up */
+    double tier0_cusum_pps;        /* S_t for PPS feature                   */
+    double tier0_cusum_bps;        /* S_t for BPS feature                   */
+    double tier0_cusum_fps;        /* S_t for FPS feature                   */
+    double tier0_cusum_burst_pps;  /* S_t for burst_pps feature             */
+    double tier0_cusum_burst_bps;  /* S_t for burst_bps feature             */
+    double tier0_cusum_burst_fps;  /* S_t for burst_fps feature             */
+    int    tier0_attack_count;     /* Features with S_t > H this window     */
+    /* Legacy score field kept for CSV compatibility — set to 0.0 */
+    double tier0_score;
 
     /* Tier-1 metrics — computed only when Tier-0 triggers */
     bool   tier1_evaluated;
@@ -148,7 +203,7 @@ struct detection_result {
     /* Overall Tier-1 score (worst-case across all Tier-1 sub-tiers) */
     double tier1_final_score;
 
-    uint64_t timestamp;          /* TSC cycles */
+    uint64_t timestamp;            /* TSC cycles */
 };
 
 // ============================================================================
@@ -164,6 +219,9 @@ struct detection_engine {
     struct tier_state tier1_udp_state;
     struct tier_state tier1_icmp_state;
     struct tier_state tier1_dist_state;
+
+    /* CUSUM accumulators — one per Tier-0 feature (TIER0_N = 6) */
+    struct cusum_state cusum[TIER0_N];
 
     /* Warm-up counter */
     uint32_t warmup_counter;     /* Windows elapsed since creation           */
@@ -191,9 +249,9 @@ void detection_engine_init(struct detection_engine *engine, uint64_t timestamp);
  * Extract per-tier feature vectors from the current stats window.
  * Called once per second for every active dst_ip.
  */
-void extract_tier0_features   (const struct dst_ip_stats *stats,
-                                struct tier0_features *out,
-                                double time_sec);
+void extract_tier0_features    (const struct dst_ip_stats *stats,
+                                 struct tier0_features *out,
+                                 double time_sec);
 void extract_tier1_tcp_features(const struct dst_ip_stats *stats,
                                  struct tier1_tcp_features *out,
                                  double time_sec);
@@ -208,19 +266,27 @@ void extract_tier1_dist_features(const struct dst_ip_stats *stats,
                                   double time_sec);
 
 /**
- * Compute normalised Manhattan distance between a feature vector and its EWMA
- * baseline means.
+ * Tier 0: CUSUM-based anomaly detection.
  *
- * distance_i = |current_i - mean_i| / (mean_i + EWMA_EPSILON)
- * total_distance = Σ distance_i
- * score = sigmoid(total_distance)
+ * Updates each feature's CUSUM accumulator and EWMA std estimate.
+ * Returns the number of features whose S_t exceeds H (0..TIER0_N).
+ *
+ * When frozen == true the CUSUM accumulators and std estimates are NOT
+ * updated (baseline freeze during attack).
  */
-double compute_tier0_score   (const struct tier0_ewma      *ewma,
-                               const struct tier0_features   *cur);
-double compute_tier1_tcp_score(const struct tier1_tcp_ewma  *ewma,
-                                const struct tier1_tcp_features *cur);
-double compute_tier1_udp_score(const struct tier1_udp_ewma  *ewma,
-                                const struct tier1_udp_features *cur);
+int cusum_update_tier0(struct detection_engine *engine,
+                       const struct dst_ip_stats *stats,
+                       const struct tier0_features *cur,
+                       struct detection_result *result,
+                       bool frozen);
+
+/**
+ * Tier 1: normalised Manhattan distance + sigmoid score (unchanged).
+ */
+double compute_tier1_tcp_score (const struct tier1_tcp_ewma  *ewma,
+                                 const struct tier1_tcp_features *cur);
+double compute_tier1_udp_score (const struct tier1_udp_ewma  *ewma,
+                                 const struct tier1_udp_features *cur);
 double compute_tier1_icmp_score(const struct tier1_icmp_ewma *ewma,
                                  const struct tier1_icmp_features *cur);
 double compute_tier1_dist_score(const struct tier1_dist_ewma *ewma,

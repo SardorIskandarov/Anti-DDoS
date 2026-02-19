@@ -439,7 +439,7 @@ void ddos_log_and_reset_stats(void) {
 
     if (unlikely(port_stats == NULL)) return;
 
-    clock_gettime(CLOCK_REALTIME, &ts);
+    clock_gettime(0, &ts);
     timestamp_ms = (long long)ts.tv_sec * 1000LL +
                    (long long)ts.tv_nsec / 1000000LL;
 

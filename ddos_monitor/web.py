@@ -18,7 +18,8 @@ def get_target_stats(target_ip):
     with shared_state.data_lock:
         # Filter RAM buffer for the specific IP
         filtered_data = [r for r in shared_state.latest_traffic_data if r.get('dst_ip') == target_ip]
-        # Return in chronological order (oldest to newest) for proper chart rendering
+        # Reverse so oldest is first (left side of chart), newest is last (right side)
+        filtered_data.reverse()
         return jsonify(filtered_data)
 
 
@@ -31,6 +32,17 @@ def get_active_targets():
         
         targets = list(set(r.get('dst_ip') for r in shared_state.latest_traffic_data if r.get('dst_ip')))
         return jsonify(sorted(targets))
+
+
+@app.route('/api/debug/raw')
+def get_debug_raw():
+    """DEBUG: Returns the entire shared_state.latest_traffic_data array for inspection."""
+    with shared_state.data_lock:
+        return jsonify({
+            'count': len(shared_state.latest_traffic_data),
+            'sample': shared_state.latest_traffic_data[:3] if shared_state.latest_traffic_data else [],
+            'unique_ips': list(set(r.get('dst_ip') for r in shared_state.latest_traffic_data if r.get('dst_ip')))
+        })
 
 
 @app.route('/api/alerts')
@@ -49,8 +61,8 @@ def get_recent_alerts():
                     'timestamp': record.get('timestamp').isoformat() if isinstance(record.get('timestamp'), datetime) else str(record.get('timestamp')),
                     'dst_ip': record.get('dst_ip', 'Unknown'),
                     'state': state,
-                    'tier0_distance': record.get('tier0_distance_norm', 0),
-                    'tier1_distance': record.get('tier1_distance_norm', 0),
+                    'tier0_score': record.get('tier0_score', 0),
+                    'tier1_final_score': record.get('tier1_final_score', 0),
                     'pps': record.get('pps', 0),
                     'bps': record.get('bps', 0),
                 })
@@ -79,8 +91,8 @@ def get_target_alerts(target_ip):
             'state': state,
             'has_alert': state in ['SUSPICIOUS', 'ATTACK'],
             'timestamp': latest.get('timestamp').isoformat() if isinstance(latest.get('timestamp'), datetime) else str(latest.get('timestamp')),
-            'tier0_distance': latest.get('tier0_distance_norm', 0),
-            'tier1_distance': latest.get('tier1_distance_norm', 0),
+            'tier0_score': latest.get('tier0_score', 0),
+            'tier1_final_score': latest.get('tier1_final_score', 0),
             'pps': latest.get('pps', 0),
             'bps': latest.get('bps', 0),
         })
@@ -116,7 +128,7 @@ def get_stats():
         
         total_pps = sum(record.get('pps', 0) for record in data)
         total_bps = sum(record.get('bps', 0) for record in data)
-        total_flows = sum(record.get('udp_flows', 0) for record in data)
+        total_flows = sum(record.get('udp_flow_ratio', 0) for record in data)
         unique_ips = sum(record.get('unique_src_ips', 0) for record in data)
         
         return jsonify({

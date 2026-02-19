@@ -70,6 +70,20 @@
 
 <div class="container-fluid">
 
+    <!-- DEBUG PANEL (remove after fixing) -->
+    <div class="row mb-2">
+        <div class="col-12">
+            <div class="card" style="border-color:#dc3545;">
+                <div class="card-body p-2">
+                    <div style="font-family:monospace;font-size:11px;color:#ffc107;">
+                        <strong>DEBUG:</strong>
+                        <span id="debugStatus">Waiting for data...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- ── Status row ──────────────────────────────────────────────────── -->
     <div class="row mb-3">
         <div class="col-12">
@@ -130,6 +144,40 @@
                         </div>
                     </div>
 
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Live Traffic Stats ────────────────────────────────────────────── -->
+    <div class="row mb-3">
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-body p-3">
+                    <div style="font-size:11px;color:#888;text-transform:uppercase;margin-bottom:4px;letter-spacing:0.5px;">
+                        Packets/sec
+                    </div>
+                    <div style="font-size:28px;font-weight:600;color:#0d6efd;" id="livePPS">—</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-body p-3">
+                    <div style="font-size:11px;color:#888;text-transform:uppercase;margin-bottom:4px;letter-spacing:0.5px;">
+                        Bits/sec
+                    </div>
+                    <div style="font-size:28px;font-weight:600;color:#0d6efd;" id="liveBPS">—</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-body p-3">
+                    <div style="font-size:11px;color:#888;text-transform:uppercase;margin-bottom:4px;letter-spacing:0.5px;">
+                        Flows/sec (HLL)
+                    </div>
+                    <div style="font-size:28px;font-weight:600;color:#0d6efd;" id="liveFPS">—</div>
                 </div>
             </div>
         </div>
@@ -238,106 +286,125 @@ function buildGrid() {
 
 function makeChart(canvasId, rawColor) {
     const ctx = document.getElementById(canvasId);
-    if (!ctx) return null;
-    return new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: [],
-            datasets: [
-                {
-                    label: 'Real-time',
-                    data: [],
-                    borderColor: rawColor,
-                    borderWidth: 1.8,
-                    tension: 0.35,
-                    pointRadius: 0,
-                    fill: false,
-                },
-                {
-                    label: 'EWMA baseline',
-                    data: [],
-                    borderColor: EWMA_COLOR,
-                    borderWidth: 2,
-                    borderDash: [6, 3],
-                    tension: 0.35,
-                    pointRadius: 0,
-                    fill: false,
-                },
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: false,
-            interaction: { mode:'index', intersect:false },
-            plugins: {
-                legend: { display: false },
-                tooltip: { enabled: true },
+    if (!ctx) {
+        console.error(`[makeChart] Canvas element #${canvasId} not found`);
+        return null;
+    }
+
+    try {
+        return new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: 'Real-time',
+                        data: [],
+                        borderColor: rawColor,
+                        borderWidth: 1.8,
+                        tension: 0.35,
+                        pointRadius: 0,
+                        fill: false,
+                    },
+                    {
+                        label: 'EWMA baseline',
+                        data: [],
+                        borderColor: EWMA_COLOR,
+                        borderWidth: 2,
+                        borderDash: [6, 3],
+                        tension: 0.35,
+                        pointRadius: 0,
+                        fill: false,
+                    },
+                ]
             },
-            scales: {
-                x: {
-                    type: 'time',
-                    time: { unit:'second', displayFormats:{ second:'HH:mm:ss' } },
-                    ticks: { display: false },
-                    grid: { color:'#222' },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                interaction: { mode:'index', intersect:false },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: { enabled: true },
                 },
-                y: {
-                    beginAtZero: true,
-                    grid: { color:'#222' },
-                    ticks: { color:'#888', font:{ size:10 } },
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: { unit:'second', displayFormats:{ second:'HH:mm:ss' } },
+                        ticks: { display: false },
+                        grid: { color:'#222' },
+                    },
+                    y: {
+                        beginAtZero: true,
+                        grid: { color:'#222' },
+                        ticks: { color:'#888', font:{ size:10 } },
+                    },
                 },
             },
-        },
-    });
+        });
+    } catch (err) {
+        console.error(`[makeChart] Chart.js threw error for ${canvasId}:`, err);
+        return null;
+    }
 }
 
 // ============================================================================
 // TARGET SELECTOR
 // ============================================================================
 
+
+// ============================================================================
+// TARGET SELECTOR
+// ============================================================================
+
+/*
+ * knownIPs — the exact list currently rendered in the <select>.
+ * By comparing against this before every rebuild we can skip the DOM write
+ * entirely when nothing changed, so a background poll can never reset the
+ * visual selection.
+ */
+let knownIPs = [];
+
 async function fetchTargets() {
     try {
         const r   = await fetch(`${API_BASE}/targets`);
         const ips = await r.json();
+        if (!Array.isArray(ips) || !ips.length) return;
+
+        /* Only touch the DOM when the list of IPs actually changed */
+        const newKey = ips.slice().sort().join('|');
+        const oldKey = knownIPs.slice().sort().join('|');
+        if (newKey === oldKey) return;   /* nothing changed — leave <select> alone */
+
+        knownIPs = ips.slice();
         const sel = document.getElementById('targetSelect');
 
-        /* Remember what was selected before we touch the DOM */
+        /* Snapshot the current selection BEFORE wiping */
         const previous = currentTarget || sel.value;
 
+        /* Rebuild options */
         sel.innerHTML = '';
-        if (!ips.length) {
-            sel.innerHTML = '<option>No active traffic</option>';
-            return;
-        }
-
         ips.forEach(ip => {
             const o = document.createElement('option');
-            o.value = o.text = ip;
+            o.value = ip;
+            o.text  = ip;
             sel.appendChild(o);
         });
 
-        /*
-         * Always restore the previously selected IP if it still exists in the
-         * updated list.  Without this, rebuilding innerHTML resets the visual
-         * selection to the first option even when currentTarget is set.
-         */
-        if (previous && ips.includes(previous)) {
-            sel.value     = previous;
-            currentTarget = previous;
-        } else {
-            /* First load, or the previous IP disappeared — pick the first */
-            sel.value     = ips[0];
-            currentTarget = ips[0];
-        }
+        /* Restore the previous selection if it still exists, else pick first */
+        const toSelect = ips.find(ip => ip === previous) || ips[0];
+        sel.value     = toSelect;
+        currentTarget = toSelect;
+
     } catch (e) { console.error('fetchTargets:', e); }
 }
 
 document.getElementById('targetSelect').addEventListener('change', e => {
     currentTarget = e.target.value;
-    /* Destroy existing charts so they are rebuilt for the new IP */
     Object.values(charts).forEach(c => c.destroy());
     charts = {};
 });
+
 
 // ============================================================================
 // SCORE BAR HELPER
@@ -369,6 +436,18 @@ function updateStatus(rec) {
     document.getElementById('lastUpdated').textContent =
         'Last update: ' + ts.toLocaleTimeString();
 
+    /* Live traffic stats — format with K/M/G suffixes */
+    const formatNumber = (n) => {
+        if (n >= 1e9) return (n / 1e9).toFixed(2) + ' G';
+        if (n >= 1e6) return (n / 1e6).toFixed(2) + ' M';
+        if (n >= 1e3) return (n / 1e3).toFixed(2) + ' K';
+        return n.toFixed(0);
+    };
+
+    document.getElementById('livePPS').textContent = formatNumber(rec.pps || 0);
+    document.getElementById('liveBPS').textContent = formatNumber(rec.bps || 0);
+    document.getElementById('liveFPS').textContent = formatNumber(rec.fps || 0);
+
     /* Detection state badge */
     const badge = document.getElementById('detectionBadge');
     const state = (rec.detection_state || 'UNKNOWN').toUpperCase();
@@ -389,11 +468,17 @@ function updateStatus(rec) {
     if (state === 'WARMUP' && wr > 0) {
         warmupRow.style.display = 'block';
         document.getElementById('warmupVal').textContent = wr;
-        /* Simple text progress bar */
-        const total  = 30;   /* matches DETECTION_WARMUP_WINDOWS */
-        const filled = total - wr;
+        /* Progress bar — handles any warmup window count (not hardcoded to 30) */
+        const total  = 300;   /* matches DETECTION_WARMUP_WINDOWS in C code */
+        const filled = Math.max(0, total - wr);   /* clamp to 0 if wr > total */
+        const remain = Math.min(wr, total);       /* clamp to total if wr > total */
+        /* Cap the bar width to avoid overly long strings */
+        const barWidth = 40;
+        const fillPct  = filled / total;
+        const fillBars = Math.floor(fillPct * barWidth);
+        const emptyBars = barWidth - fillBars;
         document.getElementById('warmupBar').textContent =
-            '█'.repeat(filled) + '░'.repeat(wr);
+            '█'.repeat(fillBars) + '░'.repeat(emptyBars);
     } else {
         warmupRow.style.display = 'none';
     }
@@ -412,12 +497,28 @@ function updateStatus(rec) {
 // ============================================================================
 
 function updateCharts(data) {
-    const labels = data.map(d => new Date(d.timestamp));
+    /* Parse timestamps with fallback for different formats */
+    const labels = data.map(d => {
+        const ts = d.timestamp;
+        if (typeof ts === 'number') return new Date(ts);
+        if (typeof ts === 'string') return new Date(ts);
+        /* datetime object serialized as ISO string */
+        if (ts instanceof Date) return ts;
+        console.error('[updateCharts] Invalid timestamp:', ts);
+        return new Date();
+    });
+
+    console.log(`[updateCharts] Processing ${data.length} records`);
+    console.log(`[updateCharts] First timestamp raw:`, data[0]?.timestamp, '→', labels[0]);
+    console.log(`[updateCharts] Last timestamp raw:`, data[data.length - 1]?.timestamp, '→', labels[labels.length - 1]);
+
+    let createdCount = 0;
+    let updatedCount = 0;
 
     METRICS.forEach(m => {
         const rawColor = TIER_COLOR[m.tier];
         const rawArr   = data.map(d => d[m.key]  ?? 0);
-        const emArr    = data.map(d => d[m.em]    ?? 0);
+        const emArr    = data.map(d => d[m.em]   ?? 0);
 
         if (charts[m.key]) {
             const c = charts[m.key];
@@ -425,16 +526,29 @@ function updateCharts(data) {
             c.data.datasets[0].data = rawArr;
             c.data.datasets[1].data = emArr;
             c.update('none');
+            updatedCount++;
         } else {
+            const ctx = document.getElementById(`chart_${m.key}`);
+            if (!ctx) {
+                console.error(`[updateCharts] ✗ Canvas #chart_${m.key} NOT FOUND in DOM`);
+                return;
+            }
+
             charts[m.key] = makeChart(`chart_${m.key}`, rawColor);
             if (charts[m.key]) {
                 charts[m.key].data.labels           = labels;
                 charts[m.key].data.datasets[0].data = rawArr;
                 charts[m.key].data.datasets[1].data = emArr;
                 charts[m.key].update('none');
+                createdCount++;
+                console.log(`[updateCharts] ✓ Created ${m.key}: ${rawArr.length} pts, first=${rawArr[0]}, last=${rawArr[rawArr.length-1]}`);
+            } else {
+                console.error(`[updateCharts] ✗ makeChart() returned NULL for ${m.key}`);
             }
         }
     });
+
+    console.log(`[updateCharts] Summary: ${createdCount} created, ${updatedCount} updated`);
 }
 
 // ============================================================================
@@ -442,20 +556,47 @@ function updateCharts(data) {
 // ============================================================================
 
 async function refresh() {
-    /* currentTarget is set by fetchTargets() or the change event listener.
-     * Do NOT call fetchTargets() here — doing so rebuilds the <select> DOM
-     * every second, which resets the visual selection to the first option
-     * even when the user has chosen a different IP. */
-    if (!currentTarget) return;
+    const debugEl = document.getElementById('debugStatus');
+    
+    if (!currentTarget) {
+        debugEl.textContent = '❌ No IP selected';
+        debugEl.style.color = '#dc3545';
+        return;
+    }
 
     try {
-        const r    = await fetch(`${API_BASE}/stats/${currentTarget}`);
+        const url = `${API_BASE}/stats/${currentTarget}`;
+        debugEl.textContent = `⏳ Fetching ${url}...`;
+        debugEl.style.color = '#ffc107';
+        
+        const r    = await fetch(url);
         const data = await r.json();
-        if (!data || !data.length) return;
 
-        updateStatus(data[data.length - 1]);
+        if (!data || !data.length) {
+            debugEl.innerHTML = `❌ Received EMPTY array for ${currentTarget}<br>` +
+                `Check: (1) Is DPDK running? (2) Is collector.py receiving data? (3) Does shared_state have records?`;
+            debugEl.style.color = '#dc3545';
+            console.warn('[Refresh] ⚠ Empty response');
+            return;
+        }
+
+        const sample = data[data.length - 1];
+        debugEl.innerHTML = `✓ ${data.length} records | IP: ${currentTarget} | ` +
+            `PPS: ${sample.pps?.toFixed(0) ?? '?'} | ` +
+            `State: ${sample.detection_state ?? '?'} | ` +
+            `Timestamp: ${sample.timestamp}`;
+        debugEl.style.color = '#198754';
+
+        console.log(`[Refresh] ← ${data.length} records`);
+        console.log('[Refresh] Sample:', JSON.stringify(sample).substring(0, 300));
+
+        updateStatus(sample);
         updateCharts(data);
-    } catch (e) { console.error('refresh:', e); }
+    } catch (e) {
+        debugEl.textContent = `❌ ERROR: ${e.message}`;
+        debugEl.style.color = '#dc3545';
+        console.error('[Refresh] ✗ Error:', e);
+    }
 }
 
 // ============================================================================

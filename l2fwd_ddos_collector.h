@@ -1,6 +1,5 @@
 #ifndef __L2FWD_DDOS_COLLECTOR_H__
 #define __L2FWD_DDOS_COLLECTOR_H__
-
 #include <stdint.h>
 #include <rte_mbuf.h>
 
@@ -46,8 +45,8 @@ struct hll_counter {
  * Change BURST_LONG_WINDOW_SEC to adjust the long window without touching
  * any other code.  Must be ≤ BURST_WINDOW_MAX_SEC.
  */
-#define BURST_LONG_WINDOW_SEC     5
-#define BURST_WINDOW_MAX_SEC     60   /* maximum allowed long window */
+#define BURST_LONG_WINDOW_SEC     10
+#define BURST_WINDOW_MAX_SEC     40   /* maximum allowed long window */
 
 // ============================================================================
 // EWMA CONFIGURATION  (mean only — no variance)
@@ -56,23 +55,26 @@ struct hll_counter {
 /**
  * Per-tier smoothing factors.
  *
- *   Tier 0  (volume)       alpha = 0.15  — reacts quickly to volume spikes
- *   Tier 1.1 (TCP)         alpha = 0.08  — slower, behavioural patterns
- *   Tier 1.2 (UDP)         alpha = 0.08
- *   Tier 1.3 (ICMP)        alpha = 0.08
- *   Tier 1.4 (Distribution)alpha = 0.05  — very slow, long-term baseline
+ *   Tier 0  (volume)        alpha = 0.20  — reacts quickly to volume spikes
+ *   Tier 1.1 (TCP)          alpha = 0.20  — behavioural patterns
+ *   Tier 1.2 (UDP)          alpha = 0.20
+ *   Tier 1.3 (ICMP)         alpha = 0.20
+ *   Tier 1.4 (Distribution) alpha = 0.20
  *
  * EWMA update (mean only):
  *   mean_new = mean + alpha * (x - mean)
+ *
+ * The CUSUM variance estimator in the detection engine reuses
+ * EWMA_ALPHA_TIER0 as its alpha_std initialiser (set in detection_engine_init).
  */
-#define EWMA_ALPHA_TIER0   0.15
-#define EWMA_ALPHA_TIER1_1 0.08
-#define EWMA_ALPHA_TIER1_2 0.08
-#define EWMA_ALPHA_TIER1_3 0.08
-#define EWMA_ALPHA_TIER1_4 0.05
+#define EWMA_ALPHA_TIER0   0.20
+#define EWMA_ALPHA_TIER1_1 0.20
+#define EWMA_ALPHA_TIER1_2 0.20
+#define EWMA_ALPHA_TIER1_3 0.20
+#define EWMA_ALPHA_TIER1_4 0.20
 
 /** Minimum observations before the EWMA mean is considered stable */
-#define EWMA_WARMUP_PERIODS 10
+#define EWMA_WARMUP_PERIODS 40
 
 /** Small epsilon to avoid division-by-zero in normalisation */
 #define EWMA_EPSILON 1e-9
@@ -83,8 +85,10 @@ struct hll_counter {
 
 /**
  * Lightweight EWMA state tracking only the mean.
- * Variance is not needed — anomaly scoring uses the Manhattan-distance
- * approach in the detection engine, not Z-scores.
+ *
+ * Tier 0 variance / std is tracked separately inside struct cusum_state
+ * (one per Tier-0 feature) in the detection engine, so this struct remains
+ * mean-only and is shared identically by all tiers.
  */
 struct ewma_state {
     double   mean;   /* Current exponentially-weighted mean        */
@@ -104,6 +108,11 @@ struct ewma_state {
  *   4. BurstFactor_PPS
  *   5. BurstFactor_BPS
  *   6. BurstFactor_FPS
+ *
+ * Note: EWMA std / variance for Tier-0 is maintained inside the detection
+ * engine's cusum_state array, NOT here.  This struct holds only the means,
+ * which are used as the CUSUM baseline (μ) in the CUSUM update formula:
+ *   S_t = max(0, S_{t-1} + (x_t − mean − k * std))
  */
 struct tier0_ewma {
     struct ewma_state pps;
@@ -232,6 +241,9 @@ struct dst_ip_stats {
 
     /* ------------------------------------------------------------------
      * EWMA baseline models (persist across windows, never reset)
+     *
+     * Tier 0 stores only the mean here; the per-feature variance (std)
+     * used by CUSUM lives inside detection_engine::cusum[].
      * ------------------------------------------------------------------ */
     struct tier0_ewma      ewma_t0;
     struct tier1_tcp_ewma  ewma_t1_tcp;

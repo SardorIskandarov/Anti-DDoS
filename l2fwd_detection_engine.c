@@ -5,7 +5,7 @@
 #include <rte_cycles.h>
 
 // ============================================================================
-// SIGMOID
+// SIGMOID  (used only by Tier 1 — unchanged)
 // ============================================================================
 
 /**
@@ -13,7 +13,7 @@
  *
  *   score = 1 / (1 + exp(-k * (distance - d0)))
  *
- * Parameters from spec: k = 3, d0 = 0.5
+ * Parameters: k = SIGMOID_K, d0 = SIGMOID_D0
  */
 double sigmoid_score(double distance) {
     return 1.0 / (1.0 + exp(-SIGMOID_K * (distance - SIGMOID_D0)));
@@ -35,15 +35,24 @@ double sigmoid_score(double distance) {
 
 void detection_engine_init(struct detection_engine *engine, uint64_t timestamp) {
     memset(engine, 0, sizeof(struct detection_engine));
-    engine->state           = DETECTION_STATE_WARMUP;
-    engine->recovery_weight = 0.0;
+    engine->state            = DETECTION_STATE_WARMUP;
+    engine->recovery_weight  = 0.0;
     engine->last_attack_time = timestamp;
-    /* Note: EWMA alpha values are set when dst_ip_stats is initialised
-     * via the init_tier*_alpha helpers called from dst_ip_table_get_or_create */
+
+    /*
+     * Initialise CUSUM per-feature states.
+     * alpha_std uses the same tier-0 smoothing factor so the variance
+     * estimate tracks the EWMA mean at the same speed.
+     */
+    for (int i = 0; i < TIER0_N; i++) {
+        engine->cusum[i].S         = 0.0;
+        engine->cusum[i].variance  = 0.0;
+        engine->cusum[i].alpha_std = EWMA_ALPHA_TIER0;
+    }
 }
 
 // ============================================================================
-// FEATURE EXTRACTION
+// FEATURE EXTRACTION  (unchanged from original)
 // ============================================================================
 
 void extract_tier0_features(const struct dst_ip_stats *stats,
@@ -68,9 +77,9 @@ void extract_tier0_features(const struct dst_ip_stats *stats,
 void extract_tier1_tcp_features(const struct dst_ip_stats *stats,
                                   struct tier1_tcp_features *out,
                                   double time_sec) {
-    double tcp_safe = (stats->tcp_pkts > 0) ? (double)stats->tcp_pkts : 1.0;
-    double tot_safe = (stats->total_pkts > 0) ? (double)stats->total_pkts : 1.0;
-    double tot_bytes_safe = (stats->total_bytes > 0) ? (double)stats->total_bytes : 1.0;
+    double tcp_safe       = (stats->tcp_pkts   > 0) ? (double)stats->tcp_pkts   : 1.0;
+    double tot_safe       = (stats->total_pkts > 0) ? (double)stats->total_pkts : 1.0;
+    double tot_bytes_safe = (stats->total_bytes> 0) ? (double)stats->total_bytes: 1.0;
 
     out->syn_ratio      = (double)stats->syn_pkts      / tcp_safe;
     out->synack_ratio   = (double)stats->syn_ack_pkts  / tcp_safe;
@@ -117,7 +126,137 @@ void extract_tier1_dist_features(const struct dst_ip_stats *stats,
 }
 
 // ============================================================================
-// DISTANCE COMPUTATION
+// TIER 0 — CUSUM DETECTION
+// ============================================================================
+
+/**
+ * cusum_update_one — update a single feature's CUSUM state.
+ *
+ * During warm-up we only update the variance estimate (learning the baseline
+ * spread) but do not accumulate S_t and do not flag alarms.
+ *
+ * After warm-up:
+ *   ewma_std  = sqrt(variance)   (using the EWMA variance already tracked)
+ *   k_abs     = CUSUM_K * ewma_std
+ *   H_abs     = CUSUM_H * ewma_std
+ *   S_t       = max(0, S_{t-1} + (x - ewma_mean - k_abs))
+ *   alarm     = (S_t > H_abs)
+ *
+ * @param cs         Per-feature CUSUM state (S, variance, alpha_std).
+ * @param ewma       Per-feature EWMA state (mean, n, alpha) — read-only here.
+ * @param x          Current observed value for this feature.
+ * @param in_warmup  True → only update variance, skip accumulation + alarm.
+ * @param frozen     True → skip ALL updates (hold S_t, variance as-is).
+ * @param out_S      Written with the new S_t (or current if frozen/warmup).
+ * @return           true if alarm fires (S_t > H_abs), false otherwise.
+ */
+static bool cusum_update_one(struct cusum_state *cs,
+                              const struct ewma_state *ewma,
+                              double x,
+                              bool in_warmup,
+                              bool frozen,
+                              double *out_S) {
+    /* During baseline freeze: hold everything, no alarm */
+    if (frozen) {
+        *out_S = cs->S;
+        return false;
+    }
+
+    /* Update EWMA variance: Var_new = Var + alpha * ((x - mean)^2 - Var) */
+    double residual = x - ewma->mean;
+    cs->variance += cs->alpha_std * (residual * residual - cs->variance);
+
+    /* During warm-up: learn variance only, don't accumulate or alarm */
+    if (in_warmup) {
+        *out_S = 0.0;
+        return false;
+    }
+
+    double ewma_std = sqrt(cs->variance);
+
+    /* Guard: if std is near zero the signal is perfectly stable → no alarm */
+    if (ewma_std < EWMA_EPSILON) {
+        cs->S  = 0.0;
+        *out_S = 0.0;
+        return false;
+    }
+
+    double k_abs = CUSUM_K * ewma_std;
+    double H_abs = CUSUM_H * ewma_std;
+
+    /* Upper CUSUM: detects positive (upward) shifts */
+    double S_new = cs->S + (residual - k_abs);
+    if (S_new < 0.0) S_new = 0.0;
+    cs->S  = S_new;
+    *out_S = S_new;
+
+    return (S_new > H_abs);
+}
+
+/**
+ * cusum_update_tier0 — run CUSUM for all 6 Tier-0 features.
+ *
+ * Populates the tier0_cusum_* fields of *result and returns the count of
+ * features that fired an alarm this window (0 .. TIER0_N).
+ */
+int cusum_update_tier0(struct detection_engine *engine,
+                        const struct dst_ip_stats *stats,
+                        const struct tier0_features *cur,
+                        struct detection_result *result,
+                        bool frozen) {
+    bool in_warmup = (engine->state == DETECTION_STATE_WARMUP);
+    int  alarm_count = 0;
+    bool alarm;
+
+    /*
+     * Feature index mapping (must match TIER0_N = 6):
+     *   0 → pps
+     *   1 → bps
+     *   2 → fps
+     *   3 → burst_pps
+     *   4 → burst_bps
+     *   5 → burst_fps
+     */
+
+    alarm = cusum_update_one(&engine->cusum[0], &stats->ewma_t0.pps,
+                              cur->pps, in_warmup, frozen,
+                              &result->tier0_cusum_pps);
+    if (alarm) alarm_count++;
+
+    alarm = cusum_update_one(&engine->cusum[1], &stats->ewma_t0.bps,
+                              cur->bps, in_warmup, frozen,
+                              &result->tier0_cusum_bps);
+    if (alarm) alarm_count++;
+
+    alarm = cusum_update_one(&engine->cusum[2], &stats->ewma_t0.fps,
+                              cur->fps, in_warmup, frozen,
+                              &result->tier0_cusum_fps);
+    if (alarm) alarm_count++;
+
+    alarm = cusum_update_one(&engine->cusum[3], &stats->ewma_t0.burst_pps,
+                              cur->burst_pps, in_warmup, frozen,
+                              &result->tier0_cusum_burst_pps);
+    if (alarm) alarm_count++;
+
+    alarm = cusum_update_one(&engine->cusum[4], &stats->ewma_t0.burst_bps,
+                              cur->burst_bps, in_warmup, frozen,
+                              &result->tier0_cusum_burst_bps);
+    if (alarm) alarm_count++;
+
+    alarm = cusum_update_one(&engine->cusum[5], &stats->ewma_t0.burst_fps,
+                              cur->burst_fps, in_warmup, frozen,
+                              &result->tier0_cusum_burst_fps);
+    if (alarm) alarm_count++;
+
+    result->tier0_attack_count = alarm_count;
+    /* Legacy score field: normalise alarm_count to [0,1] for CSV compat */
+    result->tier0_score = (double)alarm_count / (double)TIER0_N;
+
+    return alarm_count;
+}
+
+// ============================================================================
+// TIER 1 — DISTANCE COMPUTATION  (unchanged)
 // ============================================================================
 
 /**
@@ -131,18 +270,6 @@ void extract_tier1_dist_features(const struct dst_ip_stats *stats,
 static inline double norm_dist(const struct ewma_state *s, double current) {
     if (s->n < EWMA_WARMUP_PERIODS) return 0.0;
     return fabs(current - s->mean) / (s->mean + EWMA_EPSILON);
-}
-
-double compute_tier0_score(const struct tier0_ewma *ewma,
-                            const struct tier0_features *cur) {
-    double d = 0.0;
-    d += norm_dist(&ewma->pps,       cur->pps);
-    d += norm_dist(&ewma->bps,       cur->bps);
-    d += norm_dist(&ewma->fps,       cur->fps);
-    d += norm_dist(&ewma->burst_pps, cur->burst_pps);
-    d += norm_dist(&ewma->burst_bps, cur->burst_bps);
-    d += norm_dist(&ewma->burst_fps, cur->burst_fps);
-    return sigmoid_score(d);
 }
 
 double compute_tier1_tcp_score(const struct tier1_tcp_ewma *ewma,
@@ -184,20 +311,16 @@ double compute_tier1_dist_score(const struct tier1_dist_ewma *ewma,
 }
 
 // ============================================================================
-// EWMA BASELINE UPDATE HELPERS (respect freeze + recovery weight)
+// EWMA BASELINE UPDATE HELPERS  (unchanged — used for Tier 1)
 // ============================================================================
 
 static void update_ewma_if_active(struct ewma_state *s, double value,
                                    const struct tier_state *ts,
                                    double recovery_weight) {
     if (ts->frozen) return;
-    /*
-     * During recovery we scale alpha down by recovery_weight [0..1].
-     * We temporarily store the real alpha, override, update, then restore.
-     */
     double saved_alpha = s->alpha;
     s->alpha *= recovery_weight;
-    if (s->alpha < 1e-6) s->alpha = 1e-6;   /* floor to keep updates alive */
+    if (s->alpha < 1e-6) s->alpha = 1e-6;
     ewma_update(s, value);
     s->alpha = saved_alpha;
 }
@@ -253,7 +376,7 @@ static void update_tier1_dist_ewma(struct tier1_dist_ewma *e,
 }
 
 // ============================================================================
-// FREEZE / THAW HELPERS
+// FREEZE / THAW HELPERS  (unchanged)
 // ============================================================================
 
 static void freeze_tier(struct tier_state *ts) {
@@ -265,16 +388,12 @@ static void freeze_tier(struct tier_state *ts) {
 
 static void tick_freeze(struct tier_state *ts) {
     if (!ts->frozen) return;
-    if (ts->freeze_counter > 0) {
-        ts->freeze_counter--;
-    }
-    if (ts->freeze_counter == 0) {
-        ts->frozen = false;
-    }
+    if (ts->freeze_counter > 0) ts->freeze_counter--;
+    if (ts->freeze_counter == 0) ts->frozen = false;
 }
 
 // ============================================================================
-// CLASSIFY SCORE → STATE
+// CLASSIFY TIER 1 SCORE → STATE  (unchanged)
 // ============================================================================
 
 static detection_state_t classify(double score) {
@@ -300,8 +419,8 @@ struct detection_result detection_engine_process(
     double time_sec = (double)STATS_PERIOD_US / 1000000.0;
 
     /* -----------------------------------------------------------------------
-     * Extract ALL features upfront — all tiers learn every window regardless
-     * of whether they are in "decision" mode or not.
+     * Extract ALL features upfront.
+     * All tiers learn every window regardless of decision mode.
      * --------------------------------------------------------------------- */
     struct tier0_features       t0;
     struct tier1_tcp_features   t1_tcp;
@@ -316,7 +435,10 @@ struct detection_result detection_engine_process(
     extract_tier1_dist_features(stats, &t1_dist, time_sec);
 
     /* -----------------------------------------------------------------------
-     * WARM-UP: learn everything, decide nothing.
+     * WARM-UP: update EWMA means + CUSUM variance, decide nothing.
+     *
+     * Note: cusum_update_tier0 checks in_warmup internally and skips
+     * accumulation / alarms when the engine is still in WARMUP state.
      * --------------------------------------------------------------------- */
     if (engine->state == DETECTION_STATE_WARMUP) {
         update_tier0_ewma     (&stats->ewma_t0,      &t0,     &engine->tier0_state,      1.0);
@@ -324,6 +446,9 @@ struct detection_result detection_engine_process(
         update_tier1_udp_ewma (&stats->ewma_t1_udp,  &t1_udp,  &engine->tier1_udp_state,  1.0);
         update_tier1_icmp_ewma(&stats->ewma_t1_icmp, &t1_icmp, &engine->tier1_icmp_state, 1.0);
         update_tier1_dist_ewma(&stats->ewma_t1_dist, &t1_dist, &engine->tier1_dist_state, 1.0);
+
+        /* Variance learning only — no accumulation, no alarms */
+        cusum_update_tier0(engine, stats, &t0, &result, false);
 
         engine->warmup_counter++;
         if (engine->warmup_counter >= DETECTION_WARMUP_WINDOWS) {
@@ -338,7 +463,7 @@ struct detection_result detection_engine_process(
     }
 
     /* -----------------------------------------------------------------------
-     * RECOVERY: advance recovery counter, increase learning weight.
+     * RECOVERY: advance counter, increase learning weight, thaw tiers.
      * --------------------------------------------------------------------- */
     if (engine->state == DETECTION_STATE_RECOVERING) {
         engine->recovery_counter++;
@@ -348,7 +473,6 @@ struct detection_result detection_engine_process(
             engine->state = DETECTION_STATE_NORMAL;
             printf("[Detection] Recovery complete, returning to NORMAL\n");
         }
-        /* During recovery, thaw frozen tiers on their own schedule */
         tick_freeze(&engine->tier0_state);
         tick_freeze(&engine->tier1_tcp_state);
         tick_freeze(&engine->tier1_udp_state);
@@ -361,19 +485,29 @@ struct detection_result detection_engine_process(
                     : 1.0;
 
     /* -----------------------------------------------------------------------
-     * Tier 0 is ALWAYS deciding (active mode).
+     * TIER 0 — CUSUM decision.
+     *
+     * CUSUM accumulators are frozen when the baseline is frozen to prevent
+     * the accumulator from growing unboundedly on attack traffic.
+     *
+     * Decision rule:
+     *   attack_count >= TIER0_ATTACK_THRESHOLD  →  TIER0 = ATTACK
+     *   else                                    →  TIER0 = NORMAL
      * --------------------------------------------------------------------- */
-    result.tier0_score = compute_tier0_score(&stats->ewma_t0, &t0);
-    detection_state_t tier0_decision = classify(result.tier0_score);
+    bool tier0_frozen = engine->tier0_state.frozen;
+
+    int alarm_count = cusum_update_tier0(engine, stats, &t0, &result, tier0_frozen);
+
+    bool tier0_triggered = (alarm_count >= TIER0_ATTACK_THRESHOLD);
 
     /* -----------------------------------------------------------------------
-     * Update Tier 0 baseline ONLY when not flagging an attack.
-     * All Tier 1 sub-tiers update passively every window (they are always
-     * learning, regardless of Tier 0 decision).
+     * Update Tier 0 EWMA mean baseline when NOT under attack.
+     * Tier 1 passive updates always run (they learn every window).
      * --------------------------------------------------------------------- */
-    if (tier0_decision == DETECTION_STATE_NORMAL) {
+    if (!tier0_triggered) {
         update_tier0_ewma(&stats->ewma_t0, &t0, &engine->tier0_state, rw);
     }
+
     /* Tier 1 passive update — always runs */
     update_tier1_tcp_ewma (&stats->ewma_t1_tcp,  &t1_tcp,  &engine->tier1_tcp_state,  rw);
     update_tier1_udp_ewma (&stats->ewma_t1_udp,  &t1_udp,  &engine->tier1_udp_state,  rw);
@@ -381,10 +515,9 @@ struct detection_result detection_engine_process(
     update_tier1_dist_ewma(&stats->ewma_t1_dist, &t1_dist, &engine->tier1_dist_state, rw);
 
     /* -----------------------------------------------------------------------
-     * If Tier 0 is NORMAL → final state follows.
+     * If Tier 0 is NORMAL → propagate to engine state and return.
      * --------------------------------------------------------------------- */
-    if (tier0_decision == DETECTION_STATE_NORMAL) {
-        /* If we were in attack/suspicious, begin recovery */
+    if (!tier0_triggered) {
         if (engine->state == DETECTION_STATE_ATTACK ||
             engine->state == DETECTION_STATE_SUSPICIOUS) {
             engine->state            = DETECTION_STATE_RECOVERING;
@@ -400,7 +533,7 @@ struct detection_result detection_engine_process(
     }
 
     /* -----------------------------------------------------------------------
-     * Tier 0 triggered (SUSPICIOUS or ATTACK): evaluate all Tier 1 sub-tiers.
+     * Tier 0 triggered: evaluate all Tier 1 sub-tiers.
      * Final decision = worst classification across all Tier 1 sub-tiers.
      * --------------------------------------------------------------------- */
     result.tier1_evaluated = true;
@@ -417,20 +550,13 @@ struct detection_result detection_engine_process(
     if (result.tier1_dist_score > worst) worst = result.tier1_dist_score;
     result.tier1_final_score = worst;
 
-    /* Final classification from Tier 1 */
-    detection_state_t final_state = classify(worst);
-
-    /*
-     * Per spec:
-     *   if any tier1 says ATTACK  → ATTACK
-     *   elif any tier1 says SUSPICIOUS → SUSPICIOUS
-     *   else → NORMAL
-     */
+    /* Per-sub-tier classifications */
     detection_state_t tcp_st  = classify(result.tier1_tcp_score);
     detection_state_t udp_st  = classify(result.tier1_udp_score);
     detection_state_t icmp_st = classify(result.tier1_icmp_score);
     detection_state_t dist_st = classify(result.tier1_dist_score);
 
+    detection_state_t final_state;
     if (tcp_st  == DETECTION_STATE_ATTACK ||
         udp_st  == DETECTION_STATE_ATTACK ||
         icmp_st == DETECTION_STATE_ATTACK ||
@@ -447,7 +573,7 @@ struct detection_result detection_engine_process(
 
     result.state = final_state;
 
-    /* Freeze baselines when attack is confirmed */
+    /* Freeze baselines when attack / suspicious is confirmed */
     if (final_state == DETECTION_STATE_ATTACK ||
         final_state == DETECTION_STATE_SUSPICIOUS) {
 
@@ -460,17 +586,22 @@ struct detection_result detection_engine_process(
         if (engine->state != final_state) {
             engine->attack_count++;
             engine->last_attack_time = timestamp;
-            printf("[Detection] *** %s *** t0=%.3f tcp=%.3f udp=%.3f icmp=%.3f dist=%.3f\n",
+            printf("[Detection] *** %s *** cusum_alarms=%d/%d "
+                   "tcp=%.3f udp=%.3f icmp=%.3f dist=%.3f\n",
                    detection_state_str(final_state),
-                   result.tier0_score,
+                   alarm_count, TIER0_N,
                    result.tier1_tcp_score, result.tier1_udp_score,
                    result.tier1_icmp_score, result.tier1_dist_score);
         }
         engine->state = final_state;
 
     } else {
-        /* Tier 1 cleared what Tier 0 flagged — treat as normal */
+        /*
+         * Tier 1 cleared what Tier 0 flagged — treat as normal.
+         * Update Tier 0 EWMA mean since it was skipped above.
+         */
         update_tier0_ewma(&stats->ewma_t0, &t0, &engine->tier0_state, rw);
+
         if (engine->state == DETECTION_STATE_ATTACK ||
             engine->state == DETECTION_STATE_SUSPICIOUS) {
             engine->state            = DETECTION_STATE_RECOVERING;
