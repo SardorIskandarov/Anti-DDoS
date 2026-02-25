@@ -15,46 +15,51 @@
 #define DETECTION_WARMUP_WINDOWS 900
 
 /**
- * CUSUM parameters for Tier-0 volume anomaly detection.
- *
- * AGGRESSIVE settings for rapid DDoS detection:
- *   k = 0.5  (low allowance → high sensitivity)
- *   h = 3.0  (moderate threshold for quick response)
+ * CHANGE 1: Z-score threshold for burst features (burst_pps, burst_bps, burst_fps)
+ * 
+ * Burst features use EWMA + Z-score instead of CUSUM:
+ *   z = (x - ewma_mean) / (std + epsilon)
+ *   risk = clamp(z / BURST_Z_THRESHOLD, 0, 1)
+ */
+#define BURST_Z_THRESHOLD 3.0
+
+/**
+ * CHANGE 2: Per-feature CUSUM parameters (PPS, BPS, FPS only)
  *
  * Formula:
  *   S_t = max(0, S_{t-1} + (x_t - ewma_mean - k * ewma_std))
  *   Alarm when S_t > H (H = h * ewma_std)
  */
-#define CUSUM_K  0.45   /* Allowance factor (low = sensitive) */
-#define CUSUM_H  3   /* Threshold factor (moderate = responsive) */
+#define CUSUM_K_PPS  0.45
+#define CUSUM_H_PPS  3.0
+
+#define CUSUM_K_BPS  0.45
+#define CUSUM_H_BPS  3.0
+
+#define CUSUM_K_FPS  0.45
+#define CUSUM_H_FPS  3.0
+
+/**
+ * CHANGE 3: Tier-0 continuous risk scoring weights
+ *
+ * global_risk = sum(w_i * risk_i)
+ * 
+ * Trigger when: global_risk >= T0_RISK_THRESHOLD
+ */
+#define T0_W_PPS         3.0
+#define T0_W_BPS         3.0
+#define T0_W_FPS         2.0
+#define T0_W_BURST_PPS   1.5
+#define T0_W_BURST_BPS   1.5
+#define T0_W_BURST_FPS   1.0
+
+#define T0_RISK_THRESHOLD 6.0
 
 /**
  * Tier-0 attack confirmation with persistence filter.
  *
  * STEP 1 (Per-window):
- *   if (alarm_count >= TIER0_ATTACK_THRESHOLD):
- * 
- * 
- * 
- * 
- * 
- * 
- * 
- * 
- * 
- * 
- * 
- * 
- * 
- * 
- * 
- * 
- * 
- * 
- * 
- * 
- * 
- * 
+ *   if (global_risk >= T0_RISK_THRESHOLD):
  *       consecutive_attack_counter++
  *   else:
  *       consecutive_attack_counter = 0
@@ -64,11 +69,9 @@
  *       Tier-0 = ATTACK
  *   else:
  *       Tier-0 = NORMAL
- *
- * Early freeze: Freeze when alarm_count >= 1
  */
-#define TIER0_ATTACK_THRESHOLD 3      /* 2 out of 6 features */
-#define CONSECUTIVE_ATTACK_WINDOWS 3  /* 2 consecutive seconds */
+#define TIER0_ATTACK_THRESHOLD 3      /* Legacy - now based on risk */
+#define CONSECUTIVE_ATTACK_WINDOWS 3  /* 3 consecutive seconds */
 
 /** Tier-1 sigmoid parameters (unchanged) */
 #define SIGMOID_K   1.4
@@ -79,29 +82,13 @@
 #define THRESHOLD_SUSPICIOUS 0.6
 
 /**
- * EARLY FREEZE: Freeze as soon as ANY Tier-0 alarm fires.
- *
- * When alarm_count >= 1:
- *   - Freeze Tier-0 FAST EWMA (detection baseline)
- *   - Freeze CUSUM variance (prevent std inflation)
- *   - SLOW EWMA continues learning (long-term reference)
- *
- * When attack ends (alarm_count < 1 for consecutive windows):
- *   - Unfreeze immediately
- *   - No gradual recovery
+ * EARLY FREEZE: Freeze as soon as Tier-0 risk exceeds threshold.
  */
 #define BASELINE_FREEZE_WINDOWS 10
 
 /**
  * THAW COOLDOWN: Number of consecutive NORMAL windows required before
  * unfreezing baselines after an attack ends.
- *
- * Prevents learning:
- *   - Tail-end of attacks as normal traffic
- *   - Pulsing attacks as baseline behavior
- *
- * The system must observe THAW_COOLDOWN_WINDOWS consecutive windows
- * with NO alarms before calling thaw_all_tiers().
  */
 #define THAW_COOLDOWN_WINDOWS 20
 
@@ -161,28 +148,24 @@ struct tier1_dist_features {
 #define TIER1_DIST_N 2
 
 // ============================================================================
-// CUSUM STATE (residual-based, Tier-0 only)
+// CUSUM STATE
 // ============================================================================
 
 /**
- * Per-feature CUSUM state for residual-based detection.
+ * Per-feature state for detection.
  *
- * Residual: r_t = EWMA_FAST_t - EWMA_SLOW_t
- *
- * Upper CUSUM (detects positive shifts):
+ * For CUSUM features (pps, bps, fps):
  *   S_t = max(0, S_{t-1} + (r_t - k))
  *
- * Alarm: S_t > H (H is FIXED, no variance scaling)
+ * For burst features (burst_pps, burst_bps, burst_fps):
+ *   z = (x - mean) / std
+ *   S is unused
  *
- * FREEZE BEHAVIOR (when tier_state.frozen == true):
- *   - S_t held constant (no accumulation)
- *   - variance held constant (prevent inflation)
- *   - EWMA_FAST held constant
- *   - EWMA_SLOW continues updating
+ * variance field is used by BOTH types.
  */
 struct cusum_state {
-    double S;         /* CUSUM accumulator */
-    double variance;  /* Residual variance (for monitoring only) */
+    double S;         /* CUSUM accumulator (unused for burst features) */
+    double variance;  /* Variance tracking (used by both CUSUM and Z-score) */
     double alpha_std; /* Variance smoothing factor */
 };
 
@@ -202,7 +185,16 @@ struct tier_state {
 struct detection_result {
     detection_state_t state;
 
-    /* Tier-0 CUSUM metrics */
+    /* CHANGE 3: Tier-0 continuous risk scores per feature */
+    double tier0_risk_pps;
+    double tier0_risk_bps;
+    double tier0_risk_fps;
+    double tier0_risk_burst_pps;
+    double tier0_risk_burst_bps;
+    double tier0_risk_burst_fps;
+    double tier0_global_risk;
+
+    /* Legacy Tier-0 CUSUM metrics (for monitoring) */
     double tier0_cusum_pps;
     double tier0_cusum_bps;
     double tier0_cusum_fps;
@@ -210,7 +202,7 @@ struct detection_result {
     double tier0_cusum_burst_bps;
     double tier0_cusum_burst_fps;
     int    tier0_attack_count;
-    double tier0_score;  /* Legacy: normalized alarm count */
+    double tier0_score;
 
     /* Tier-1 metrics */
     bool   tier1_evaluated;
@@ -241,7 +233,7 @@ struct detection_engine {
     struct tier_state tier1_icmp_state;
     struct tier_state tier1_dist_state;
 
-    /* CUSUM accumulators (Tier-0 only, residual-based) */
+    /* CUSUM/Z-score accumulators (Tier-0 only) */
     struct cusum_state cusum[TIER0_N];
 
     /* Warm-up counter */
@@ -250,7 +242,7 @@ struct detection_engine {
     /* Persistence filter */
     uint32_t consecutive_attack_counter;
 
-    /* Thaw cooldown: tracks consecutive NORMAL windows before unfreezing */
+    /* Thaw cooldown */
     uint32_t thaw_cooldown_counter;
 
     /* Attack history */
@@ -283,15 +275,10 @@ void extract_tier1_dist_features(const struct dst_ip_stats *stats,
                                   double time_sec);
 
 /**
- * Tier-0: Residual-based CUSUM detection with early freeze.
+ * CHANGE 2 & 3: Tier-0 detection with per-feature parameters and continuous risk.
  *
- * Computes residual = EWMA_FAST - EWMA_SLOW for each feature.
- * Runs CUSUM on residual (NOT raw value).
- * Returns alarm count (0..TIER0_N).
- *
- * FREEZE BEHAVIOR:
- *   frozen == true → S_t, variance, EWMA_FAST all held constant
- *   frozen == false → normal updates
+ * Returns: number of features exceeding threshold (for backward compatibility)
+ * Populates: result->tier0_risk_* and result->tier0_global_risk
  */
 int cusum_update_tier0(struct detection_engine *engine,
                        const struct dst_ip_stats *stats,
