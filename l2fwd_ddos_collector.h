@@ -17,11 +17,6 @@ struct detection_engine;
 // HYPERLOGLOG
 // ============================================================================
 
-/**
- * HyperLogLog precision p = 14  →  2^14 = 16 384 registers (~16 KB each).
- * Used for: unique source IPs, unique destination ports, unique UDP flows,
- * and unique five-tuples (FPS estimation).
- */
 #define HLL_PRECISION   14
 #define HLL_SIZE        (1 << HLL_PRECISION)
 #define HLL_ALPHA_16384 (0.7213 / (1.0 + 1.079 / HLL_SIZE))
@@ -35,65 +30,42 @@ struct hll_counter {
 // BURST FACTOR WINDOW CONFIGURATION
 // ============================================================================
 
-/**
- * Short window = 1 s (one stats period).
- *
- * Long window for burst factor (tunable at compile time).
- *   BurstFactor(PPS) = PPS_1s / avg_PPS_over_BURST_LONG_WINDOW_SEC
- *   Same formula applies to BPS and FPS burst factors.
- *
- * Change BURST_LONG_WINDOW_SEC to adjust the long window without touching
- * any other code.  Must be ≤ BURST_WINDOW_MAX_SEC.
- */
-#define BURST_LONG_WINDOW_SEC     10
-#define BURST_WINDOW_MAX_SEC     40   /* maximum allowed long window */
+#define BURST_LONG_WINDOW_SEC     20
+#define BURST_WINDOW_MAX_SEC     100
 
 // ============================================================================
-// EWMA CONFIGURATION  (mean only — no variance)
+// EWMA CONFIGURATION
 // ============================================================================
 
 /**
- * Per-tier smoothing factors.
+ * Per-tier smoothing factors (single EWMA baseline).
  *
- *   Tier 0  (volume)        alpha = 0.20  — reacts quickly to volume spikes
- *   Tier 1.1 (TCP)          alpha = 0.20  — behavioural patterns
- *   Tier 1.2 (UDP)          alpha = 0.20
- *   Tier 1.3 (ICMP)         alpha = 0.20
- *   Tier 1.4 (Distribution) alpha = 0.20
- *
- * EWMA update (mean only):
- *   mean_new = mean + alpha * (x - mean)
- *
- * The CUSUM variance estimator in the detection engine reuses
- * EWMA_ALPHA_TIER0 as its alpha_std initialiser (set in detection_engine_init).
+ * Tier 0: alpha = 0.10 (slower, more stable baseline)
+ * Tier 1: alpha = 0.20 (behavioral patterns)
  */
-#define EWMA_ALPHA_TIER0   0.40
-#define EWMA_ALPHA_TIER1_1 0.20
-#define EWMA_ALPHA_TIER1_2 0.20
-#define EWMA_ALPHA_TIER1_3 0.20
-#define EWMA_ALPHA_TIER1_4 0.20
+#define EWMA_ALPHA_TIER0   0.08  /* Slower for stability */
+#define EWMA_ALPHA_TIER1_1 0.05
+#define EWMA_ALPHA_TIER1_2 0.05
+#define EWMA_ALPHA_TIER1_3 0.05
+#define EWMA_ALPHA_TIER1_4 0.05
 
-/** Minimum observations before the EWMA mean is considered stable */
-#define EWMA_WARMUP_PERIODS 40
+/** Minimum observations before EWMA mean is stable */
+#define EWMA_WARMUP_PERIODS 10
 
-/** Small epsilon to avoid division-by-zero in normalisation */
+/** Small epsilon to avoid division-by-zero */
 #define EWMA_EPSILON 1e-9
 
 // ============================================================================
-// EWMA STATE  (mean only)
+// EWMA STATE
 // ============================================================================
 
 /**
- * Lightweight EWMA state tracking only the mean.
- *
- * Tier 0 variance / std is tracked separately inside struct cusum_state
- * (one per Tier-0 feature) in the detection engine, so this struct remains
- * mean-only and is shared identically by all tiers.
+ * Single EWMA state (used by all tiers).
  */
 struct ewma_state {
-    double   mean;   /* Current exponentially-weighted mean        */
-    uint32_t n;      /* Number of updates (warm-up guard)          */
-    double   alpha;  /* Per-state smoothing factor (tier-specific) */
+    double   mean;
+    uint32_t n;
+    double   alpha;
 };
 
 // ============================================================================
@@ -101,18 +73,7 @@ struct ewma_state {
 // ============================================================================
 
 /**
- * Tier 0 — Volume features (6 features, always ON)
- *   1. PPS
- *   2. BPS
- *   3. FPS   (unique five-tuples/s estimated by HLL)
- *   4. BurstFactor_PPS
- *   5. BurstFactor_BPS
- *   6. BurstFactor_FPS
- *
- * Note: EWMA std / variance for Tier-0 is maintained inside the detection
- * engine's cusum_state array, NOT here.  This struct holds only the means,
- * which are used as the CUSUM baseline (μ) in the CUSUM update formula:
- *   S_t = max(0, S_{t-1} + (x_t − mean − k * std))
+ * Tier 0 — Single EWMA baselines (6 features, always active)
  */
 struct tier0_ewma {
     struct ewma_state pps;
@@ -123,16 +84,7 @@ struct tier0_ewma {
     struct ewma_state burst_fps;
 };
 
-/**
- * Tier 1.1 — TCP behavioural features (7 features, passive)
- *   7.  SYN / TCP_pkts
- *   8.  SYN-ACK / TCP_pkts
- *   9.  FIN-ACK / TCP_pkts
- *   10. RST / TCP_pkts
- *   11. ACK-only (data) / TCP_pkts
- *   12. TCP_PPS / Total_PPS
- *   13. TCP_BPS / Total_BPS
- */
+/** Tier 1 — Single EWMA (behavioral features) */
 struct tier1_tcp_ewma {
     struct ewma_state syn_ratio;
     struct ewma_state synack_ratio;
@@ -143,52 +95,31 @@ struct tier1_tcp_ewma {
     struct ewma_state tcp_bps_ratio;
 };
 
-/**
- * Tier 1.2 — UDP behavioural features (3 features, passive)
- *   14. UDP_BPS / Total_BPS
- *   15. UDP_PPS / Total_PPS
- *   16. UDP_flows / UDP_PPS   (flows via HLL)
- */
 struct tier1_udp_ewma {
     struct ewma_state udp_bps_ratio;
     struct ewma_state udp_pps_ratio;
     struct ewma_state udp_flow_ratio;
 };
 
-/**
- * Tier 1.3 — ICMP behavioural features (2 features, passive)
- *   17. ICMP_echo_requests / Total_ICMP_PPS
- *   18. ICMP_PPS / Total_PPS
- */
 struct tier1_icmp_ewma {
     struct ewma_state icmp_echo_ratio;
     struct ewma_state icmp_pps_ratio;
 };
 
-/**
- * Tier 1.4 — Distribution features (2 features, passive)
- *   19. Unique_src_IPs / PPS
- *   20. Unique_dst_ports / PPS
- */
 struct tier1_dist_ewma {
     struct ewma_state src_ip_ratio;
     struct ewma_state dst_port_ratio;
 };
 
 // ============================================================================
-// BURST WINDOW TRACKING (circular buffer per metric)
+// BURST WINDOW TRACKING
 // ============================================================================
 
-/**
- * One circular buffer that accumulates per-second totals for a single metric
- * (packets, bytes, or HLL-estimated flows).  Used to compute the long-window
- * average for the burst factor calculation.
- */
 struct burst_window {
-    uint64_t buckets[BURST_WINDOW_MAX_SEC]; /* Per-second totals            */
-    uint8_t  index;                         /* Write index (wraps)          */
-    uint64_t total;                         /* Running sum of active buckets */
-    uint8_t  filled;                        /* Buckets currently in use      */
+    uint64_t buckets[BURST_WINDOW_MAX_SEC];
+    uint8_t  index;
+    uint64_t total;
+    uint8_t  filled;
 };
 
 // ============================================================================
@@ -196,67 +127,45 @@ struct burst_window {
 // ============================================================================
 
 struct dst_ip_stats {
-    uint32_t dst_ip;       /* Destination IP (host byte order)       */
-    uint64_t last_update;  /* Timestamp of last packet (TSC cycles)  */
+    uint32_t dst_ip;
+    uint64_t last_update;
 
-    /* ------------------------------------------------------------------
-     * Current 1-second window counters (reset every STATS_PERIOD_US)
-     * ------------------------------------------------------------------ */
+    /* Current 1-second window counters */
     uint64_t total_pkts;
     uint64_t total_bytes;
-
-    /* Protocol packet counts */
     uint64_t tcp_pkts;
     uint64_t udp_pkts;
     uint64_t icmp_pkts;
-    uint64_t icmp_echo_pkts;    /* ICMP echo requests (ping) */
-
-    /* TCP byte count (for TCP_BPS ratio) */
+    uint64_t icmp_echo_pkts;
     uint64_t tcp_bytes;
-
-    /* UDP byte count (for UDP_BPS ratio) */
     uint64_t udp_bytes;
-
-    /* TCP flag counters */
     uint64_t syn_pkts;
     uint64_t syn_ack_pkts;
     uint64_t fin_ack_pkts;
     uint64_t rst_pkts;
-    uint64_t ack_data_pkts;     /* ACK set, not SYN/FIN/RST — pure data */
+    uint64_t ack_data_pkts;
 
-    /* ------------------------------------------------------------------
-     * HyperLogLog cardinality estimators (reset every second)
-     * ------------------------------------------------------------------ */
-    struct hll_counter unique_src_ips;    /* For Tier 1.4 */
-    struct hll_counter unique_dst_ports;  /* For Tier 1.4 */
-    struct hll_counter udp_flows;         /* For Tier 1.2: unique (src_ip,src_port) */
-    struct hll_counter unique_flows;      /* For Tier 0 FPS: unique five-tuples */
+    /* HyperLogLog estimators */
+    struct hll_counter unique_src_ips;
+    struct hll_counter unique_dst_ports;
+    struct hll_counter udp_flows;
+    struct hll_counter unique_flows;
 
-    /* ------------------------------------------------------------------
-     * Burst window circular buffers (one per metric)
-     * ------------------------------------------------------------------ */
-    struct burst_window bw_pps;   /* Per-second packet counts */
-    struct burst_window bw_bps;   /* Per-second byte counts   */
-    struct burst_window bw_fps;   /* Per-second HLL flow estimates */
+    /* Burst windows */
+    struct burst_window bw_pps;
+    struct burst_window bw_bps;
+    struct burst_window bw_fps;
 
-    /* ------------------------------------------------------------------
-     * EWMA baseline models (persist across windows, never reset)
-     *
-     * Tier 0 stores only the mean here; the per-feature variance (std)
-     * used by CUSUM lives inside detection_engine::cusum[].
-     * ------------------------------------------------------------------ */
-    struct tier0_ewma      ewma_t0;
-    struct tier1_tcp_ewma  ewma_t1_tcp;
+    /* EWMA baselines */
+    struct tier0_ewma      ewma_t0;      /* Dual-EWMA */
+    struct tier1_tcp_ewma  ewma_t1_tcp;  /* Single EWMA */
     struct tier1_udp_ewma  ewma_t1_udp;
     struct tier1_icmp_ewma ewma_t1_icmp;
     struct tier1_dist_ewma ewma_t1_dist;
 
-    /* ------------------------------------------------------------------
-     * Behavioural detection engine (heap-allocated, persists across windows)
-     * ------------------------------------------------------------------ */
+    /* Detection engine */
     struct detection_engine *detection;
 
-    /* Active flag */
     uint8_t active;
 };
 
@@ -274,12 +183,6 @@ struct port_stats {
     struct dst_ip_table dst_table;
 };
 
-/*
- * port_stats — heap-allocated in ddos_collector_init() via rte_zmalloc.
- * Declared as a pointer (not an array) because the full array (~2.1 GB)
- * would land in .bss and cause R_X86_64_PC32 relocation truncation at link
- * time on x86-64 when the section exceeds the ±2 GB PC-relative range.
- */
 extern struct port_stats *port_stats;
 
 #define MONITORED_PORT 0
@@ -288,27 +191,22 @@ extern struct port_stats *port_stats;
 // PUBLIC API
 // ============================================================================
 
-/* Lifecycle */
 void ddos_collector_init(void);
 void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid);
 void ddos_log_and_reset_stats(void);
 
-/* HyperLogLog */
 void     hll_init (struct hll_counter *hll, uint64_t seed);
 void     hll_add  (struct hll_counter *hll, const void *data, size_t len);
 uint64_t hll_count(const struct hll_counter *hll);
 
-/* Destination IP table */
 struct dst_ip_stats *dst_ip_table_get_or_create(struct dst_ip_table *table,
                                                   uint32_t dst_ip,
                                                   uint64_t timestamp,
                                                   uint16_t portid);
 
-/* EWMA helpers */
 void   ewma_update(struct ewma_state *s, double x);
 double ewma_mean  (const struct ewma_state *s);
 
-/* Burst window helpers */
 void   burst_window_push (struct burst_window *bw, uint64_t value);
 double burst_window_avg  (const struct burst_window *bw);
 
