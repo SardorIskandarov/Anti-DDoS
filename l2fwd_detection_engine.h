@@ -12,7 +12,7 @@
 /**
  * Warm-up: Learn baselines silently before making decisions.
  */
-#define DETECTION_WARMUP_WINDOWS 900
+#define DETECTION_WARMUP_WINDOWS 500
 
 /**
  * CHANGE 1: Z-score threshold for burst features (burst_pps, burst_bps, burst_fps)
@@ -21,7 +21,7 @@
  *   z = (x - ewma_mean) / (std + epsilon)
  *   risk = clamp(z / BURST_Z_THRESHOLD, 0, 1)
  */
-#define BURST_Z_THRESHOLD 3.0
+#define BURST_Z_THRESHOLD 4.0
 
 /**
  * CHANGE 2: Per-feature CUSUM parameters (PPS, BPS, FPS only)
@@ -53,7 +53,7 @@
 #define T0_W_BURST_BPS   1.5
 #define T0_W_BURST_FPS   1.0
 
-#define T0_RISK_THRESHOLD 6.0
+#define T0_RISK_THRESHOLD 8.0
 
 /**
  * Tier-0 attack confirmation with persistence filter.
