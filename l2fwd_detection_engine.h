@@ -30,14 +30,14 @@
  *   S_t = max(0, S_{t-1} + (x_t - ewma_mean - k * ewma_std))
  *   Alarm when S_t > H (H = h * ewma_std)
  */
-#define CUSUM_K_PPS  0.45
-#define CUSUM_H_PPS  3.0
+#define CUSUM_K_PPS  0.05
+#define CUSUM_H_PPS  2.0
 
-#define CUSUM_K_BPS  0.45
-#define CUSUM_H_BPS  3.0
+#define CUSUM_K_BPS  0.05
+#define CUSUM_H_BPS  2.0
 
-#define CUSUM_K_FPS  0.45
-#define CUSUM_H_FPS  3.0
+#define CUSUM_K_FPS  0.05
+#define CUSUM_H_FPS  2.0
 
 /**
  * CHANGE 3: Tier-0 continuous risk scoring weights
@@ -53,7 +53,7 @@
 #define T0_W_BURST_BPS   1.5
 #define T0_W_BURST_FPS   1.0
 
-#define T0_RISK_THRESHOLD 8.0
+#define T0_RISK_THRESHOLD 7.0
 
 /**
  * Tier-0 attack confirmation with persistence filter.
@@ -70,7 +70,7 @@
  *   else:
  *       Tier-0 = NORMAL
  */
-#define TIER0_ATTACK_THRESHOLD 3      /* Legacy - now based on risk */
+#define TIER0_ATTACK_THRESHOLD 2      /* Legacy - now based on risk */
 #define CONSECUTIVE_ATTACK_WINDOWS 3  /* 3 consecutive seconds */
 
 /** Tier-1 sigmoid parameters (unchanged) */
@@ -300,7 +300,8 @@ double sigmoid_score(double distance);
 struct detection_result detection_engine_process(
     struct detection_engine *engine,
     struct dst_ip_stats     *stats,
-    uint64_t timestamp);
+    uint64_t timestamp,
+    uint32_t dst_ip);   /* dst_ip in host byte order */   
 
 const char *detection_state_str(detection_state_t state);
 

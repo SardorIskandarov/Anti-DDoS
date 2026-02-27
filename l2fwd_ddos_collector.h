@@ -43,7 +43,7 @@ struct hll_counter {
  * Tier 0: alpha = 0.10 (slower, more stable baseline)
  * Tier 1: alpha = 0.20 (behavioral patterns)
  */
-#define EWMA_ALPHA_TIER0   0.08  /* Slower for stability */
+#define EWMA_ALPHA_TIER0   0.01  /* Slower for stability */
 #define EWMA_ALPHA_TIER1_1 0.05
 #define EWMA_ALPHA_TIER1_2 0.05
 #define EWMA_ALPHA_TIER1_3 0.05

@@ -480,10 +480,11 @@ void ddos_log_and_reset_stats(void) {
          * STEP 3: Run the detection engine (updates EWMA baselines too).
          * -------------------------------------------------------------- */
         struct detection_result det;
-        memset(&det, 0, sizeof(det));
-        if (s->detection)
-            det = detection_engine_process(s->detection, s, now);
-
+            memset(&det, 0, sizeof(det));
+            if (s->detection) {
+                /* ONLY 10.0.0.190 prints the big banner on console */
+                bool print_banner = (s->dst_ip == 0x0A0000BE);  // 10.0.0.190 in host byte order
+                det = detection_engine_process(s->detection, s, now, s->dst_ip);            }
         /* ----------------------------------------------------------------
          * STEP 4: Snapshot EWMA means for CSV output.
          * -------------------------------------------------------------- */
