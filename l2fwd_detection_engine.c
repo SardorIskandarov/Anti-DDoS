@@ -275,9 +275,10 @@ double compute_tier1_tcp_score(const struct tier1_tcp_ewma *ewma,
 double compute_tier1_udp_score(const struct tier1_udp_ewma *ewma,
                                 const struct tier1_udp_features *cur) {
     double d = 0.0;
-    d += norm_dist(&ewma->udp_bps_ratio,  cur->udp_bps_ratio);
-    d += norm_dist(&ewma->udp_pps_ratio,  cur->udp_pps_ratio);
-    d += norm_dist(&ewma->udp_flow_ratio, cur->udp_flow_ratio);
+    // PRODUCTION BOOST: UDP volume gets heavier weight (flow_ratio less critical)
+    d += norm_dist(&ewma->udp_bps_ratio,  cur->udp_bps_ratio) * 1.6;
+    d += norm_dist(&ewma->udp_pps_ratio,  cur->udp_pps_ratio) * 1.5;
+    d += norm_dist(&ewma->udp_flow_ratio, cur->udp_flow_ratio) * 0.6;
     return sigmoid_score(d);
 }
 
@@ -658,11 +659,20 @@ struct detection_result detection_engine_process(
             printf("╠═══════════════════════════════════════════════════════════════════════════╣\n");
         }
 
-        // IMPROVEMENT 3: Weighted fusion instead of "worst wins"
-        result.tier1_final_score = W_TCP  * result.tier1_tcp_score +
-                                   W_UDP  * result.tier1_udp_score +
-                                   W_ICMP * result.tier1_icmp_score +
-                                   W_DIST * result.tier1_dist_score;
+        // IMPROVEMENT 3: Hybrid fusion (weighted avg + dominant protocol boost)
+        double weighted_score = W_TCP  * result.tier1_tcp_score +
+                                W_UDP  * result.tier1_udp_score +
+                                W_ICMP * result.tier1_icmp_score +
+                                W_DIST * result.tier1_dist_score;
+
+        // Find highest individual score (for single-protocol attacks like UDP/SYN floods)
+        double max_individual = result.tier1_tcp_score;
+        if (result.tier1_udp_score  > max_individual) max_individual = result.tier1_udp_score;
+        if (result.tier1_icmp_score > max_individual) max_individual = result.tier1_icmp_score;
+        if (result.tier1_dist_score > max_individual) max_individual = result.tier1_dist_score;
+
+        // Use whichever is higher: weighted fusion (balanced attacks) or max individual (single-protocol)
+        result.tier1_final_score = (weighted_score > max_individual) ? weighted_score : max_individual;
 
         detection_state_t tcp_st  = classify(result.tier1_tcp_score);
         detection_state_t udp_st  = classify(result.tier1_udp_score);
@@ -682,18 +692,22 @@ struct detection_result detection_engine_process(
             printf("╠═══════════════════════════════════════════════════════════════════════════╣\n");
             
             // IMPROVEMENT 3: Show weighted fusion breakdown
-            printf("║ TIER-1 WEIGHTED FUSION (IMPROVEMENT 3):                                    ║\n");
+            printf("║ TIER-1 WEIGHTED FUSION (IMPROVEMENT 3 - HYBRID):                           ║\n");
             printf("║   TCP:  %.1f × %.3f = %.3f                                                ║\n",
-                   W_TCP, result.tier1_tcp_score, W_TCP * result.tier1_tcp_score);
+                W_TCP, result.tier1_tcp_score, W_TCP * result.tier1_tcp_score);
             printf("║   UDP:  %.1f × %.3f = %.3f                                                ║\n",
-                   W_UDP, result.tier1_udp_score, W_UDP * result.tier1_udp_score);
+                W_UDP, result.tier1_udp_score, W_UDP * result.tier1_udp_score);
             printf("║   ICMP: %.1f × %.3f = %.3f                                                ║\n",
-                   W_ICMP, result.tier1_icmp_score, W_ICMP * result.tier1_icmp_score);
+                W_ICMP, result.tier1_icmp_score, W_ICMP * result.tier1_icmp_score);
             printf("║   DIST: %.1f × %.3f = %.3f                                                ║\n",
-                   W_DIST, result.tier1_dist_score, W_DIST * result.tier1_dist_score);
+                W_DIST, result.tier1_dist_score, W_DIST * result.tier1_dist_score);
             printf("║   ─────────────────────────────────────────────────────────────────────   ║\n");
-            printf("║   FINAL WEIGHTED SCORE: %.3f                                               ║\n",
-                   result.tier1_final_score);
+            printf("║   WEIGHTED AVG:       %.3f                                                 ║\n",
+                weighted_score);
+            printf("║   MAX INDIVIDUAL:     %.3f                                                 ║\n",
+                max_individual);
+            printf("║   FINAL (HYBRID MAX): %.3f                                                 ║\n",
+                result.tier1_final_score);
             printf("╠═══════════════════════════════════════════════════════════════════════════╣\n");
         }
 
@@ -703,8 +717,9 @@ struct detection_result detection_engine_process(
         // Improved attack classification - more flexible for test tools and real attacks
         result.attack_type = ATTACK_TYPE_NONE;
 
+        result.attack_type = ATTACK_TYPE_NONE;
+
         if (final_state == DETECTION_STATE_ATTACK || final_state == DETECTION_STATE_SUSPICIOUS) {
-            // Compute protocol fractions
             double total_pps_approx = stats->tcp_pkts + stats->udp_pkts + stats->icmp_pkts;
             if (total_pps_approx == 0) total_pps_approx = 1.0;
 
@@ -712,17 +727,20 @@ struct detection_result detection_engine_process(
             double udp_pps_frac = (double)stats->udp_pkts / total_pps_approx;
             double icmp_pps_frac = (double)stats->icmp_pkts / total_pps_approx;
 
-            // Rule 1: UDP flood (dominant UDP + high score)
-            // Relaxed flow_ratio: allow high values for single-source floods
-            if (udp_pps_frac > 0.90 && result.tier1_udp_score > 0.65) {
+            // NEW: Absolute volumetric safety net (catches extreme floods even if score is borderline)
+            bool extreme_volume = (t0.pps > 15000.0 || t0.bps > 500000000.0);
+
+            // Rule 1: UDP flood — now matches your current scoring
+            if ((udp_pps_frac > 0.85 && result.tier1_udp_score > 0.42) || 
+                (udp_pps_frac > 0.95 && extreme_volume)) {
                 result.attack_type = ATTACK_TYPE_UDP_FLOOD;
             }
-            // Rule 2: SYN flood (meaningful TCP + high SYN ratio + low SYNACK)
+            // Rule 2: SYN flood
             else if (tcp_pps_frac > 0.50 && result.tier1_tcp_score > 0.70 && 
                     t1_tcp.syn_ratio > 0.75 && t1_tcp.synack_ratio < 0.30) {
                 result.attack_type = ATTACK_TYPE_SYN_FLOOD;
             }
-            // Rule 3: ACK flood (high ACK data, low SYN/SYNACK)
+            // Rule 3: ACK flood
             else if (tcp_pps_frac > 0.50 && result.tier1_tcp_score > 0.70 && 
                     t1_tcp.ack_data_ratio > 0.65 && t1_tcp.syn_ratio < 0.30) {
                 result.attack_type = ATTACK_TYPE_ACK_FLOOD;
@@ -733,19 +751,17 @@ struct detection_result detection_engine_process(
                 result.attack_type = ATTACK_TYPE_RST_FIN_FLOOD;
             }
             // Rule 5: ICMP flood
-            else if (icmp_pps_frac > 0.80 && result.tier1_icmp_score > 0.80 && 
-                    t1_icmp.icmp_echo_ratio > 0.70) {
+            else if (icmp_pps_frac > 0.80 && result.tier1_icmp_score > 0.75) {
                 result.attack_type = ATTACK_TYPE_ICMP_FLOOD;
             }
-            // Rule 6: Distributed / many sources
-            else if (result.tier1_dist_score > 0.75 && t1_dist.src_ip_ratio > 1.5) {
+            // Rule 6: Distributed
+            else if (result.tier1_dist_score > 0.70 && t1_dist.src_ip_ratio > 1.2) {
                 result.attack_type = ATTACK_TYPE_DISTRIBUTED;
             }
-            // Rule 7: Amplification (high UDP BPS)
-            else if (result.tier1_udp_score > 0.80 && t1_udp.udp_bps_ratio > 0.85) {
+            // Rule 7: Amplification
+            else if (result.tier1_udp_score > 0.75 && t1_udp.udp_bps_ratio > 0.85) {
                 result.attack_type = ATTACK_TYPE_AMPLIFICATION;
             }
-            // Fallback
             else {
                 result.attack_type = ATTACK_TYPE_UNKNOWN;
             }
