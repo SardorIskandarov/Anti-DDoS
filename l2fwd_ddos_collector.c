@@ -76,14 +76,36 @@ uint64_t hll_count(const struct hll_counter *hll) {
 }
 
 // ============================================================================
-// EWMA IMPLEMENTATION  (mean-only; defined here so .c files don't duplicate)
+// EWMA IMPLEMENTATION  (with variance ceiling - IMPROVEMENT 1)
 // ============================================================================
 
 void ewma_update(struct ewma_state *s, double x) {
     if (s->n == 0) {
         s->mean = x;
+        s->variance = 0.0;
     } else {
+        // Update mean
         s->mean += s->alpha * (x - s->mean);
+        
+        // Update variance (EWMA on squared residuals)
+        double residual = x - s->mean;
+        double new_variance = s->variance + s->alpha * (residual * residual - s->variance);
+        
+        // IMPROVEMENT 1: Initialize variance ceiling at warmup completion
+        if (s->n == EWMA_WARMUP_PERIODS - 1 && !s->ceiling_initialized) {
+            s->initial_std = sqrt(s->variance);
+            if (s->initial_std > EWMA_EPSILON) {
+                s->variance_max = (3.0 * s->initial_std) * (3.0 * s->initial_std);
+                s->ceiling_initialized = true;
+            }
+        }
+        
+        // IMPROVEMENT 1: Apply variance ceiling (3× initial variance)
+        if (s->ceiling_initialized && new_variance > s->variance_max) {
+            new_variance = s->variance_max;
+        }
+        
+        s->variance = new_variance;
     }
     if (s->n < UINT32_MAX) s->n++;
 }
@@ -482,9 +504,8 @@ void ddos_log_and_reset_stats(void) {
         struct detection_result det;
             memset(&det, 0, sizeof(det));
             if (s->detection) {
-                /* ONLY 10.0.0.190 prints the big banner on console */
-                bool print_banner = (s->dst_ip == 0x0A0000BE);  // 10.0.0.190 in host byte order
-                det = detection_engine_process(s->detection, s, now, s->dst_ip);            }
+                det = detection_engine_process(s->detection, s, now, s->dst_ip);
+            }
         /* ----------------------------------------------------------------
          * STEP 4: Snapshot EWMA means for CSV output.
          * -------------------------------------------------------------- */

@@ -61,11 +61,20 @@ struct hll_counter {
 
 /**
  * Single EWMA state (used by all tiers).
+ * 
+ * IMPROVEMENT 1: Added variance tracking with ceiling (3× initial variance)
+ * to prevent Tier-1 baseline drift during pre-attack anomalies.
  */
 struct ewma_state {
     double   mean;
     uint32_t n;
     double   alpha;
+    
+    /* Variance ceiling infrastructure (IMPROVEMENT 1) */
+    double   variance;           /* Variance tracking (EWMA on squared residuals) */
+    double   initial_std;        /* Captured at warmup completion */
+    double   variance_max;       /* 3.0 × initial_std (squared) - ceiling */
+    bool     ceiling_initialized; /* Has ceiling been initialized? */
 };
 
 // ============================================================================

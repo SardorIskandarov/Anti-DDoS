@@ -78,8 +78,17 @@
 #define SIGMOID_D0  0.9
 
 /** Tier-1 decision thresholds */
-#define THRESHOLD_NORMAL     0.4
-#define THRESHOLD_SUSPICIOUS 0.6
+#define THRESHOLD_NORMAL     0.3
+#define THRESHOLD_SUSPICIOUS 0.4
+
+/**
+ * IMPROVEMENT 3: Tier-1 weighted fusion weights
+ * Replaces "worst wins" with weighted average for balanced decision making
+ */
+#define W_TCP   0.4
+#define W_UDP   0.3
+#define W_DIST  0.2
+#define W_ICMP  0.1
 
 /**
  * EARLY FREEZE: Freeze as soon as Tier-0 risk exceeds threshold.

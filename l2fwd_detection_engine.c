@@ -246,12 +246,17 @@ int cusum_update_tier0(struct detection_engine *engine,
 }
 
 // ============================================================================
-// TIER 1 — DISTANCE COMPUTATION
+// TIER 1 — DISTANCE COMPUTATION (IMPROVEMENT 2: One-sided detection)
 // ============================================================================
 
 static inline double norm_dist(const struct ewma_state *s, double current) {
     if (s->n < EWMA_WARMUP_PERIODS) return 0.0;
-    return fabs(current - s->mean) / (s->mean + EWMA_EPSILON);
+    
+    // IMPROVEMENT 2: One-sided detection - only penalize upward deviations
+    double diff = current - s->mean;
+    if (diff <= 0.0) return 0.0;  // Ignore drops (downward deviations)
+    
+    return diff / (s->mean + EWMA_EPSILON);
 }
 
 double compute_tier1_tcp_score(const struct tier1_tcp_ewma *ewma,
@@ -653,11 +658,11 @@ struct detection_result detection_engine_process(
             printf("╠═══════════════════════════════════════════════════════════════════════════╣\n");
         }
 
-        double worst = result.tier1_tcp_score;
-        if (result.tier1_udp_score  > worst) worst = result.tier1_udp_score;
-        if (result.tier1_icmp_score > worst) worst = result.tier1_icmp_score;
-        if (result.tier1_dist_score > worst) worst = result.tier1_dist_score;
-        result.tier1_final_score = worst;
+        // IMPROVEMENT 3: Weighted fusion instead of "worst wins"
+        result.tier1_final_score = W_TCP  * result.tier1_tcp_score +
+                                   W_UDP  * result.tier1_udp_score +
+                                   W_ICMP * result.tier1_icmp_score +
+                                   W_DIST * result.tier1_dist_score;
 
         detection_state_t tcp_st  = classify(result.tier1_tcp_score);
         detection_state_t udp_st  = classify(result.tier1_udp_score);
@@ -675,30 +680,26 @@ struct detection_result detection_engine_process(
             printf("║   DIST: %-12s                                                          ║\n",
                    detection_state_str(dist_st));
             printf("╠═══════════════════════════════════════════════════════════════════════════╣\n");
+            
+            // IMPROVEMENT 3: Show weighted fusion breakdown
+            printf("║ TIER-1 WEIGHTED FUSION (IMPROVEMENT 3):                                    ║\n");
+            printf("║   TCP:  %.1f × %.3f = %.3f                                                ║\n",
+                   W_TCP, result.tier1_tcp_score, W_TCP * result.tier1_tcp_score);
+            printf("║   UDP:  %.1f × %.3f = %.3f                                                ║\n",
+                   W_UDP, result.tier1_udp_score, W_UDP * result.tier1_udp_score);
+            printf("║   ICMP: %.1f × %.3f = %.3f                                                ║\n",
+                   W_ICMP, result.tier1_icmp_score, W_ICMP * result.tier1_icmp_score);
+            printf("║   DIST: %.1f × %.3f = %.3f                                                ║\n",
+                   W_DIST, result.tier1_dist_score, W_DIST * result.tier1_dist_score);
+            printf("║   ─────────────────────────────────────────────────────────────────────   ║\n");
+            printf("║   FINAL WEIGHTED SCORE: %.3f                                               ║\n",
+                   result.tier1_final_score);
+            printf("╠═══════════════════════════════════════════════════════════════════════════╣\n");
         }
 
-        if (tcp_st  == DETECTION_STATE_ATTACK ||
-            udp_st  == DETECTION_STATE_ATTACK ||
-            icmp_st == DETECTION_STATE_ATTACK ||
-            dist_st == DETECTION_STATE_ATTACK) {
-            final_state = DETECTION_STATE_ATTACK;
-            if (dst_ip == 0x0A0000BE) {
-                printf("║ TIER-1 DECISION LOGIC: ATTACK detected in at least one sub-tier            ║\n");
-            }
-        } else if (tcp_st  == DETECTION_STATE_SUSPICIOUS ||
-                   udp_st  == DETECTION_STATE_SUSPICIOUS ||
-                   icmp_st == DETECTION_STATE_SUSPICIOUS ||
-                   dist_st == DETECTION_STATE_SUSPICIOUS) {
-            final_state = DETECTION_STATE_SUSPICIOUS;
-            if (dst_ip == 0x0A0000BE) {
-                printf("║ TIER-1 DECISION LOGIC: SUSPICIOUS detected in at least one sub-tier        ║\n");
-            }
-        } else {
-            final_state = DETECTION_STATE_NORMAL;
-            if (dst_ip == 0x0A0000BE) {
-                printf("║ TIER-1 DECISION LOGIC: All sub-tiers NORMAL → False alarm                  ║\n");
-            }
-        }
+        // Classify based on weighted final score
+        final_state = classify(result.tier1_final_score);
+
         // Improved attack classification - more flexible for test tools and real attacks
         result.attack_type = ATTACK_TYPE_NONE;
 
@@ -751,8 +752,8 @@ struct detection_result detection_engine_process(
         }
 
         if (dst_ip == 0x0A0000BE) {
-            printf("║ TIER-1 WORST SCORE: %.3f → FINAL STATE: %-12s                      ║\n",
-                   worst, detection_state_str(final_state));
+            printf("║ TIER-1 FINAL CLASSIFICATION: %-12s                                     ║\n",
+                   detection_state_str(final_state));
             printf("║ Attack Type: %-20s                                                   ║\n",
                    attack_type_str(result.attack_type));
             printf("╠═══════════════════════════════════════════════════════════════════════════╣\n");
