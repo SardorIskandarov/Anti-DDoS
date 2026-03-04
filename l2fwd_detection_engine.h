@@ -104,6 +104,22 @@ typedef enum {
 } detection_state_t;
 
 // ============================================================================
+// ATTACK TYPES
+// ============================================================================
+
+typedef enum {
+    ATTACK_TYPE_NONE,
+    ATTACK_TYPE_SYN_FLOOD,
+    ATTACK_TYPE_ACK_FLOOD,
+    ATTACK_TYPE_RST_FIN_FLOOD,
+    ATTACK_TYPE_UDP_FLOOD,
+    ATTACK_TYPE_ICMP_FLOOD,
+    ATTACK_TYPE_DISTRIBUTED,
+    ATTACK_TYPE_AMPLIFICATION,
+    ATTACK_TYPE_UNKNOWN
+} attack_type_t;
+
+// ============================================================================
 // FEATURE VECTORS
 // ============================================================================
 
@@ -216,6 +232,8 @@ struct detection_result {
     double tier1_dist_score;
     double tier1_final_score;
 
+    attack_type_t attack_type;
+
     uint64_t timestamp;
 };
 
@@ -303,6 +321,7 @@ struct detection_result detection_engine_process(
     uint64_t timestamp,
     uint32_t dst_ip);   /* dst_ip in host byte order */   
 
+const char *attack_type_str(attack_type_t type);
 const char *detection_state_str(detection_state_t state);
 
 #endif /* __L2FWD_DETECTION_ENGINE_H__ */

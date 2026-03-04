@@ -699,10 +699,62 @@ struct detection_result detection_engine_process(
                 printf("║ TIER-1 DECISION LOGIC: All sub-tiers NORMAL → False alarm                  ║\n");
             }
         }
+        // Improved attack classification - more flexible for test tools and real attacks
+        result.attack_type = ATTACK_TYPE_NONE;
+
+        if (final_state == DETECTION_STATE_ATTACK || final_state == DETECTION_STATE_SUSPICIOUS) {
+            // Compute protocol fractions
+            double total_pps_approx = stats->tcp_pkts + stats->udp_pkts + stats->icmp_pkts;
+            if (total_pps_approx == 0) total_pps_approx = 1.0;
+
+            double tcp_pps_frac = (double)stats->tcp_pkts / total_pps_approx;
+            double udp_pps_frac = (double)stats->udp_pkts / total_pps_approx;
+            double icmp_pps_frac = (double)stats->icmp_pkts / total_pps_approx;
+
+            // Rule 1: UDP flood (dominant UDP + high score)
+            // Relaxed flow_ratio: allow high values for single-source floods
+            if (udp_pps_frac > 0.90 && result.tier1_udp_score > 0.65) {
+                result.attack_type = ATTACK_TYPE_UDP_FLOOD;
+            }
+            // Rule 2: SYN flood (meaningful TCP + high SYN ratio + low SYNACK)
+            else if (tcp_pps_frac > 0.50 && result.tier1_tcp_score > 0.70 && 
+                    t1_tcp.syn_ratio > 0.75 && t1_tcp.synack_ratio < 0.30) {
+                result.attack_type = ATTACK_TYPE_SYN_FLOOD;
+            }
+            // Rule 3: ACK flood (high ACK data, low SYN/SYNACK)
+            else if (tcp_pps_frac > 0.50 && result.tier1_tcp_score > 0.70 && 
+                    t1_tcp.ack_data_ratio > 0.65 && t1_tcp.syn_ratio < 0.30) {
+                result.attack_type = ATTACK_TYPE_ACK_FLOOD;
+            }
+            // Rule 4: RST/FIN flood
+            else if (tcp_pps_frac > 0.40 && result.tier1_tcp_score > 0.60 && 
+                    (t1_tcp.rst_ratio > 0.55 || t1_tcp.finack_ratio > 0.55)) {
+                result.attack_type = ATTACK_TYPE_RST_FIN_FLOOD;
+            }
+            // Rule 5: ICMP flood
+            else if (icmp_pps_frac > 0.80 && result.tier1_icmp_score > 0.80 && 
+                    t1_icmp.icmp_echo_ratio > 0.70) {
+                result.attack_type = ATTACK_TYPE_ICMP_FLOOD;
+            }
+            // Rule 6: Distributed / many sources
+            else if (result.tier1_dist_score > 0.75 && t1_dist.src_ip_ratio > 1.5) {
+                result.attack_type = ATTACK_TYPE_DISTRIBUTED;
+            }
+            // Rule 7: Amplification (high UDP BPS)
+            else if (result.tier1_udp_score > 0.80 && t1_udp.udp_bps_ratio > 0.85) {
+                result.attack_type = ATTACK_TYPE_AMPLIFICATION;
+            }
+            // Fallback
+            else {
+                result.attack_type = ATTACK_TYPE_UNKNOWN;
+            }
+        }
 
         if (dst_ip == 0x0A0000BE) {
             printf("║ TIER-1 WORST SCORE: %.3f → FINAL STATE: %-12s                      ║\n",
                    worst, detection_state_str(final_state));
+            printf("║ Attack Type: %-20s                                                   ║\n",
+                   attack_type_str(result.attack_type));
             printf("╠═══════════════════════════════════════════════════════════════════════════╣\n");
         }
 
@@ -806,5 +858,24 @@ const char *detection_state_str(detection_state_t state) {
         case DETECTION_STATE_SUSPICIOUS: return "SUSPICIOUS";
         case DETECTION_STATE_ATTACK:     return "ATTACK";
         default:                         return "UNKNOWN";
+    }
+}
+
+// ============================================================================
+// ATTACK CLASSIFICATION
+// ============================================================================
+
+const char *attack_type_str(attack_type_t type) {
+    switch (type) {
+        case ATTACK_TYPE_NONE:           return "NONE";
+        case ATTACK_TYPE_SYN_FLOOD:      return "SYN_FLOOD";
+        case ATTACK_TYPE_ACK_FLOOD:      return "ACK_FLOOD";
+        case ATTACK_TYPE_RST_FIN_FLOOD:  return "RST_FIN_FLOOD";
+        case ATTACK_TYPE_UDP_FLOOD:      return "UDP_FLOOD";
+        case ATTACK_TYPE_ICMP_FLOOD:     return "ICMP_FLOOD";
+        case ATTACK_TYPE_DISTRIBUTED:    return "DISTRIBUTED";
+        case ATTACK_TYPE_AMPLIFICATION:  return "AMPLIFICATION";
+        case ATTACK_TYPE_UNKNOWN:        return "UNKNOWN";
+        default:                         return "UNDEFINED";
     }
 }
