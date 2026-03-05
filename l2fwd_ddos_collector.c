@@ -37,6 +37,11 @@ struct port_stats *port_stats = NULL;
 static int sock_fd = -1;
 static struct sockaddr_un server_addr;
 
+/* CSV file for raw features logging */
+static FILE *csv_file = NULL;
+static bool csv_header_written = false;
+#define CSV_PATH "/tmp/ddos_raw_features.csv"
+
 // ============================================================================
 // HYPERLOGLOG IMPLEMENTATION
 // ============================================================================
@@ -241,11 +246,6 @@ void ddos_collector_init(void) {
     printf("[Collector] Initialising per-dst-IP tracking (MAX_DST_IPS=%d)\n",
            MAX_DST_IPS);
 
-    /*
-     * Allocate the per-port stats table on the heap.
-     * rte_zmalloc zero-initialises the memory (equivalent to calloc).
-     * Socket 0 (-1 = any NUMA node) keeps it simple for single-socket boxes.
-     */
     port_stats = rte_zmalloc("port_stats",
                              sizeof(struct port_stats) * RTE_MAX_ETHPORTS,
                              RTE_CACHE_LINE_SIZE);
@@ -260,6 +260,18 @@ void ddos_collector_init(void) {
     server_addr.sun_family = AF_UNIX;
     strncpy(server_addr.sun_path, SOCK_PATH,
             sizeof(server_addr.sun_path) - 1);
+    
+    /* Remove old CSV file if exists */
+    remove(CSV_PATH);
+    
+    /* ★ ADD THESE LINES TO CREATE FILE IMMEDIATELY ★ */
+    csv_file = fopen(CSV_PATH, "w");
+    if (csv_file != NULL) {
+        printf("[Collector] CSV file pre-created at %s\n", CSV_PATH);
+        fclose(csv_file);
+        csv_file = NULL;  /* Will be reopened on first write */
+    }
+    
     printf("[Collector] Initialisation complete\n");
 }
 
@@ -399,6 +411,153 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
 }
 
 // ============================================================================
+// CSV RAW FEATURES LOGGING
+// ============================================================================
+
+// ============================================================================
+// CSV RAW FEATURES LOGGING (HUMAN-READABLE FORMAT)
+// ============================================================================
+
+// ============================================================================
+// CSV RAW FEATURES LOGGING (HUMAN-READABLE FORMAT - FILTERED TO SINGLE IP)
+// ============================================================================
+
+static void log_raw_features_to_csv(long long timestamp_ms,
+                                      uint32_t dst_ip,
+                                      const struct tier0_features *t0,
+                                      const struct tier1_tcp_features *t1_tcp,
+                                      const struct tier1_udp_features *t1_udp,
+                                      const struct tier1_icmp_features *t1_icmp,
+                                      const struct tier1_dist_features *t1_dist) {
+    
+    /* ★ FILTER: Only log data for IP 93.188.85.234 ★ */
+    if (dst_ip != 0x5DBC55EA) return;  /* 93.188.85.234 in host byte order */
+    
+    /* Open CSV file on first call */
+    if (csv_file == NULL) {
+        csv_file = fopen(CSV_PATH, "w");
+        if (csv_file == NULL) {
+            perror("[Collector] Failed to open CSV file");
+            return;
+        }
+        printf("[Collector] CSV raw features log created at %s (filtering IP: 93.188.85.234)\n", CSV_PATH);
+    }
+
+    /* Write CSV header on first write with clear, descriptive names */
+    if (!csv_header_written) {
+        fprintf(csv_file,
+                /* Basic Info */
+                "timestamp_ms,dst_ip,"
+                
+                /* Volume Metrics (easy to spot floods) */
+                "pps_packets_per_sec,bps_bits_per_sec,fps_flows_per_sec,"
+                
+                /* TCP Behavior (spot SYN/ACK/RST floods) */
+                "tcp_syn_ratio,tcp_synack_ratio,tcp_finack_ratio,tcp_rst_ratio,tcp_ack_data_ratio,"
+                "tcp_pps_dominance,tcp_bps_dominance,"
+                
+                /* UDP Behavior (spot UDP floods) */
+                "udp_bps_dominance,udp_pps_dominance,udp_flow_diversity,"
+                
+                /* ICMP Behavior (spot ping floods) */
+                "icmp_echo_ratio,icmp_pps_dominance,"
+                
+                /* Distribution (spot botnets) */
+                "unique_sources_ratio,unique_ports_ratio,"
+                
+                /* Quick Analysis Columns (ADDED FOR CLARITY) */
+                "dominant_protocol,attack_indicators\n");
+        csv_header_written = true;
+    }
+
+    /* Convert IP to string */
+    struct in_addr addr;
+    addr.s_addr = htonl(dst_ip);
+    char dst_ip_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &addr, dst_ip_str, sizeof(dst_ip_str));
+
+    // /* Determine dominant protocol */
+    // const char *dominant_proto = "MIXED";
+    // if (t1_tcp->tcp_pps_ratio > 0.80) dominant_proto = "TCP";
+    // else if (t1_udp->udp_pps_ratio > 0.80) dominant_proto = "UDP";
+    // else if (t1_icmp->icmp_pps_ratio > 0.80) dominant_proto = "ICMP";
+
+    // /* Build attack indicators string (visual flags) */
+    // char indicators[128] = "";
+    // int suspicious = 0;
+    
+    // if (t0->pps > 10000) { strcat(indicators, "HIGH_PPS "); suspicious++; }
+    // if (t0->bps > 100000000) { strcat(indicators, "HIGH_BPS "); suspicious++; }
+    // if (t1_tcp->syn_ratio > 0.80) { strcat(indicators, "SYN_FLOOD? "); suspicious++; }
+    // if (t1_tcp->rst_ratio > 0.50) { strcat(indicators, "RST_FLOOD? "); suspicious++; }
+    // if (t1_udp->udp_pps_ratio > 0.90) { strcat(indicators, "UDP_FLOOD? "); suspicious++; }
+    // if (t1_icmp->icmp_pps_ratio > 0.80) { strcat(indicators, "ICMP_FLOOD? "); suspicious++; }
+    // if (t1_dist->src_ip_ratio > 0.50) { strcat(indicators, "BOTNET? "); suspicious++; }
+    // if (t1_dist->dst_port_ratio > 0.80) { strcat(indicators, "PORT_SCAN? "); suspicious++; }
+    
+    // if (suspicious == 0) strcpy(indicators, "CLEAN");
+
+    /* Write data with better formatting */
+    fprintf(csv_file,
+            /* Basic Info */
+            "%lld,%s,"
+            
+            /* Volume (formatted for readability) */
+            "%.0f,%.0f,%.0f,"
+            
+            /* TCP Behavior (0.0000 = 0%, 1.0000 = 100%) */
+            "%.2f%%,%.2f%%,%.2f%%,%.2f%%,%.2f%%,"
+            "%.2f%%,%.2f%%,"
+            
+            /* UDP Behavior */
+            "%.2f%%,%.2f%%,%.2f%%,"
+            
+            /* ICMP Behavior */
+            "%.2f%%,%.2f%%,"
+            
+            /* Distribution */
+            "%.2f%%,%.2f%%,"
+            
+            /* Quick Analysis */
+            "%s,%s\n",
+            
+            /* Values */
+            timestamp_ms, dst_ip_str,
+            
+            /* Volume */
+            t0->pps, t0->bps, t0->fps,
+            
+            /* TCP (multiply by 100 for percentage) */
+            t1_tcp->syn_ratio * 100.0,
+            t1_tcp->synack_ratio * 100.0,
+            t1_tcp->finack_ratio * 100.0,
+            t1_tcp->rst_ratio * 100.0,
+            t1_tcp->ack_data_ratio * 100.0,
+            t1_tcp->tcp_pps_ratio * 100.0,
+            t1_tcp->tcp_bps_ratio * 100.0,
+            
+            /* UDP */
+            t1_udp->udp_bps_ratio * 100.0,
+            t1_udp->udp_pps_ratio * 100.0,
+            t1_udp->udp_flow_ratio * 100.0,
+            
+            /* ICMP */
+            t1_icmp->icmp_echo_ratio * 100.0,
+            t1_icmp->icmp_pps_ratio * 100.0,
+            
+            /* Distribution */
+            t1_dist->src_ip_ratio * 100.0,
+            t1_dist->dst_port_ratio * 100.0);
+            
+            // /* Quick Analysis */
+            // dominant_proto,
+            // indicators
+
+    /* Flush immediately for real-time visibility */
+    fflush(csv_file);
+}
+
+// ============================================================================
 // STATISTICS LOGGING, DETECTION & CSV EXPORT
 // ============================================================================
 
@@ -497,6 +656,9 @@ void ddos_log_and_reset_stats(void) {
         extract_tier1_udp_features (s, &t1_udp,  time_sec);
         extract_tier1_icmp_features(s, &t1_icmp, time_sec);
         extract_tier1_dist_features(s, &t1_dist, time_sec);
+
+        /* Log raw features to CSV file */
+        log_raw_features_to_csv(timestamp_ms, s->dst_ip, &t0, &t1_tcp, &t1_udp, &t1_icmp, &t1_dist);
 
         /* ----------------------------------------------------------------
          * STEP 3: Run the detection engine (updates EWMA baselines too).

@@ -427,7 +427,7 @@ struct detection_result detection_engine_process(
         engine->warmup_counter++;
         if (engine->warmup_counter >= DETECTION_WARMUP_WINDOWS) {
             engine->state = DETECTION_STATE_NORMAL;
-            if (dst_ip == 0x0A0000BE) {
+            if (dst_ip == 0x5DBCD5EA) {
                 printf("[Detection] Warm-up complete (%u windows), entering NORMAL\n",
                        engine->warmup_counter);
             }
@@ -443,7 +443,7 @@ struct detection_result detection_engine_process(
     char time_str[32];
     strftime(time_str, sizeof(time_str), "%H:%M:%S", tm_info);
     
-    if (dst_ip == 0x0A0000BE) {
+    if (dst_ip == 0x5DBCD5EA) {
         printf("\n");
         printf("╔═══════════════════════════════════════════════════════════════════════════╗\n");
         printf("║ DETECTION WINDOW: %s                                                  ║\n", time_str);
@@ -456,7 +456,7 @@ struct detection_result detection_engine_process(
     tick_freeze(&engine->tier1_icmp_state);
     tick_freeze(&engine->tier1_dist_state);
 
-    if (dst_ip == 0x0A0000BE) {
+    if (dst_ip == 0x5DBCD5EA) {
         printf("║ FREEZE STATE:                                                              ║\n");
         printf("║   Tier0: %6s | T1-TCP: %6s | T1-UDP: %6s | T1-ICMP: %6s | T1-DIST: %6s ║\n",
                engine->tier0_state.frozen ? "FROZEN" : "ACTIVE",
@@ -486,10 +486,58 @@ struct detection_result detection_engine_process(
         printf("╠═══════════════════════════════════════════════════════════════════════════╣\n");
     }
 
-    bool tier0_frozen = engine->tier0_state.frozen;
+       bool tier0_frozen = engine->tier0_state.frozen;
     int alarm_count = cusum_update_tier0(engine, stats, &t0, &result, tier0_frozen);
 
-    if (dst_ip == 0x0A0000BE) {
+    /* ==================================================================
+     * PRODUCTION SAFETY NET – ABSOLUTE VOLUMETRIC OVERRIDE
+     * Covers packet floods, bandwidth floods, and flow-table exhaustion.
+     * Uses configurable thresholds from the header file.
+     * ================================================================== */
+    bool absolute_override = 
+        (t0.pps > ABSOLUTE_PPS_THRESHOLD ||      /* tiny-packet floods */
+         t0.bps > ABSOLUTE_BPS_THRESHOLD ||      /* bandwidth / amplification */
+         t0.fps > ABSOLUTE_FPS_THRESHOLD);       /* SYN/distributed flow floods */
+
+    bool tier0_triggered = false;   // ← single declaration here
+
+    if (absolute_override) {
+        if (dst_ip == 0x5DBCD5EA) {
+            printf("║ 🔥 ABSOLUTE VOLUMETRIC OVERRIDE (PPS=%.0f | BPS=%.0f | FPS=%.0f) → FORCE ATTACK ║\n",
+                   t0.pps, t0.bps, t0.fps);
+        }
+        engine->consecutive_attack_counter = CONSECUTIVE_ATTACK_WINDOWS;
+        result.tier0_global_risk = 9.9;
+        tier0_triggered = true;
+    }
+
+    if (result.tier0_global_risk >= T0_RISK_THRESHOLD) {
+        engine->consecutive_attack_counter++;
+        if (dst_ip == 0x5DBCD5EA) {
+            printf("║ PERSISTENCE: Consecutive attack counter = %u/%u                            ║\n",
+                   engine->consecutive_attack_counter, CONSECUTIVE_ATTACK_WINDOWS);
+        }
+    } else {
+        engine->consecutive_attack_counter = 0;
+        if (dst_ip == 0x5DBCD5EA) {
+            printf("║ PERSISTENCE: Counter reset to 0 (risk below threshold)                     ║\n");
+        }
+    }
+    
+    if (dst_ip == 0x5DBCD5EA) {
+        printf("╠═══════════════════════════════════════════════════════════════════════════╣\n");
+    }
+
+    /* If the absolute override didn't already trigger it, check persistence */
+    if (!tier0_triggered) {
+        tier0_triggered = (engine->consecutive_attack_counter >= CONSECUTIVE_ATTACK_WINDOWS);
+    }
+    
+    if (dst_ip == 0x5DBCD5EA) {
+        printf("╠═══════════════════════════════════════════════════════════════════════════╣\n");
+    }
+
+    if (dst_ip == 0x5DBCD5EA) {
         printf("║ TIER-0 CUSUM INTERNAL STATE:                                               ║\n");
         printf("║   [PPS]  S=%8.2f Var=%10.2f Std=%8.2f Risk=%5.3f (k=%.2f h=%.2f)    ║\n",
                engine->cusum[0].S,
@@ -554,25 +602,23 @@ struct detection_result detection_engine_process(
 
     if (result.tier0_global_risk >= T0_RISK_THRESHOLD) {
         engine->consecutive_attack_counter++;
-        if (dst_ip == 0x0A0000BE) {
+        if (dst_ip == 0x5DBCD5EA) {
             printf("║ PERSISTENCE: Consecutive attack counter = %u/%u                            ║\n",
                    engine->consecutive_attack_counter, CONSECUTIVE_ATTACK_WINDOWS);
         }
     } else {
         engine->consecutive_attack_counter = 0;
-        if (dst_ip == 0x0A0000BE) {
+        if (dst_ip == 0x5DBCD5EA) {
             printf("║ PERSISTENCE: Counter reset to 0 (risk below threshold)                     ║\n");
         }
     }
     
-    if (dst_ip == 0x0A0000BE) {
+    if (dst_ip == 0x5DBCD5EA) {
         printf("╠═══════════════════════════════════════════════════════════════════════════╣\n");
     }
 
-    bool tier0_triggered = (engine->consecutive_attack_counter >= CONSECUTIVE_ATTACK_WINDOWS);
-
     if (tier0_triggered) {
-        if (dst_ip == 0x0A0000BE) {
+        if (dst_ip == 0x5DBCD5EA) {
             printf("║ ACTION: Freezing all tiers (persistence confirmed)                         ║\n");
         }
         freeze_tier(&engine->tier0_state);
@@ -589,7 +635,7 @@ struct detection_result detection_engine_process(
     if (!tier0_triggered) {
         final_state = DETECTION_STATE_NORMAL;
         
-        if (dst_ip == 0x0A0000BE) {
+        if (dst_ip == 0x5DBCD5EA) {
             printf("║ TIER-0 DECISION: NORMAL (persistence not met)                              ║\n");
             printf("║ Thaw cooldown: %u/%u windows                                              ║\n",
                    engine->thaw_cooldown_counter, THAW_COOLDOWN_WINDOWS);
@@ -597,7 +643,7 @@ struct detection_result detection_engine_process(
         }
         
     } else {
-        if (dst_ip == 0x0A0000BE) {
+        if (dst_ip == 0x5DBCD5EA) {
             printf("║ TIER-0 DECISION: ATTACK CONFIRMED (persistence met)                        ║\n");
             printf("╠═══════════════════════════════════════════════════════════════════════════╣\n");
             printf("║ TIER-1 EVALUATION TRIGGERED                                                ║\n");
@@ -606,7 +652,7 @@ struct detection_result detection_engine_process(
         
         result.tier1_evaluated = true;
 
-        if (dst_ip == 0x0A0000BE) {
+        if (dst_ip == 0x5DBCD5EA) {
             printf("║ TIER-1 RAW FEATURES:                                                       ║\n");
             printf("║   [TCP]  SYN=%.3f SA=%.3f FA=%.3f RST=%.3f ACK=%.3f                     ║\n",
                    t1_tcp.syn_ratio, t1_tcp.synack_ratio, t1_tcp.finack_ratio,
@@ -646,7 +692,7 @@ struct detection_result detection_engine_process(
         result.tier1_icmp_score = compute_tier1_icmp_score(&stats->ewma_t1_icmp, &t1_icmp);
         result.tier1_dist_score = compute_tier1_dist_score(&stats->ewma_t1_dist, &t1_dist);
 
-        if (dst_ip == 0x0A0000BE) {
+        if (dst_ip == 0x5DBCD5EA) {
             printf("║ TIER-1 COMPUTED SCORES:                                                    ║\n");
             printf("║   TCP:  %.3f  (norm=%.2f susp=%.2f)                                      ║\n",
                    result.tier1_tcp_score, THRESHOLD_NORMAL, THRESHOLD_SUSPICIOUS);
@@ -679,7 +725,7 @@ struct detection_result detection_engine_process(
         detection_state_t icmp_st = classify(result.tier1_icmp_score);
         detection_state_t dist_st = classify(result.tier1_dist_score);
 
-        if (dst_ip == 0x0A0000BE) {
+        if (dst_ip == 0x5DBCD5EA) {
             printf("║ TIER-1 CLASSIFICATIONS:                                                    ║\n");
             printf("║   TCP:  %-12s                                                          ║\n",
                    detection_state_str(tcp_st));
@@ -715,9 +761,7 @@ struct detection_result detection_engine_process(
         final_state = classify(result.tier1_final_score);
 
         // Improved attack classification - more flexible for test tools and real attacks
-        result.attack_type = ATTACK_TYPE_NONE;
-
-        result.attack_type = ATTACK_TYPE_NONE;
+               result.attack_type = ATTACK_TYPE_NONE;
 
         if (final_state == DETECTION_STATE_ATTACK || final_state == DETECTION_STATE_SUSPICIOUS) {
             double total_pps_approx = stats->tcp_pkts + stats->udp_pkts + stats->icmp_pkts;
@@ -727,31 +771,32 @@ struct detection_result detection_engine_process(
             double udp_pps_frac = (double)stats->udp_pkts / total_pps_approx;
             double icmp_pps_frac = (double)stats->icmp_pkts / total_pps_approx;
 
-            // NEW: Absolute volumetric safety net (catches extreme floods even if score is borderline)
-            bool extreme_volume = (t0.pps > 15000.0 || t0.bps > 500000000.0);
+            // Use the new absolute_override for all volumetric rules
+            bool extreme_volume = absolute_override;
 
-            // Rule 1: UDP flood — now matches your current scoring
+            // Rule 1: UDP flood
             if ((udp_pps_frac > 0.85 && result.tier1_udp_score > 0.42) || 
                 (udp_pps_frac > 0.95 && extreme_volume)) {
                 result.attack_type = ATTACK_TYPE_UDP_FLOOD;
             }
             // Rule 2: SYN flood
-            else if (tcp_pps_frac > 0.50 && result.tier1_tcp_score > 0.70 && 
-                    t1_tcp.syn_ratio > 0.75 && t1_tcp.synack_ratio < 0.30) {
+            else if ((tcp_pps_frac > 0.50 && result.tier1_tcp_score > 0.65) || 
+                     (tcp_pps_frac > 0.70 && extreme_volume)) {
                 result.attack_type = ATTACK_TYPE_SYN_FLOOD;
             }
             // Rule 3: ACK flood
-            else if (tcp_pps_frac > 0.50 && result.tier1_tcp_score > 0.70 && 
-                    t1_tcp.ack_data_ratio > 0.65 && t1_tcp.syn_ratio < 0.30) {
+            else if ((tcp_pps_frac > 0.50 && result.tier1_tcp_score > 0.65) || 
+                     (tcp_pps_frac > 0.70 && extreme_volume)) {
                 result.attack_type = ATTACK_TYPE_ACK_FLOOD;
             }
             // Rule 4: RST/FIN flood
-            else if (tcp_pps_frac > 0.40 && result.tier1_tcp_score > 0.60 && 
-                    (t1_tcp.rst_ratio > 0.55 || t1_tcp.finack_ratio > 0.55)) {
+            else if ((tcp_pps_frac > 0.40 && result.tier1_tcp_score > 0.55) || 
+                     (tcp_pps_frac > 0.60 && extreme_volume)) {
                 result.attack_type = ATTACK_TYPE_RST_FIN_FLOOD;
             }
             // Rule 5: ICMP flood
-            else if (icmp_pps_frac > 0.80 && result.tier1_icmp_score > 0.75) {
+            else if ((icmp_pps_frac > 0.80 && result.tier1_icmp_score > 0.65) || 
+                     (icmp_pps_frac > 0.90 && extreme_volume)) {
                 result.attack_type = ATTACK_TYPE_ICMP_FLOOD;
             }
             // Rule 6: Distributed
@@ -767,7 +812,7 @@ struct detection_result detection_engine_process(
             }
         }
 
-        if (dst_ip == 0x0A0000BE) {
+        if (dst_ip == 0x5DBCD5EA) {
             printf("║ TIER-1 FINAL CLASSIFICATION: %-12s                                     ║\n",
                    detection_state_str(final_state));
             printf("║ Attack Type: %-20s                                                   ║\n",
@@ -778,7 +823,7 @@ struct detection_result detection_engine_process(
         if (final_state == DETECTION_STATE_ATTACK ||
             final_state == DETECTION_STATE_SUSPICIOUS) {
             
-            if (dst_ip == 0x0A0000BE) {
+            if (dst_ip == 0x5DBCD5EA) {
                 printf("║ ACTION: Maintaining freeze on all tiers (attack/suspicious confirmed)      ║\n");
             }
             
@@ -791,13 +836,13 @@ struct detection_result detection_engine_process(
             if (engine->state != final_state) {
                 engine->attack_count++;
                 engine->last_attack_time = timestamp;
-                if (dst_ip == 0x0A0000BE) {
+                if (dst_ip == 0x5DBCD5EA) {
                     printf("║ ALERT: State transition to %-12s (total attacks: %u)                ║\n",
                            detection_state_str(final_state), engine->attack_count);
                 }
             }
         } else {
-            if (dst_ip == 0x0A0000BE) {
+            if (dst_ip == 0x5DBCD5EA) {
                 printf("║ ACTION: Tier-1 cleared false alarm                                         ║\n");
                 printf("║ RECOVERY: Tier-1 veto → Resetting Tier-0 CUSUM (fast recovery after attack)║\n");
             }
@@ -807,7 +852,7 @@ struct detection_result detection_engine_process(
             engine->thaw_cooldown_counter = THAW_COOLDOWN_WINDOWS;
         }
         
-        if (dst_ip == 0x0A0000BE) {
+        if (dst_ip == 0x5DBCD5EA) {
             printf("╚═══════════════════════════════════════════════════════════════════════════╝\n");
         }
     }
@@ -817,7 +862,7 @@ struct detection_result detection_engine_process(
 
         if (engine->thaw_cooldown_counter >= THAW_COOLDOWN_WINDOWS) {
             if (engine->tier0_state.frozen) {
-                if (dst_ip == 0x0A0000BE) {
+                if (dst_ip == 0x5DBCD5EA) {
                     printf("\n╔═══════════════════════════════════════════════════════════════════════════╗\n");
                     printf("║ THAW COMPLETE: %u consecutive clean windows                               ║\n",
                            engine->thaw_cooldown_counter);
@@ -847,7 +892,7 @@ struct detection_result detection_engine_process(
         update_tier1_icmp_ewma(&stats->ewma_t1_icmp, &t1_icmp, &engine->tier1_icmp_state);
         update_tier1_dist_ewma(&stats->ewma_t1_dist, &t1_dist, &engine->tier1_dist_state);
     } else {
-        if (dst_ip == 0x0A0000BE) {
+        if (dst_ip == 0x5DBCD5EA) {
             if (final_state != DETECTION_STATE_NORMAL) {
                 printf("\n║ GATEKEEPER: Blocking baseline updates (state=%s)                          ║\n",
                        detection_state_str(final_state));

@@ -12,7 +12,7 @@
 /**
  * Warm-up: Learn baselines silently before making decisions.
  */
-#define DETECTION_WARMUP_WINDOWS 500
+#define DETECTION_WARMUP_WINDOWS 1000
 
 /**
  * CHANGE 1: Z-score threshold for burst features (burst_pps, burst_bps, burst_fps)
@@ -21,7 +21,7 @@
  *   z = (x - ewma_mean) / (std + epsilon)
  *   risk = clamp(z / BURST_Z_THRESHOLD, 0, 1)
  */
-#define BURST_Z_THRESHOLD 4.0
+#define BURST_Z_THRESHOLD 5.0
 
 /**
  * CHANGE 2: Per-feature CUSUM parameters (PPS, BPS, FPS only)
@@ -30,14 +30,14 @@
  *   S_t = max(0, S_{t-1} + (x_t - ewma_mean - k * ewma_std))
  *   Alarm when S_t > H (H = h * ewma_std)
  */
-#define CUSUM_K_PPS  0.05
-#define CUSUM_H_PPS  2.0
+#define CUSUM_K_PPS  0.08
+#define CUSUM_H_PPS  4.0
 
-#define CUSUM_K_BPS  0.05
-#define CUSUM_H_BPS  2.0
+#define CUSUM_K_BPS  0.08
+#define CUSUM_H_BPS  4.0
 
-#define CUSUM_K_FPS  0.05
-#define CUSUM_H_FPS  2.0
+#define CUSUM_K_FPS  0.08
+#define CUSUM_H_FPS  4.0
 
 /**
  * CHANGE 3: Tier-0 continuous risk scoring weights
@@ -53,7 +53,24 @@
 #define T0_W_BURST_BPS   1.5
 #define T0_W_BURST_FPS   1.0
 
-#define T0_RISK_THRESHOLD 7.0
+#define T0_RISK_THRESHOLD 8.0
+
+/**
+ * ABSOLUTE VOLUMETRIC OVERRIDE THRESHOLDS (PRODUCTION SAFETY NET)
+ *
+ * Instant ATTACK trigger if ANY of these is exceeded in a single window.
+ * This bypasses CUSUM + persistence delay for raw volumetric attacks.
+ *
+ * Recommended starting values for corporate/ISP networks:
+ *   PPS  18000 → tiny-packet floods (hping3, SYN, ICMP)
+ *   BPS  800M  → bandwidth/amplification/reflection attacks
+ *   FPS  50000 → flow-table exhaustion / distributed SYN floods
+ *
+ * Tune higher if you see false positives on legitimate bursts.
+ */
+#define ABSOLUTE_PPS_THRESHOLD  50000.0
+#define ABSOLUTE_BPS_THRESHOLD  100000000.0
+#define ABSOLUTE_FPS_THRESHOLD  30000.0
 
 /**
  * Tier-0 attack confirmation with persistence filter.
@@ -70,16 +87,15 @@
  *   else:
  *       Tier-0 = NORMAL
  */
-#define TIER0_ATTACK_THRESHOLD 2      /* Legacy - now based on risk */
 #define CONSECUTIVE_ATTACK_WINDOWS 3  /* 3 consecutive seconds */
 
 /** Tier-1 sigmoid parameters (unchanged) */
-#define SIGMOID_K   1.4
-#define SIGMOID_D0  0.9
+#define SIGMOID_K   0.8
+#define SIGMOID_D0  1.4
 
 /** Tier-1 decision thresholds */
-#define THRESHOLD_NORMAL     0.3
-#define THRESHOLD_SUSPICIOUS 0.4
+#define THRESHOLD_NORMAL     0.45
+#define THRESHOLD_SUSPICIOUS 0.65
 
 /**
  * IMPROVEMENT 3: Tier-1 weighted fusion weights
