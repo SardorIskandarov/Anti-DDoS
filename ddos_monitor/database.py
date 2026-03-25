@@ -16,7 +16,7 @@ def get_db_client():
     print(f"[Database] Database '{config.CH_DB}' ready")
 
     # -------------------------------------------------------------------------
-    # Schema mirrors the 52-field CSV produced by l2fwd_ddos_collector.c:
+    # Schema mirrors the 60-field CSV produced by l2fwd_ddos_collector.c:
     #
     #   3  header fields
     #   6  Tier 0 raw features
@@ -29,7 +29,8 @@ def get_db_client():
     #   3  Tier 1.2 UDP EWMA means
     #   2  Tier 1.3 ICMP EWMA means
     #   2  Tier 1.4 Distribution EWMA means
-    #   9  Detection engine fields
+    #   15 Detection engine fields
+    #   2  HLL observability fields
     # -------------------------------------------------------------------------
     create_table_query = f"""
     CREATE TABLE IF NOT EXISTS {config.CH_DB}.{config.CH_TABLE} (
@@ -102,8 +103,15 @@ def get_db_client():
         -- ── Detection engine outputs ─────────────────────────────────────
         -- detection_state: WARMUP | NORMAL | SUSPICIOUS | ATTACK | RECOVERING
         detection_state         String,
-        -- tier0_score: sigmoid-normalised Tier-0 Manhattan distance [0,1]
-        tier0_score             Float64,
+        -- tier0_global_risk: fused Tier-0 continuous risk
+        tier0_global_risk       Float64,
+        -- per-feature Tier-0 risks [0,1]
+        tier0_risk_pps          Float64,
+        tier0_risk_bps          Float64,
+        tier0_risk_fps          Float64,
+        tier0_risk_burst_pps    Float64,
+        tier0_risk_burst_bps    Float64,
+        tier0_risk_burst_fps    Float64,
         -- tier1_*_score: per-sub-tier sigmoid scores [0,1]
         tier1_tcp_score         Float64,
         tier1_udp_score         Float64,
@@ -114,7 +122,11 @@ def get_db_client():
         -- tier1_evaluated: 1 if Tier-1 was triggered this window, else 0
         tier1_evaluated         UInt8,
         -- warmup_remaining: windows left before detection becomes active
-        warmup_remaining        UInt32
+        warmup_remaining        UInt32,
+
+        -- ── Raw HLL observability counts ────────────────────────────────
+        unique_src_ips          UInt64,
+        unique_dst_ports        UInt64
 
     ) ENGINE = MergeTree()
     PARTITION BY toYYYYMMDD(timestamp)
@@ -124,6 +136,49 @@ def get_db_client():
     """
 
     client.execute(create_table_query)
+
+    existing_columns = {
+        row[0] for row in client.execute(
+            """
+            SELECT name
+            FROM system.columns
+            WHERE database = %(database)s AND table = %(table)s
+            """,
+            {'database': config.CH_DB, 'table': config.CH_TABLE}
+        )
+    }
+    if 'tier0_score' in existing_columns and 'tier0_global_risk' not in existing_columns:
+        client.execute(
+            f"ALTER TABLE {config.CH_DB}.{config.CH_TABLE} "
+            "RENAME COLUMN tier0_score TO tier0_global_risk"
+        )
+        print(f"[Database] Renamed legacy Tier-0 risk column on "
+              f"'{config.CH_DB}.{config.CH_TABLE}'")
+
+    previous_column = 'tier0_global_risk'
+    for column_name in (
+        'tier0_risk_pps',
+        'tier0_risk_bps',
+        'tier0_risk_fps',
+        'tier0_risk_burst_pps',
+        'tier0_risk_burst_bps',
+        'tier0_risk_burst_fps',
+    ):
+        client.execute(
+            f"ALTER TABLE {config.CH_DB}.{config.CH_TABLE} "
+            f"ADD COLUMN IF NOT EXISTS {column_name} Float64 AFTER {previous_column}"
+        )
+        previous_column = column_name
+
+    client.execute(
+        f"ALTER TABLE {config.CH_DB}.{config.CH_TABLE} "
+        "ADD COLUMN IF NOT EXISTS unique_src_ips UInt64 AFTER warmup_remaining"
+    )
+    client.execute(
+        f"ALTER TABLE {config.CH_DB}.{config.CH_TABLE} "
+        "ADD COLUMN IF NOT EXISTS unique_dst_ports UInt64 AFTER unique_src_ips"
+    )
+
     print(f"[Database] Table '{config.CH_DB}.{config.CH_TABLE}' ready")
     return client
 

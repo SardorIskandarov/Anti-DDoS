@@ -1,9 +1,18 @@
 #ifndef __L2FWD_DETECTION_ENGINE_H__
 #define __L2FWD_DETECTION_ENGINE_H__
-
+#include <rte_ip.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include "l2fwd_ddos_collector.h"
+
+/* ====================== DEBUG OUTPUT CONFIG ====================== */
+/**
+ * DEBUG ONLY: Show lightweight Tier-0 risk output
+ * ONLY for this exact IP. Change the value when you switch test IPs.
+ */
+#define DEBUG_IP RTE_IPV4(10, 0, 0, 190)
+
+/* ================================================================ */
 
 // ============================================================================
 // DETECTION ENGINE CONFIGURATION
@@ -21,7 +30,7 @@
  *   z = (x - ewma_mean) / (std + epsilon)
  *   risk = clamp(z / BURST_Z_THRESHOLD, 0, 1)
  */
-#define BURST_Z_THRESHOLD 5.0
+#define BURST_Z_THRESHOLD 6.5
 
 /**
  * CHANGE 2: Per-feature CUSUM parameters (PPS, BPS, FPS only)
@@ -30,14 +39,16 @@
  *   S_t = max(0, S_{t-1} + (x_t - ewma_mean - k * ewma_std))
  *   Alarm when S_t > H (H = h * ewma_std)
  */
-#define CUSUM_K_PPS  0.08
-#define CUSUM_H_PPS  4.0
+#define CUSUM_K_PPS  0.05
+#define CUSUM_H_PPS  5.5
 
-#define CUSUM_K_BPS  0.08
-#define CUSUM_H_BPS  4.0
+#define CUSUM_K_BPS  0.05
+#define CUSUM_H_BPS  5.5
 
-#define CUSUM_K_FPS  0.08
-#define CUSUM_H_FPS  4.0
+#define CUSUM_K_FPS  0.06
+#define CUSUM_H_FPS  5.0
+
+#define VARIANCE_CEILING_FACTOR 3.0
 
 /**
  * CHANGE 3: Tier-0 continuous risk scoring weights
@@ -53,69 +64,47 @@
 #define T0_W_BURST_BPS   1.5
 #define T0_W_BURST_FPS   1.0
 
-#define T0_RISK_THRESHOLD 8.0
+#define T0_SUSPICIOUS_RISK_THRESHOLD 6.0
+#define T0_RISK_THRESHOLD 9.0
 
 /**
  * ABSOLUTE VOLUMETRIC OVERRIDE THRESHOLDS (PRODUCTION SAFETY NET)
- *
- * Instant ATTACK trigger if ANY of these is exceeded in a single window.
- * This bypasses CUSUM + persistence delay for raw volumetric attacks.
- *
- * Recommended starting values for corporate/ISP networks:
- *   PPS  18000 → tiny-packet floods (hping3, SYN, ICMP)
- *   BPS  800M  → bandwidth/amplification/reflection attacks
- *   FPS  50000 → flow-table exhaustion / distributed SYN floods
- *
- * Tune higher if you see false positives on legitimate bursts.
  */
-#define ABSOLUTE_PPS_THRESHOLD  50000.0
-#define ABSOLUTE_BPS_THRESHOLD  100000000.0
-#define ABSOLUTE_FPS_THRESHOLD  30000.0
 
-/**
- * Tier-0 attack confirmation with persistence filter.
- *
- * STEP 1 (Per-window):
- *   if (global_risk >= T0_RISK_THRESHOLD):
- *       consecutive_attack_counter++
- *   else:
- *       consecutive_attack_counter = 0
- *
- * STEP 2 (Confirmation):
- *   if (consecutive_attack_counter >= CONSECUTIVE_ATTACK_WINDOWS):
- *       Tier-0 = ATTACK
- *   else:
- *       Tier-0 = NORMAL
- */
-#define CONSECUTIVE_ATTACK_WINDOWS 3  /* 3 consecutive seconds */
+#define ABSOLUTE_PPS_THRESHOLD  25000.0
+#define ABSOLUTE_BPS_THRESHOLD   80000000.0
+#define ABSOLUTE_FPS_THRESHOLD   500.0
+
+
+#define CONSECUTIVE_ATTACK_WINDOWS 4  
 
 /** Tier-1 sigmoid parameters (unchanged) */
-#define SIGMOID_K   0.8
-#define SIGMOID_D0  1.4
+#define SIGMOID_K   0.75
+#define SIGMOID_D0  1.5
 
 /** Tier-1 decision thresholds */
-#define THRESHOLD_NORMAL     0.45
-#define THRESHOLD_SUSPICIOUS 0.65
+#define THRESHOLD_NORMAL     0.48
+#define THRESHOLD_SUSPICIOUS 0.68
 
 /**
  * IMPROVEMENT 3: Tier-1 weighted fusion weights
  * Replaces "worst wins" with weighted average for balanced decision making
  */
-#define W_TCP   0.4
-#define W_UDP   0.3
-#define W_DIST  0.2
-#define W_ICMP  0.1
+#define W_TCP   0.58    // TCP is king in your traffic
+#define W_UDP   0.12    // UDP influence cut dramatically
+#define W_DIST  0.25    // DIST is very clean → deserves more weight
+#define W_ICMP  0.05
 
 /**
  * EARLY FREEZE: Freeze as soon as Tier-0 risk exceeds threshold.
  */
-#define BASELINE_FREEZE_WINDOWS 10
+#define BASELINE_FREEZE_WINDOWS 12
 
 /**
  * THAW COOLDOWN: Number of consecutive NORMAL windows required before
  * unfreezing baselines after an attack ends.
  */
-#define THAW_COOLDOWN_WINDOWS 20
+#define THAW_COOLDOWN_WINDOWS 25
 
 // ============================================================================
 // DETECTION STATES
@@ -127,6 +116,12 @@ typedef enum {
     DETECTION_STATE_SUSPICIOUS,  /* Tier-1 says suspicious */
     DETECTION_STATE_ATTACK,      /* Tier-1 confirmed attack */
 } detection_state_t;
+
+typedef enum {
+    TIER0_STATE_NORMAL,
+    TIER0_STATE_SUSPICIOUS,
+    TIER0_STATE_ATTACK,
+} tier0_detection_state_t;
 
 // ============================================================================
 // ATTACK TYPES
@@ -141,7 +136,8 @@ typedef enum {
     ATTACK_TYPE_ICMP_FLOOD,
     ATTACK_TYPE_DISTRIBUTED,
     ATTACK_TYPE_AMPLIFICATION,
-    ATTACK_TYPE_UNKNOWN
+    ATTACK_TYPE_UNKNOWN,
+    ATTACK_TYPE_MIXED
 } attack_type_t;
 
 // ============================================================================
@@ -225,6 +221,7 @@ struct tier_state {
 
 struct detection_result {
     detection_state_t state;
+    tier0_detection_state_t tier0_state;
 
     /* CHANGE 3: Tier-0 continuous risk scores per feature */
     double tier0_risk_pps;
@@ -235,15 +232,13 @@ struct detection_result {
     double tier0_risk_burst_fps;
     double tier0_global_risk;
 
-    /* Legacy Tier-0 CUSUM metrics (for monitoring) */
+    /* Tier-0 CUSUM metrics (for monitoring) */
     double tier0_cusum_pps;
     double tier0_cusum_bps;
     double tier0_cusum_fps;
     double tier0_cusum_burst_pps;
     double tier0_cusum_burst_bps;
     double tier0_cusum_burst_fps;
-    int    tier0_attack_count;
-    double tier0_score;
 
     /* Tier-1 metrics */
     bool   tier1_evaluated;
@@ -278,6 +273,7 @@ struct detection_engine {
 
     /* CUSUM/Z-score accumulators (Tier-0 only) */
     struct cusum_state cusum[TIER0_N];
+    double tier0_initial_std[TIER0_N];
 
     /* Warm-up counter */
     uint32_t warmup_counter;
@@ -320,14 +316,13 @@ void extract_tier1_dist_features(const struct dst_ip_stats *stats,
 /**
  * CHANGE 2 & 3: Tier-0 detection with per-feature parameters and continuous risk.
  *
- * Returns: number of features exceeding threshold (for backward compatibility)
  * Populates: result->tier0_risk_* and result->tier0_global_risk
  */
-int cusum_update_tier0(struct detection_engine *engine,
-                       const struct dst_ip_stats *stats,
-                       const struct tier0_features *cur,
-                       struct detection_result *result,
-                       bool frozen);
+void cusum_update_tier0(struct detection_engine *engine,
+                        const struct dst_ip_stats *stats,
+                        const struct tier0_features *cur,
+                        struct detection_result *result,
+                        bool frozen);
 
 double compute_tier1_tcp_score (const struct tier1_tcp_ewma  *ewma,
                                  const struct tier1_tcp_features *cur);
@@ -348,5 +343,6 @@ struct detection_result detection_engine_process(
 
 const char *attack_type_str(attack_type_t type);
 const char *detection_state_str(detection_state_t state);
+const char *tier0_detection_state_str(tier0_detection_state_t state);
 
 #endif /* __L2FWD_DETECTION_ENGINE_H__ */

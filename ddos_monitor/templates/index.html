@@ -3,611 +3,1721 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DDoS Detection Dashboard</title>
+    <title>Layer-2 DDoS Monitor</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/moment@2.29.1/moment.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@1.0.0/dist/chartjs-adapter-moment.min.js"></script>
     <style>
-        body            { background:#121212; color:#e0e0e0; font-family:'Segoe UI',sans-serif; }
-        .navbar         { background:#1f1f1f; border-bottom:1px solid #333; }
-        .card           { background:#1e1e1e; border:1px solid #333; margin-bottom:16px;
-                          box-shadow:0 4px 6px rgba(0,0,0,.3); }
-        .card-header    { background:#252525; border-bottom:1px solid #333;
-                          font-weight:600; font-size:.85rem; color:#aaa; }
-        .section-head   { font-size:.7rem; letter-spacing:2px; text-transform:uppercase;
-                          color:#555; padding:8px 0 4px 4px; margin-top:4px; }
-
-        /* Detection status badge */
-        #detectionBadge {
-            font-size:1.1rem; font-weight:700; padding:6px 18px;
-            border-radius:6px; letter-spacing:1px; transition:all .3s;
-        }
-        .st-warmup     { background:#0d6efd33; color:#6ea8fe; border:1px solid #0d6efd; }
-        .st-normal     { background:#19875433; color:#75b798; border:1px solid #198754; }
-        .st-suspicious { background:#ffc10733; color:#ffda6a; border:1px solid #ffc107; }
-        .st-attack     { background:#dc354533; color:#ea868f; border:1px solid #dc3545;
-                         animation:pulse .8s infinite; }
-        @keyframes pulse {
-            0%,100% { box-shadow:0 0 0 0 #dc354566; }
-            50%      { box-shadow:0 0 0 8px #dc354500; }
+        :root {
+            --bg: #0b1020;
+            --panel: #131a2b;
+            --panel-alt: #0f1626;
+            --panel-border: #24314a;
+            --text: #e6edf7;
+            --muted: #91a0bd;
+            --muted-soft: #5d6c88;
+            --warmup: #4da3ff;
+            --normal: #33c27f;
+            --suspicious: #f6c453;
+            --attack: #ef5350;
+            --tcp: #ef5350;
+            --udp: #f6c453;
+            --icmp: #b0bec5;
+            --dist: #31c6a8;
+            --tier0: #5aa6ff;
+            --ewma: #ff9f5a;
+            --shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
         }
 
-        /* Score bars (Tier 0 / Tier 1 sub-scores) */
-        .score-row      { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
-        .score-label    { font-size:.72rem; color:#888; width:110px; flex-shrink:0; }
-        .score-bar-wrap { flex:1; background:#2a2a2a; border-radius:3px; height:10px; }
-        .score-bar      { height:10px; border-radius:3px; transition:width .4s; }
-        .score-val      { font-size:.72rem; color:#aaa; width:38px; text-align:right; }
+        body {
+            background:
+                radial-gradient(circle at top left, rgba(77, 163, 255, 0.10), transparent 28%),
+                radial-gradient(circle at top right, rgba(49, 198, 168, 0.08), transparent 24%),
+                linear-gradient(180deg, #09101d 0%, var(--bg) 100%);
+            color: var(--text);
+            font-family: "Segoe UI", system-ui, sans-serif;
+            min-height: 100vh;
+        }
 
-        /* Warmup progress */
-        #warmupRow      { font-size:.75rem; color:#666; display:none; }
+        .app-nav {
+            background: rgba(10, 16, 31, 0.88);
+            border-bottom: 1px solid rgba(145, 160, 189, 0.14);
+            backdrop-filter: blur(12px);
+        }
 
-        /* Charts */
-        canvas          { max-height:200px; }
-        select.form-select { background:#2c2c2c; color:#fff; border:1px solid #444; }
-        .chart-tier-label { font-size:.65rem; letter-spacing:1px;
-                            text-transform:uppercase; color:#555; }
+        .brand-mark {
+            display: inline-flex;
+            width: 10px;
+            height: 10px;
+            border-radius: 999px;
+            background: linear-gradient(180deg, var(--tier0) 0%, var(--dist) 100%);
+            box-shadow: 0 0 20px rgba(77, 163, 255, 0.45);
+        }
+
+        .brand-title {
+            font-size: 1rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+        }
+
+        .brand-subtitle {
+            color: var(--muted);
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.14em;
+        }
+
+        .dashboard-shell {
+            padding: 24px 18px 40px;
+        }
+
+        .panel,
+        .kpi-card,
+        .chart-card {
+            background: linear-gradient(180deg, rgba(19, 26, 43, 0.98) 0%, rgba(13, 20, 35, 0.96) 100%);
+            border: 1px solid rgba(145, 160, 189, 0.14);
+            border-radius: 18px;
+            box-shadow: var(--shadow);
+        }
+
+        .panel-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 18px 22px 0;
+        }
+
+        .panel-title {
+            font-size: 0.84rem;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin-bottom: 4px;
+        }
+
+        .panel-subtitle {
+            color: var(--muted-soft);
+            font-size: 0.78rem;
+            margin: 0;
+        }
+
+        .panel-body {
+            padding: 18px 22px 22px;
+        }
+
+        .hero-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 24px;
+            margin-bottom: 18px;
+        }
+
+        .eyebrow {
+            color: var(--muted);
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.14em;
+            margin-bottom: 6px;
+        }
+
+        .hero-target {
+            font-size: clamp(1.55rem, 3vw, 2.4rem);
+            font-weight: 700;
+            letter-spacing: -0.03em;
+            margin-bottom: 10px;
+        }
+
+        .hero-state-wrap {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .hero-summary {
+            color: var(--muted);
+            font-size: 0.92rem;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 136px;
+            padding: 10px 18px;
+            border-radius: 999px;
+            font-size: 0.92rem;
+            font-weight: 700;
+            letter-spacing: 0.10em;
+            text-transform: uppercase;
+            border: 1px solid transparent;
+        }
+
+        .st-warmup {
+            color: #d9ecff;
+            background: rgba(77, 163, 255, 0.16);
+            border-color: rgba(77, 163, 255, 0.45);
+        }
+
+        .st-normal {
+            color: #ddfff0;
+            background: rgba(51, 194, 127, 0.15);
+            border-color: rgba(51, 194, 127, 0.42);
+        }
+
+        .st-suspicious {
+            color: #fff6d8;
+            background: rgba(246, 196, 83, 0.15);
+            border-color: rgba(246, 196, 83, 0.48);
+        }
+
+        .st-attack {
+            color: #ffe0de;
+            background: rgba(239, 83, 80, 0.18);
+            border-color: rgba(239, 83, 80, 0.52);
+            box-shadow: 0 0 0 1px rgba(239, 83, 80, 0.15), 0 0 34px rgba(239, 83, 80, 0.14);
+        }
+
+        .hero-updated {
+            min-width: 210px;
+            text-align: right;
+            color: var(--muted);
+            font-size: 0.82rem;
+        }
+
+        .hero-meta-grid {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 12px;
+            margin-bottom: 18px;
+        }
+
+        .meta-tile {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(145, 160, 189, 0.11);
+            border-radius: 14px;
+            padding: 14px 14px 12px;
+            min-height: 88px;
+        }
+
+        .meta-label {
+            color: var(--muted);
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            margin-bottom: 6px;
+        }
+
+        .meta-value {
+            font-size: 1rem;
+            font-weight: 700;
+            word-break: break-word;
+        }
+
+        .meta-note {
+            color: var(--muted-soft);
+            font-size: 0.75rem;
+            margin-top: 6px;
+        }
+
+        .warmup-panel {
+            display: none;
+            background: rgba(77, 163, 255, 0.08);
+            border: 1px solid rgba(77, 163, 255, 0.24);
+            border-radius: 14px;
+            padding: 14px 16px;
+        }
+
+        .warmup-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 10px;
+            font-size: 0.88rem;
+        }
+
+        .warmup-copy {
+            color: var(--muted);
+            font-size: 0.8rem;
+        }
+
+        .warmup-track {
+            height: 10px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.08);
+            overflow: hidden;
+        }
+
+        .warmup-fill {
+            height: 100%;
+            width: 0;
+            border-radius: 999px;
+            background: linear-gradient(90deg, rgba(77, 163, 255, 0.35) 0%, rgba(77, 163, 255, 0.95) 100%);
+        }
+
+        .target-list {
+            max-height: 320px;
+            overflow-y: auto;
+        }
+
+        .target-item {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 12px;
+            align-items: center;
+            padding: 14px 18px;
+            border-top: 1px solid rgba(145, 160, 189, 0.10);
+        }
+
+        .target-item:first-child {
+            border-top: 0;
+        }
+
+        .target-item.active {
+            background: rgba(77, 163, 255, 0.08);
+        }
+
+        .target-ip {
+            font-weight: 700;
+            margin-bottom: 2px;
+        }
+
+        .target-meta {
+            color: var(--muted);
+            font-size: 0.76rem;
+        }
+
+        .mini-state {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 999px;
+            padding: 5px 10px;
+            font-size: 0.66rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.10em;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .kpi-card {
+            padding: 16px 18px;
+            min-height: 132px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .kpi-card::after {
+            content: "";
+            position: absolute;
+            inset: auto -14px -24px auto;
+            width: 96px;
+            height: 96px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .kpi-label {
+            color: var(--muted);
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            margin-bottom: 10px;
+        }
+
+        .kpi-value {
+            font-size: 1.7rem;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+            margin-bottom: 8px;
+            line-height: 1.05;
+        }
+
+        .kpi-note {
+            color: var(--muted);
+            font-size: 0.8rem;
+        }
+
+        .score-stack {
+            display: grid;
+            gap: 12px;
+        }
+
+        .score-row {
+            display: grid;
+            grid-template-columns: 120px 1fr 54px;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .score-label {
+            color: var(--text);
+            font-size: 0.83rem;
+            font-weight: 600;
+        }
+
+        .score-track {
+            height: 12px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.08);
+            overflow: hidden;
+        }
+
+        .score-fill {
+            height: 100%;
+            width: 0;
+            border-radius: 999px;
+            transition: width 0.25s ease;
+        }
+
+        .score-value {
+            font-size: 0.8rem;
+            color: var(--muted);
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .score-legend {
+            display: flex;
+            gap: 14px;
+            flex-wrap: wrap;
+            margin-top: 16px;
+            color: var(--muted);
+            font-size: 0.74rem;
+        }
+
+        .tier0-breakdown {
+            margin-top: 20px;
+            padding-top: 18px;
+            border-top: 1px solid rgba(145, 160, 189, 0.10);
+        }
+
+        .tier0-risk-grid {
+            display: grid;
+            gap: 10px;
+            margin-top: 12px;
+        }
+
+        .tier0-risk-row {
+            display: grid;
+            grid-template-columns: 94px 1fr 44px;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .tier0-risk-label {
+            color: var(--text);
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+
+        .tier0-risk-bar {
+            color: var(--tier0);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+            font-size: 0.84rem;
+            letter-spacing: 0.08em;
+            white-space: nowrap;
+        }
+
+        .tier0-risk-value {
+            color: var(--muted);
+            font-size: 0.8rem;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .legend-swatch {
+            display: inline-flex;
+            width: 10px;
+            height: 10px;
+            border-radius: 999px;
+            margin-right: 6px;
+        }
+
+        .reasoning-grid {
+            display: grid;
+            gap: 12px;
+        }
+
+        .reasoning-pill-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .info-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(145, 160, 189, 0.12);
+            color: var(--text);
+            font-size: 0.78rem;
+            font-weight: 600;
+        }
+
+        .reasoning-list {
+            display: grid;
+            gap: 10px;
+        }
+
+        .reason-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px solid rgba(145, 160, 189, 0.10);
+        }
+
+        .reason-row:last-child {
+            border-bottom: 0;
+            padding-bottom: 0;
+        }
+
+        .reason-label {
+            color: var(--muted);
+            font-size: 0.8rem;
+        }
+
+        .reason-value {
+            text-align: right;
+            font-size: 0.86rem;
+            font-weight: 600;
+        }
+
+        .table-wrap {
+            max-height: 336px;
+            overflow: auto;
+        }
+
+        .table-dark {
+            --bs-table-bg: transparent;
+            --bs-table-striped-bg: rgba(255, 255, 255, 0.02);
+            --bs-table-hover-bg: rgba(255, 255, 255, 0.04);
+            --bs-table-border-color: rgba(145, 160, 189, 0.12);
+            margin-bottom: 0;
+        }
+
+        .table-dark th {
+            color: var(--muted);
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 0.10em;
+            font-weight: 700;
+            position: sticky;
+            top: 0;
+            background: rgba(13, 20, 35, 0.98);
+            z-index: 1;
+        }
+
+        .table-dark td {
+            font-size: 0.8rem;
+            vertical-align: middle;
+        }
+
+        .event-state,
+        .state-chip,
+        .branch-chip {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 999px;
+            padding: 4px 10px;
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .state-warmup {
+            background: rgba(77, 163, 255, 0.14);
+            color: #d6ebff;
+        }
+
+        .state-normal {
+            background: rgba(51, 194, 127, 0.14);
+            color: #dffbef;
+        }
+
+        .state-suspicious {
+            background: rgba(246, 196, 83, 0.14);
+            color: #fff7dc;
+        }
+
+        .state-attack {
+            background: rgba(239, 83, 80, 0.16);
+            color: #ffe4e3;
+        }
+
+        .branch-tcp { background: rgba(239, 83, 80, 0.16); color: #ffe3e1; }
+        .branch-udp { background: rgba(246, 196, 83, 0.16); color: #fff7dc; }
+        .branch-icmp { background: rgba(176, 190, 197, 0.18); color: #edf2f4; }
+        .branch-dist { background: rgba(49, 198, 168, 0.16); color: #e0fff7; }
+        .branch-tier0 { background: rgba(90, 166, 255, 0.16); color: #dcebff; }
+        .branch-none { background: rgba(255, 255, 255, 0.06); color: #d7dfef; }
+
+        .section-shell {
+            margin-top: 22px;
+        }
+
+        .section-header {
+            margin-bottom: 14px;
+        }
+
+        .section-title {
+            font-size: 0.78rem;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin-bottom: 4px;
+        }
+
+        .section-copy {
+            color: var(--muted-soft);
+            font-size: 0.82rem;
+            margin: 0;
+        }
+
+        .chart-card {
+            height: 100%;
+        }
+
+        .chart-card-head {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 16px 16px 0;
+        }
+
+        .chart-title {
+            font-size: 0.92rem;
+            font-weight: 600;
+        }
+
+        .chart-tier {
+            font-size: 0.67rem;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            color: var(--muted);
+        }
+
+        .chart-body {
+            padding: 14px 12px 10px;
+        }
+
+        .chart-note {
+            padding: 0 14px 14px;
+            color: var(--muted-soft);
+            font-size: 0.72rem;
+        }
+
+        canvas {
+            max-height: 220px;
+        }
+
+        .diagnostics {
+            margin-top: 18px;
+            border: 1px solid rgba(145, 160, 189, 0.12);
+            border-radius: 16px;
+            background: rgba(9, 14, 25, 0.46);
+        }
+
+        .diagnostics summary {
+            list-style: none;
+            cursor: pointer;
+            padding: 14px 18px;
+            color: var(--muted);
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+        }
+
+        .diagnostics summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .diagnostics-body {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 12px;
+            padding: 0 18px 18px;
+        }
+
+        .diag-item {
+            padding: 12px 14px;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(145, 160, 189, 0.10);
+        }
+
+        .diag-label {
+            color: var(--muted);
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            margin-bottom: 6px;
+        }
+
+        .diag-value {
+            font-size: 0.88rem;
+            font-weight: 600;
+        }
+
+        .empty-state {
+            color: var(--muted);
+            text-align: center;
+            padding: 22px 12px;
+            font-size: 0.86rem;
+        }
+
+        .text-mono {
+            font-variant-numeric: tabular-nums;
+        }
+
+        .form-select,
+        .form-select:focus {
+            background-color: rgba(19, 26, 43, 0.92);
+            color: var(--text);
+            border-color: rgba(145, 160, 189, 0.16);
+            box-shadow: none;
+        }
+
+        @media (max-width: 1399px) {
+            .hero-meta-grid {
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+            }
+        }
+
+        @media (max-width: 991px) {
+            .hero-top {
+                flex-direction: column;
+            }
+
+            .hero-updated {
+                text-align: left;
+                min-width: 0;
+            }
+
+            .hero-meta-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+
+            .diagnostics-body {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+
+        @media (max-width: 767px) {
+            .dashboard-shell {
+                padding: 18px 10px 32px;
+            }
+
+            .hero-meta-grid,
+            .diagnostics-body {
+                grid-template-columns: 1fr;
+            }
+
+            .score-row {
+                grid-template-columns: 96px 1fr 48px;
+                gap: 8px;
+            }
+
+            .tier0-risk-row {
+                grid-template-columns: 84px 1fr 40px;
+                gap: 8px;
+            }
+
+            .kpi-value {
+                font-size: 1.4rem;
+            }
+        }
     </style>
 </head>
 <body>
-
-<!-- ── Navbar ──────────────────────────────────────────────────────────── -->
-<nav class="navbar navbar-expand-lg navbar-dark mb-3">
-    <div class="container-fluid">
-        <span class="navbar-brand">
-            <span style="color:#0d6efd">🛡</span> DPDK DDoS Sentinel
-        </span>
+<nav class="navbar navbar-dark app-nav">
+    <div class="container-fluid px-3 px-lg-4 py-2">
+        <div>
+            <div class="d-flex align-items-center gap-2">
+                <span class="brand-mark"></span>
+                <span class="brand-title">Layer-2 DDoS Monitor</span>
+            </div>
+            <div class="brand-subtitle">Behavioral monitoring and detector validation</div>
+        </div>
         <div class="d-flex align-items-center gap-3">
-            <label class="text-muted small">Target IP:</label>
-            <select id="targetSelect" class="form-select form-select-sm" style="width:200px">
+            <label for="targetSelect" class="small text-secondary text-uppercase" style="letter-spacing:0.10em;">Target IP</label>
+            <select id="targetSelect" class="form-select form-select-sm" style="width:220px;">
                 <option>Loading…</option>
             </select>
         </div>
     </div>
 </nav>
 
-<div class="container-fluid">
-
-    <!-- DEBUG PANEL (remove after fixing) -->
-    <div class="row mb-2">
-        <div class="col-12">
-            <div class="card" style="border-color:#dc3545;">
-                <div class="card-body p-2">
-                    <div style="font-family:monospace;font-size:11px;color:#ffc107;">
-                        <strong>DEBUG:</strong>
-                        <span id="debugStatus">Waiting for data...</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- ── Status row ──────────────────────────────────────────────────── -->
-    <div class="row mb-3">
-        <div class="col-12">
-            <div class="card">
-                <div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-3">
-
-                    <!-- Left: overall status -->
+<div class="container-fluid dashboard-shell">
+    <div class="row g-4">
+        <div class="col-12 col-xxl-8">
+            <section class="panel">
+                <div class="panel-head">
                     <div>
-                        <div class="d-flex align-items-center gap-3">
-                            <span id="detectionBadge" class="st-warmup">WARMUP</span>
-                            <div>
-                                <div class="small text-muted" id="lastUpdated">Waiting…</div>
-                                <div id="warmupRow" class="mt-1">
-                                    Warm-up:
-                                    <span id="warmupBar" style="color:#0d6efd">·</span>
-                                    <span id="warmupVal"></span> windows remaining
-                                </div>
-                            </div>
-                        </div>
+                        <div class="panel-title">Selected Target</div>
+                        <p class="panel-subtitle">Current engine state, warmup visibility, and the latest target-level verdict.</p>
                     </div>
-
-                    <!-- Right: per-tier score bars -->
-                    <div style="min-width:280px">
-                        <div class="score-row">
-                            <span class="score-label">Tier 0 (volume)</span>
-                            <div class="score-bar-wrap">
-                                <div class="score-bar" id="bar-t0" style="width:0%;background:#0d6efd"></div>
-                            </div>
-                            <span class="score-val" id="val-t0">—</span>
-                        </div>
-                        <div class="score-row">
-                            <span class="score-label">Tier 1.1 (TCP)</span>
-                            <div class="score-bar-wrap">
-                                <div class="score-bar" id="bar-tcp" style="width:0%;background:#dc3545"></div>
-                            </div>
-                            <span class="score-val" id="val-tcp">—</span>
-                        </div>
-                        <div class="score-row">
-                            <span class="score-label">Tier 1.2 (UDP)</span>
-                            <div class="score-bar-wrap">
-                                <div class="score-bar" id="bar-udp" style="width:0%;background:#ffc107"></div>
-                            </div>
-                            <span class="score-val" id="val-udp">—</span>
-                        </div>
-                        <div class="score-row">
-                            <span class="score-label">Tier 1.3 (ICMP)</span>
-                            <div class="score-bar-wrap">
-                                <div class="score-bar" id="bar-icmp" style="width:0%;background:#adb5bd"></div>
-                            </div>
-                            <span class="score-val" id="val-icmp">—</span>
-                        </div>
-                        <div class="score-row">
-                            <span class="score-label">Tier 1.4 (Dist)</span>
-                            <div class="score-bar-wrap">
-                                <div class="score-bar" id="bar-dist" style="width:0%;background:#20c997"></div>
-                            </div>
-                            <span class="score-val" id="val-dist">—</span>
-                        </div>
-                    </div>
-
                 </div>
-            </div>
+                <div class="panel-body">
+                    <div class="hero-top">
+                        <div>
+                            <div class="eyebrow">Target</div>
+                            <div class="hero-target text-mono" id="selectedTargetLabel">Waiting for target</div>
+                            <div class="hero-state-wrap">
+                                <span id="detectionBadge" class="status-badge st-warmup">Waiting</span>
+                                <span class="hero-summary" id="heroSummary">Polling for live detector output.</span>
+                            </div>
+                        </div>
+                        <div class="hero-updated">
+                            <div class="eyebrow">Last Update</div>
+                            <div id="lastUpdated">Waiting for data</div>
+                        </div>
+                    </div>
+
+                    <div class="hero-meta-grid">
+                        <div class="meta-tile">
+                            <div class="meta-label">Overall State</div>
+                            <div class="meta-value" id="metaDetectionState">Waiting</div>
+                            <div class="meta-note">Final detector verdict</div>
+                        </div>
+                        <div class="meta-tile">
+                            <div class="meta-label">Tier-0 State</div>
+                            <div class="meta-value" id="metaTier0State">Unavailable</div>
+                            <div class="meta-note">Pre-confirmation volume state</div>
+                        </div>
+                        <div class="meta-tile">
+                            <div class="meta-label">Attack Type</div>
+                            <div class="meta-value" id="metaAttackType">Unavailable</div>
+                            <div class="meta-note">Shown only if backend exposes it</div>
+                        </div>
+                        <div class="meta-tile">
+                            <div class="meta-label">Tier-1 Evaluated</div>
+                            <div class="meta-value" id="metaTier1Evaluated">No</div>
+                            <div class="meta-note">Did Tier-1 run this window?</div>
+                        </div>
+                        <div class="meta-tile">
+                            <div class="meta-label">Warmup Remaining</div>
+                            <div class="meta-value" id="metaWarmup">0</div>
+                            <div class="meta-note">Windows left in warmup</div>
+                        </div>
+                    </div>
+
+                    <div id="warmupPanel" class="warmup-panel">
+                        <div class="warmup-header">
+                            <strong>Warmup in progress</strong>
+                            <span id="warmupLabel" class="text-mono">0 windows remaining</span>
+                        </div>
+                        <div class="warmup-copy">Baselines are still stabilizing. Tier-1 remains gated until Tier-0 confirms a trigger.</div>
+                        <div class="warmup-track mt-3">
+                            <div id="warmupFill" class="warmup-fill"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <div class="col-12 col-xxl-4">
+            <section class="panel">
+                <div class="panel-head">
+                    <div>
+                        <div class="panel-title">Active Targets</div>
+                        <p class="panel-subtitle">Latest state per monitored IP for quick situational awareness.</p>
+                    </div>
+                </div>
+                <div class="panel-body p-0">
+                    <div id="targetSituationalList" class="target-list">
+                        <div class="empty-state">Waiting for active targets.</div>
+                    </div>
+                </div>
+            </section>
         </div>
     </div>
 
-    <!-- ── Live Traffic Stats ────────────────────────────────────────────── -->
-    <div class="row mb-3">
-        <div class="col-md-4">
-            <div class="card">
-                <div class="card-body p-3">
-                    <div style="font-size:11px;color:#888;text-transform:uppercase;margin-bottom:4px;letter-spacing:0.5px;">
-                        Packets/sec
-                    </div>
-                    <div style="font-size:28px;font-weight:600;color:#0d6efd;" id="livePPS">—</div>
-                </div>
-            </div>
+    <div class="row g-3 mt-1">
+        <div class="col-6 col-md-4 col-xl-2">
+            <section class="kpi-card" id="kpiPpsCard">
+                <div class="kpi-label">Packets / sec</div>
+                <div class="kpi-value text-mono" id="livePPS">0</div>
+                <div class="kpi-note" id="livePPSNote">Current packet rate</div>
+            </section>
         </div>
-        <div class="col-md-4">
-            <div class="card">
-                <div class="card-body p-3">
-                    <div style="font-size:11px;color:#888;text-transform:uppercase;margin-bottom:4px;letter-spacing:0.5px;">
-                        Bits/sec
-                    </div>
-                    <div style="font-size:28px;font-weight:600;color:#0d6efd;" id="liveBPS">—</div>
-                </div>
-            </div>
+        <div class="col-6 col-md-4 col-xl-2">
+            <section class="kpi-card" id="kpiBpsCard">
+                <div class="kpi-label">Bits / sec</div>
+                <div class="kpi-value text-mono" id="liveBPS">0</div>
+                <div class="kpi-note" id="liveBPSNote">Current bandwidth rate</div>
+            </section>
         </div>
-        <div class="col-md-4">
-            <div class="card">
-                <div class="card-body p-3">
-                    <div style="font-size:11px;color:#888;text-transform:uppercase;margin-bottom:4px;letter-spacing:0.5px;">
-                        Flows/sec (HLL)
-                    </div>
-                    <div style="font-size:28px;font-weight:600;color:#0d6efd;" id="liveFPS">—</div>
-                </div>
-            </div>
+        <div class="col-6 col-md-4 col-xl-2">
+            <section class="kpi-card" id="kpiFpsCard">
+                <div class="kpi-label">Flows / sec</div>
+                <div class="kpi-value text-mono" id="liveFPS">0</div>
+                <div class="kpi-note" id="liveFPSNote">HyperLogLog-estimated flows</div>
+            </section>
+        </div>
+        <div class="col-6 col-md-4 col-xl-2">
+            <section class="kpi-card" id="kpiTier0Card">
+                <div class="kpi-label">Tier-0 Volume</div>
+                <div class="kpi-value text-mono" id="liveTier0">0.000</div>
+                <div class="kpi-note" id="liveTier0Note">Current Tier-0 global risk</div>
+            </section>
+        </div>
+        <div class="col-6 col-md-4 col-xl-2">
+            <section class="kpi-card" id="kpiTier1Card">
+                <div class="kpi-label">Tier-1 Final</div>
+                <div class="kpi-value text-mono" id="liveTier1Final">0.000</div>
+                <div class="kpi-note" id="liveTier1Note">Final Tier-1 branch score</div>
+            </section>
+        </div>
+        <div class="col-6 col-md-4 col-xl-2">
+            <section class="kpi-card" id="kpiBranchCard">
+                <div class="kpi-label">Dominant Branch</div>
+                <div class="kpi-value" id="liveDominantBranch">None</div>
+                <div class="kpi-note" id="liveDominantNote">Waiting for Tier-1 evidence</div>
+            </section>
+        </div>
+        <div class="col-6 col-md-4 col-xl-2">
+            <section class="kpi-card" id="kpiSrcIpsCard">
+                <div class="kpi-label">Unique Src IPs</div>
+                <div class="kpi-value text-mono" id="liveUniqueSrcIps">0</div>
+                <div class="kpi-note" id="liveUniqueSrcIpsNote">HyperLogLog-estimated per window</div>
+            </section>
+        </div>
+        <div class="col-6 col-md-4 col-xl-2">
+            <section class="kpi-card" id="kpiDstPortsCard">
+                <div class="kpi-label">Unique Dst Ports</div>
+                <div class="kpi-value text-mono" id="liveUniqueDstPorts">0</div>
+                <div class="kpi-note" id="liveUniqueDstPortsNote">HyperLogLog-estimated per window</div>
+            </section>
         </div>
     </div>
 
-    <!-- ── Charts ──────────────────────────────────────────────────────── -->
-    <div id="chartsContainer" class="row"></div>
+    <div class="row g-4 mt-1">
+        <div class="col-12 col-xl-4">
+            <section class="panel">
+                <div class="panel-head">
+                    <div>
+                        <div class="panel-title">Score Overview</div>
+                        <p class="panel-subtitle">Tier-0 risk and Tier-1 branch severities for the latest window.</p>
+                    </div>
+                </div>
+                <div class="panel-body">
+                    <div class="score-stack">
+                        <div class="score-row">
+                            <div class="score-label">Tier-0</div>
+                            <div class="score-track"><div class="score-fill" id="bar-t0"></div></div>
+                            <div class="score-value text-mono" id="val-t0">0.000</div>
+                        </div>
+                        <div class="score-row">
+                            <div class="score-label">Tier-1 TCP</div>
+                            <div class="score-track"><div class="score-fill" id="bar-tcp"></div></div>
+                            <div class="score-value text-mono" id="val-tcp">0.000</div>
+                        </div>
+                        <div class="score-row">
+                            <div class="score-label">Tier-1 UDP</div>
+                            <div class="score-track"><div class="score-fill" id="bar-udp"></div></div>
+                            <div class="score-value text-mono" id="val-udp">0.000</div>
+                        </div>
+                        <div class="score-row">
+                            <div class="score-label">Tier-1 ICMP</div>
+                            <div class="score-track"><div class="score-fill" id="bar-icmp"></div></div>
+                            <div class="score-value text-mono" id="val-icmp">0.000</div>
+                        </div>
+                        <div class="score-row">
+                            <div class="score-label">Tier-1 DIST</div>
+                            <div class="score-track"><div class="score-fill" id="bar-dist"></div></div>
+                            <div class="score-value text-mono" id="val-dist">0.000</div>
+                        </div>
+                        <div class="score-row">
+                            <div class="score-label">Tier-1 Final</div>
+                            <div class="score-track"><div class="score-fill" id="bar-final"></div></div>
+                            <div class="score-value text-mono" id="val-final">0.000</div>
+                        </div>
+                    </div>
+                    <div class="score-legend">
+                        <span><span class="legend-swatch" style="background:#33c27f;"></span>Normal</span>
+                        <span><span class="legend-swatch" style="background:#f6c453;"></span>Suspicious</span>
+                        <span><span class="legend-swatch" style="background:#ef5350;"></span>Attack</span>
+                    </div>
+                    <div class="tier0-breakdown">
+                        <div class="section-title">Tier-0 Risk Breakdown</div>
+                        <p class="section-copy">Per-feature Tier-0 risks rendered as compact 10-block bars for the latest window.</p>
+                        <div class="tier0-risk-grid">
+                            <div id="tier0RiskPps" class="tier0-risk-row">
+                                <div class="tier0-risk-label">PPS risk</div>
+                                <div class="tier0-risk-bar">░░░░░░░░░░</div>
+                                <div class="tier0-risk-value text-mono">0.00</div>
+                            </div>
+                            <div id="tier0RiskBps" class="tier0-risk-row">
+                                <div class="tier0-risk-label">BPS risk</div>
+                                <div class="tier0-risk-bar">░░░░░░░░░░</div>
+                                <div class="tier0-risk-value text-mono">0.00</div>
+                            </div>
+                            <div id="tier0RiskFps" class="tier0-risk-row">
+                                <div class="tier0-risk-label">FPS risk</div>
+                                <div class="tier0-risk-bar">░░░░░░░░░░</div>
+                                <div class="tier0-risk-value text-mono">0.00</div>
+                            </div>
+                            <div id="tier0RiskBurstPps" class="tier0-risk-row">
+                                <div class="tier0-risk-label">Burst PPS</div>
+                                <div class="tier0-risk-bar">░░░░░░░░░░</div>
+                                <div class="tier0-risk-value text-mono">0.00</div>
+                            </div>
+                            <div id="tier0RiskBurstBps" class="tier0-risk-row">
+                                <div class="tier0-risk-label">Burst BPS</div>
+                                <div class="tier0-risk-bar">░░░░░░░░░░</div>
+                                <div class="tier0-risk-value text-mono">0.00</div>
+                            </div>
+                            <div id="tier0RiskBurstFps" class="tier0-risk-row">
+                                <div class="tier0-risk-label">Burst FPS</div>
+                                <div class="tier0-risk-bar">░░░░░░░░░░</div>
+                                <div class="tier0-risk-value text-mono">0.00</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
 
-</div><!-- /container -->
+        <div class="col-12 col-xl-4">
+            <section class="panel">
+                <div class="panel-head">
+                    <div>
+                        <div class="panel-title">Detector Reasoning</div>
+                        <p class="panel-subtitle">Live detector context using current target fields only.</p>
+                    </div>
+                </div>
+                <div class="panel-body">
+                    <div class="reasoning-grid">
+                        <div id="reasoningPills" class="reasoning-pill-row"></div>
+                        <div class="reasoning-list">
+                            <div class="reason-row">
+                                <span class="reason-label">Current state</span>
+                                <span id="reasonState" class="reason-value">Waiting</span>
+                            </div>
+                            <div class="reason-row">
+                                <span class="reason-label">Tier-0 global risk</span>
+                                <span id="reasonTier0" class="reason-value text-mono">0.000</span>
+                            </div>
+                            <div class="reason-row">
+                                <span class="reason-label">Tier-1 evaluated</span>
+                                <span id="reasonTier1Eval" class="reason-value">No</span>
+                            </div>
+                            <div class="reason-row">
+                                <span class="reason-label">Dominant Tier-1 branch</span>
+                                <span id="reasonDominant" class="reason-value">Unavailable</span>
+                            </div>
+                            <div class="reason-row">
+                                <span class="reason-label">Behavior signal</span>
+                                <span id="reasonDriver" class="reason-value">Volume / Tier-0</span>
+                            </div>
+                            <div class="reason-row">
+                                <span class="reason-label">Attack type</span>
+                                <span id="reasonAttackType" class="reason-value">Unavailable</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <div class="col-12 col-xl-4">
+            <section class="panel">
+                <div class="panel-head">
+                    <div>
+                        <div class="panel-title">Recent Events</div>
+                        <p class="panel-subtitle">Selected target windows that were suspicious, attacks, or state transitions.</p>
+                    </div>
+                </div>
+                <div class="panel-body p-0">
+                    <div class="table-wrap">
+                        <table class="table table-dark table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>State</th>
+                                    <th>Type</th>
+                                    <th>T0</th>
+                                    <th>T1</th>
+                                    <th>PPS</th>
+                                    <th>BPS</th>
+                                </tr>
+                            </thead>
+                            <tbody id="eventsTableBody">
+                                <tr><td colspan="7" class="empty-state">Waiting for target events.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <details class="diagnostics mt-4">
+        <summary>Diagnostics</summary>
+        <div class="diagnostics-body">
+            <div class="diag-item">
+                <div class="diag-label">Poll status</div>
+                <div id="diagPollStatus" class="diag-value">Idle</div>
+            </div>
+            <div class="diag-item">
+                <div class="diag-label">Target records</div>
+                <div id="diagRecordCount" class="diag-value text-mono">0</div>
+            </div>
+            <div class="diag-item">
+                <div class="diag-label">Latest timestamp</div>
+                <div id="diagLatestTs" class="diag-value">Unavailable</div>
+            </div>
+            <div class="diag-item">
+                <div class="diag-label">Situational targets</div>
+                <div id="diagTargetCount" class="diag-value text-mono">0</div>
+            </div>
+        </div>
+    </details>
+
+    <div id="chartSections" class="mt-4"></div>
+</div>
 
 <script>
-// ============================================================================
-// METRIC DEFINITIONS — exactly mirrors the new CSV schema
-// ============================================================================
+const API_BASE = '/api';
 
-const TIER_COLOR = {
-    '0':   '#0d6efd',   // blue   — volume
-    '1.1': '#dc3545',   // red    — TCP
-    '1.2': '#ffc107',   // yellow — UDP
-    '1.3': '#adb5bd',   // grey   — ICMP
-    '1.4': '#20c997',   // teal   — distribution
+const STATE_META = {
+    WARMUP: { className: 'st-warmup', label: 'Warmup', chipClass: 'state-warmup' },
+    NORMAL: { className: 'st-normal', label: 'Normal', chipClass: 'state-normal' },
+    SUSPICIOUS: { className: 'st-suspicious', label: 'Suspicious', chipClass: 'state-suspicious' },
+    ATTACK: { className: 'st-attack', label: 'Attack', chipClass: 'state-attack' },
 };
 
-const EWMA_COLOR = '#ff9944';   // amber — same for all EWMA baseline lines
+const BRANCH_META = {
+    tcp: { label: 'TCP', color: getCssVar('--tcp'), chipClass: 'branch-tcp' },
+    udp: { label: 'UDP', color: getCssVar('--udp'), chipClass: 'branch-udp' },
+    icmp: { label: 'ICMP', color: getCssVar('--icmp'), chipClass: 'branch-icmp' },
+    dist: { label: 'DIST', color: getCssVar('--dist'), chipClass: 'branch-dist' },
+    tier0: { label: 'Tier-0', color: getCssVar('--tier0'), chipClass: 'branch-tier0' },
+    none: { label: 'None', color: '#9fb1cd', chipClass: 'branch-none' },
+};
 
-const METRICS = [
-    // ── Tier 0: Volume ─────────────────────────────────────────────────
-    { tier:'0', label:'PPS',            key:'pps',              em:'em_pps' },
-    { tier:'0', label:'BPS',            key:'bps',              em:'em_bps' },
-    { tier:'0', label:'FPS (HLL)',       key:'fps',              em:'em_fps' },
-    { tier:'0', label:'Burst (PPS)',     key:'burst_pps',        em:'em_burst_pps' },
-    { tier:'0', label:'Burst (BPS)',     key:'burst_bps',        em:'em_burst_bps' },
-    { tier:'0', label:'Burst (FPS)',     key:'burst_fps',        em:'em_burst_fps' },
-
-    // ── Tier 1.1: TCP ──────────────────────────────────────────────────
-    { tier:'1.1', label:'SYN/TCP',        key:'tcp_syn_ratio',      em:'em_tcp_syn_ratio' },
-    { tier:'1.1', label:'SYN-ACK/TCP',    key:'tcp_synack_ratio',   em:'em_tcp_synack_ratio' },
-    { tier:'1.1', label:'FIN-ACK/TCP',    key:'tcp_finack_ratio',   em:'em_tcp_finack_ratio' },
-    { tier:'1.1', label:'RST/TCP',        key:'tcp_rst_ratio',      em:'em_tcp_rst_ratio' },
-    { tier:'1.1', label:'ACK-Data/TCP',   key:'tcp_ack_data_ratio', em:'em_tcp_ack_data_ratio' },
-    { tier:'1.1', label:'TCP PPS/Total',  key:'tcp_pps_ratio',      em:'em_tcp_pps_ratio' },
-    { tier:'1.1', label:'TCP BPS/Total',  key:'tcp_bps_ratio',      em:'em_tcp_bps_ratio' },
-
-    // ── Tier 1.2: UDP ──────────────────────────────────────────────────
-    { tier:'1.2', label:'UDP BPS/Total',  key:'udp_bps_ratio',      em:'em_udp_bps_ratio' },
-    { tier:'1.2', label:'UDP PPS/Total',  key:'udp_pps_ratio',      em:'em_udp_pps_ratio' },
-    { tier:'1.2', label:'UDP Flows/PPS',  key:'udp_flow_ratio',     em:'em_udp_flow_ratio' },
-
-    // ── Tier 1.3: ICMP ─────────────────────────────────────────────────
-    { tier:'1.3', label:'ICMP Echo Rate', key:'icmp_echo_ratio',    em:'em_icmp_echo_ratio' },
-    { tier:'1.3', label:'ICMP PPS/Total', key:'icmp_pps_ratio',     em:'em_icmp_pps_ratio' },
-
-    // ── Tier 1.4: Distribution ─────────────────────────────────────────
-    { tier:'1.4', label:'Src IPs/PPS',   key:'src_ip_ratio',        em:'em_src_ip_ratio' },
-    { tier:'1.4', label:'Dst Ports/PPS', key:'dst_port_ratio',      em:'em_dst_port_ratio' },
+const METRIC_SECTIONS = [
+    {
+        id: 'volume',
+        title: 'Volume / Tier-0',
+        subtitle: 'Raw volume features against EWMA baselines, with state markers on the primary traffic rates.',
+        metrics: [
+            { tier: 'Tier-0', key: 'pps', label: 'Packets / sec', em: 'em_pps', color: getCssVar('--tier0'), markers: true },
+            { tier: 'Tier-0', key: 'bps', label: 'Bits / sec', em: 'em_bps', color: getCssVar('--tier0'), markers: true },
+            { tier: 'Tier-0', key: 'fps', label: 'Flows / sec', em: 'em_fps', color: getCssVar('--tier0'), markers: true },
+            { tier: 'Tier-0', key: 'burst_pps', label: 'Burst PPS', em: 'em_burst_pps', color: getCssVar('--tier0') },
+            { tier: 'Tier-0', key: 'burst_bps', label: 'Burst BPS', em: 'em_burst_bps', color: getCssVar('--tier0') },
+            { tier: 'Tier-0', key: 'burst_fps', label: 'Burst FPS', em: 'em_burst_fps', color: getCssVar('--tier0') },
+        ],
+    },
+    {
+        id: 'tcp',
+        title: 'TCP Behavior',
+        subtitle: 'TCP control-flag and traffic-dominance features versus their EWMA baselines.',
+        metrics: [
+            { tier: 'Tier-1 TCP', key: 'tcp_syn_ratio', label: 'SYN / TCP', em: 'em_tcp_syn_ratio', color: getCssVar('--tcp') },
+            { tier: 'Tier-1 TCP', key: 'tcp_synack_ratio', label: 'SYN-ACK / TCP', em: 'em_tcp_synack_ratio', color: getCssVar('--tcp') },
+            { tier: 'Tier-1 TCP', key: 'tcp_finack_ratio', label: 'FIN-ACK / TCP', em: 'em_tcp_finack_ratio', color: getCssVar('--tcp') },
+            { tier: 'Tier-1 TCP', key: 'tcp_rst_ratio', label: 'RST / TCP', em: 'em_tcp_rst_ratio', color: getCssVar('--tcp') },
+            { tier: 'Tier-1 TCP', key: 'tcp_ack_data_ratio', label: 'ACK-Data / TCP', em: 'em_tcp_ack_data_ratio', color: getCssVar('--tcp') },
+            { tier: 'Tier-1 TCP', key: 'tcp_pps_ratio', label: 'TCP PPS / Total', em: 'em_tcp_pps_ratio', color: getCssVar('--tcp') },
+            { tier: 'Tier-1 TCP', key: 'tcp_bps_ratio', label: 'TCP BPS / Total', em: 'em_tcp_bps_ratio', color: getCssVar('--tcp') },
+        ],
+    },
+    {
+        id: 'udp',
+        title: 'UDP Behavior',
+        subtitle: 'UDP dominance and flow diversity features compared with live EWMA baselines.',
+        metrics: [
+            { tier: 'Tier-1 UDP', key: 'udp_bps_ratio', label: 'UDP BPS / Total', em: 'em_udp_bps_ratio', color: getCssVar('--udp') },
+            { tier: 'Tier-1 UDP', key: 'udp_pps_ratio', label: 'UDP PPS / Total', em: 'em_udp_pps_ratio', color: getCssVar('--udp') },
+            { tier: 'Tier-1 UDP', key: 'udp_flow_ratio', label: 'UDP Flows / PPS', em: 'em_udp_flow_ratio', color: getCssVar('--udp') },
+        ],
+    },
+    {
+        id: 'icmp',
+        title: 'ICMP Behavior',
+        subtitle: 'ICMP echo and packet-rate features against their learned baseline.',
+        metrics: [
+            { tier: 'Tier-1 ICMP', key: 'icmp_echo_ratio', label: 'ICMP Echo Ratio', em: 'em_icmp_echo_ratio', color: getCssVar('--icmp') },
+            { tier: 'Tier-1 ICMP', key: 'icmp_pps_ratio', label: 'ICMP PPS / Total', em: 'em_icmp_pps_ratio', color: getCssVar('--icmp') },
+        ],
+    },
+    {
+        id: 'dist',
+        title: 'Distribution Behavior',
+        subtitle: 'Source diversity and destination-port spread relative to historical EWMA levels.',
+        metrics: [
+            { tier: 'Tier-1 DIST', key: 'src_ip_ratio', label: 'Source IPs / PPS', em: 'em_src_ip_ratio', color: getCssVar('--dist') },
+            { tier: 'Tier-1 DIST', key: 'dst_port_ratio', label: 'Destination Ports / PPS', em: 'em_dst_port_ratio', color: getCssVar('--dist') },
+        ],
+    },
+    {
+        id: 'hll',
+        title: 'HLL Cardinality',
+        subtitle: 'Raw HyperLogLog-estimated counts for source-IP diversity and destination-port spread in each window.',
+        metrics: [
+            { tier: 'Observability', key: 'unique_src_ips', label: 'Unique Source IPs', color: getCssVar('--dist'), digits: 0, note: 'Raw HLL-estimated count per window' },
+            { tier: 'Observability', key: 'unique_dst_ports', label: 'Unique Destination Ports', color: getCssVar('--tier0'), digits: 0, note: 'Raw HLL-estimated count per window' },
+        ],
+    },
 ];
 
-const API_BASE = '/api';
+const ALL_METRICS = METRIC_SECTIONS.flatMap(section => section.metrics);
+const TIER0_RISK_BREAKDOWN = [
+    { id: 'tier0RiskPps', key: 'tier0_risk_pps' },
+    { id: 'tier0RiskBps', key: 'tier0_risk_bps' },
+    { id: 'tier0RiskFps', key: 'tier0_risk_fps' },
+    { id: 'tier0RiskBurstPps', key: 'tier0_risk_burst_pps' },
+    { id: 'tier0RiskBurstBps', key: 'tier0_risk_burst_bps' },
+    { id: 'tier0RiskBurstFps', key: 'tier0_risk_burst_fps' },
+];
 let currentTarget = null;
-let charts        = {};
+let knownIPs = [];
+let charts = {};
 
-// ============================================================================
-// BUILD CHART GRID
-// ============================================================================
+function getCssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
 
-function buildGrid() {
-    const container = document.getElementById('chartsContainer');
+function parseTimestamp(value) {
+    if (!value) return null;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatNumber(value, digits = 0) {
+    const n = Number(value || 0);
+    if (Math.abs(n) >= 1e9) return `${(n / 1e9).toFixed(2)} G`;
+    if (Math.abs(n) >= 1e6) return `${(n / 1e6).toFixed(2)} M`;
+    if (Math.abs(n) >= 1e3) return `${(n / 1e3).toFixed(2)} K`;
+    return n.toFixed(digits);
+}
+
+function formatScore(value, active = true) {
+    if (!active) return '—';
+    return Number(value || 0).toFixed(3);
+}
+
+function formatTimestamp(value) {
+    const ts = parseTimestamp(value);
+    if (!ts) return 'Unavailable';
+    return ts.toLocaleTimeString();
+}
+
+function stateKey(value) {
+    return String(value || 'NORMAL').toUpperCase();
+}
+
+function stateMeta(value) {
+    return STATE_META[stateKey(value)] || STATE_META.NORMAL;
+}
+
+function scoreColor(score, active = true) {
+    if (!active) return 'rgba(255,255,255,0.10)';
+    if (score >= 0.68) return getCssVar('--attack');
+    if (score >= 0.48) return getCssVar('--suspicious');
+    return getCssVar('--normal');
+}
+
+function renderRiskGlyphBar(score) {
+    const numeric = Math.max(0, Math.min(1, Number(score || 0)));
+    const filled = numeric > 0 ? Math.min(10, Math.ceil((numeric * 10) - 1e-9)) : 0;
+    return '\u2588'.repeat(filled) + '\u2591'.repeat(10 - filled);
+}
+
+function updateTier0RiskBreakdown(record) {
+    TIER0_RISK_BREAKDOWN.forEach(item => {
+        const row = document.getElementById(item.id);
+        if (!row) return;
+
+        const numeric = Math.max(0, Math.min(1, Number(record[item.key] || 0)));
+        const bar = row.querySelector('.tier0-risk-bar');
+        const value = row.querySelector('.tier0-risk-value');
+
+        if (bar) bar.textContent = renderRiskGlyphBar(numeric);
+        if (value) value.textContent = numeric.toFixed(2);
+    });
+}
+
+function buildChartSections() {
+    const container = document.getElementById('chartSections');
     container.innerHTML = '';
 
-    let currentTier = null;
+    METRIC_SECTIONS.forEach(section => {
+        const shell = document.createElement('section');
+        shell.className = 'section-shell';
+        shell.innerHTML = `
+            <div class="section-header">
+                <div class="section-title">${section.title}</div>
+                <p class="section-copy">${section.subtitle}</p>
+            </div>
+            <div class="row g-3" id="section-${section.id}"></div>
+        `;
+        container.appendChild(shell);
 
-    METRICS.forEach(m => {
-        // Insert a full-width tier label when tier changes
-        if (m.tier !== currentTier) {
-            currentTier = m.tier;
-            const headRow = document.createElement('div');
-            headRow.className = 'col-12';
-            headRow.innerHTML = `
-                <div class="section-head" style="color:${TIER_COLOR[m.tier]}">
-                    ◆ Tier ${m.tier}
-                </div>`;
-            container.appendChild(headRow);
-        }
-
-        const col = document.createElement('div');
-        col.className = 'col-md-6 col-lg-4 col-xl-3';
-
-        const color = TIER_COLOR[m.tier];
-        col.innerHTML = `
-            <div class="card">
-                <div class="card-header d-flex justify-content-between">
-                    <span>${m.label}</span>
-                    <span class="chart-tier-label" style="color:${color}">Tier ${m.tier}</span>
-                </div>
-                <div class="card-body p-2">
-                    <canvas id="chart_${m.key}"></canvas>
-                </div>
-            </div>`;
-        container.appendChild(col);
+        const row = shell.querySelector(`#section-${section.id}`);
+        section.metrics.forEach(metric => {
+            const col = document.createElement('div');
+            col.className = 'col-12 col-md-6 col-xl-4';
+            col.innerHTML = `
+                <article class="chart-card">
+                    <div class="chart-card-head">
+                        <div class="chart-title">${metric.label}</div>
+                        <div class="chart-tier">${metric.tier}</div>
+                    </div>
+                    <div class="chart-body">
+                        <canvas id="chart_${metric.key}"></canvas>
+                    </div>
+                    <div class="chart-note">${metric.note || 'Raw line versus EWMA baseline'}</div>
+                </article>
+            `;
+            row.appendChild(col);
+        });
     });
 }
 
-// ============================================================================
-// CHART CREATION (dual-line: raw + EWMA mean)
-// ============================================================================
+function createChart(metric) {
+    const canvas = document.getElementById(`chart_${metric.key}`);
+    if (!canvas) return null;
 
-function makeChart(canvasId, rawColor) {
-    const ctx = document.getElementById(canvasId);
-    if (!ctx) {
-        console.error(`[makeChart] Canvas element #${canvasId} not found`);
-        return null;
+    const datasets = [
+        {
+            label: 'Raw',
+            data: [],
+            borderColor: metric.color,
+            borderWidth: 1.8,
+            tension: 0.25,
+            pointRadius: 0,
+            pointHoverRadius: 3,
+            pointBackgroundColor: metric.color,
+            fill: false,
+        },
+    ];
+
+    if (metric.em) {
+        datasets.push({
+            label: 'EWMA',
+            data: [],
+            borderColor: getCssVar('--ewma'),
+            borderWidth: 1.7,
+            borderDash: [6, 4],
+            tension: 0.25,
+            pointRadius: 0,
+            fill: false,
+        });
     }
 
-    try {
-        return new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: [],
-                datasets: [
-                    {
-                        label: 'Real-time',
-                        data: [],
-                        borderColor: rawColor,
-                        borderWidth: 1.8,
-                        tension: 0.35,
-                        pointRadius: 0,
-                        fill: false,
-                    },
-                    {
-                        label: 'EWMA baseline',
-                        data: [],
-                        borderColor: EWMA_COLOR,
-                        borderWidth: 2,
-                        borderDash: [6, 3],
-                        tension: 0.35,
-                        pointRadius: 0,
-                        fill: false,
-                    },
-                ]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                animation: false,
-                interaction: { mode:'index', intersect:false },
-                plugins: {
-                    legend: { display: false },
-                    tooltip: { enabled: true },
-                },
-                scales: {
-                    x: {
-                        type: 'time',
-                        time: { unit:'second', displayFormats:{ second:'HH:mm:ss' } },
-                        ticks: { display: false },
-                        grid: { color:'#222' },
-                    },
-                    y: {
-                        beginAtZero: true,
-                        grid: { color:'#222' },
-                        ticks: { color:'#888', font:{ size:10 } },
+    return new Chart(canvas, {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets,
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        label: (ctx) => `${ctx.dataset.label}: ${Number(ctx.raw || 0).toFixed(metric.digits ?? 3)}`,
                     },
                 },
             },
-        });
-    } catch (err) {
-        console.error(`[makeChart] Chart.js threw error for ${canvasId}:`, err);
-        return null;
+            scales: {
+                x: {
+                    type: 'time',
+                    time: { unit: 'second', displayFormats: { second: 'HH:mm:ss' } },
+                    ticks: { color: getCssVar('--muted-soft'), maxRotation: 0, autoSkip: true },
+                    grid: { color: 'rgba(145, 160, 189, 0.10)' },
+                },
+                y: {
+                    beginAtZero: true,
+                    ticks: { color: getCssVar('--muted-soft') },
+                    grid: { color: 'rgba(145, 160, 189, 0.10)' },
+                },
+            },
+        },
+    });
+}
+
+function markerRadius(state) {
+    const key = stateKey(state);
+    if (key === 'ATTACK') return 3.5;
+    if (key === 'SUSPICIOUS') return 2.6;
+    return 0;
+}
+
+function markerColor(state) {
+    return stateMeta(state).className === 'st-attack' ? getCssVar('--attack') :
+           stateMeta(state).className === 'st-suspicious' ? getCssVar('--suspicious') :
+           getCssVar('--normal');
+}
+
+function dominantBranch(record) {
+    if (!record || !record.tier1_evaluated) {
+        return { key: 'none', label: 'Not evaluated', score: 0 };
     }
+
+    const branches = [
+        { key: 'tcp', label: 'TCP', score: Number(record.tier1_tcp_score || 0) },
+        { key: 'udp', label: 'UDP', score: Number(record.tier1_udp_score || 0) },
+        { key: 'icmp', label: 'ICMP', score: Number(record.tier1_icmp_score || 0) },
+        { key: 'dist', label: 'DIST', score: Number(record.tier1_dist_score || 0) },
+    ];
+
+    return branches.reduce((best, current) => current.score > best.score ? current : best, branches[0]);
 }
 
-// ============================================================================
-// TARGET SELECTOR
-// ============================================================================
+function reasoningDriver(record, dominant) {
+    if (String(record.attack_type || '').toUpperCase() === 'MIXED') {
+        return { key: 'none', label: 'Mixed / hybrid' };
+    }
 
+    const tier0Risk = Number(record.tier0_global_risk || 0);
+    if (!record.tier1_evaluated) {
+        return { key: 'tier0', label: 'Volume-driven' };
+    }
 
-// ============================================================================
-// TARGET SELECTOR
-// ============================================================================
+    if (tier0Risk >= Number(dominant.score || 0)) {
+        return { key: 'tier0', label: 'Volume-driven' };
+    }
 
-/*
- * knownIPs — the exact list currently rendered in the <select>.
- * By comparing against this before every rebuild we can skip the DOM write
- * entirely when nothing changed, so a background poll can never reset the
- * visual selection.
- */
-let knownIPs = [];
-
-async function fetchTargets() {
-    try {
-        const r   = await fetch(`${API_BASE}/targets`);
-        const ips = await r.json();
-        if (!Array.isArray(ips) || !ips.length) return;
-
-        /* Only touch the DOM when the list of IPs actually changed */
-        const newKey = ips.slice().sort().join('|');
-        const oldKey = knownIPs.slice().sort().join('|');
-        if (newKey === oldKey) return;   /* nothing changed — leave <select> alone */
-
-        knownIPs = ips.slice();
-        const sel = document.getElementById('targetSelect');
-
-        /* Snapshot the current selection BEFORE wiping */
-        const previous = currentTarget || sel.value;
-
-        /* Rebuild options */
-        sel.innerHTML = '';
-        ips.forEach(ip => {
-            const o = document.createElement('option');
-            o.value = ip;
-            o.text  = ip;
-            sel.appendChild(o);
-        });
-
-        /* Restore the previous selection if it still exists, else pick first */
-        const toSelect = ips.find(ip => ip === previous) || ips[0];
-        sel.value     = toSelect;
-        currentTarget = toSelect;
-
-    } catch (e) { console.error('fetchTargets:', e); }
-}
-
-document.getElementById('targetSelect').addEventListener('change', e => {
-    currentTarget = e.target.value;
-    Object.values(charts).forEach(c => c.destroy());
-    charts = {};
-});
-
-
-// ============================================================================
-// SCORE BAR HELPER
-// ============================================================================
-
-function setScoreBar(barId, valId, score, active) {
-    const pct  = active ? (score * 100).toFixed(1) : 0;
-    const text = active ? score.toFixed(3) : '—';
-    const bar  = document.getElementById(barId);
-    const val  = document.getElementById(valId);
-    if (!bar || !val) return;
-    bar.style.width = pct + '%';
-    val.textContent = text;
-
-    /* Colour: green → yellow → red based on score */
-    let col = '#198754';
-    if (score >= 0.6) col = '#dc3545';
-    else if (score >= 0.4) col = '#ffc107';
-    bar.style.background = col;
-}
-
-// ============================================================================
-// STATUS PANEL
-// ============================================================================
-
-function updateStatus(rec) {
-    /* Timestamp */
-    const ts = new Date(rec.timestamp);
-    document.getElementById('lastUpdated').textContent =
-        'Last update: ' + ts.toLocaleTimeString();
-
-    /* Live traffic stats — format with K/M/G suffixes */
-    const formatNumber = (n) => {
-        if (n >= 1e9) return (n / 1e9).toFixed(2) + ' G';
-        if (n >= 1e6) return (n / 1e6).toFixed(2) + ' M';
-        if (n >= 1e3) return (n / 1e3).toFixed(2) + ' K';
-        return n.toFixed(0);
+    return {
+        key: dominant.key,
+        label: `${dominant.label}-driven`,
     };
+}
 
-    document.getElementById('livePPS').textContent = formatNumber(rec.pps || 0);
-    document.getElementById('liveBPS').textContent = formatNumber(rec.bps || 0);
-    document.getElementById('liveFPS').textContent = formatNumber(rec.fps || 0);
-
-    /* Detection state badge */
+function setStatusBadge(state) {
     const badge = document.getElementById('detectionBadge');
-    const state = (rec.detection_state || 'UNKNOWN').toUpperCase();
-    badge.textContent = state;
-    badge.className   = '';   /* reset */
-    const cls = {
-        WARMUP:     'st-warmup',
-        NORMAL:     'st-normal',
-        SUSPICIOUS: 'st-suspicious',
-        ATTACK:     'st-attack',
-    }[state] || 'st-warmup';
-    badge.classList.add(cls);
+    const meta = stateMeta(state);
+    badge.className = `status-badge ${meta.className}`;
+    badge.textContent = stateKey(state);
+}
 
-    /* Warm-up progress */
-    const wr = rec.warmup_remaining || 0;
-    const warmupRow = document.getElementById('warmupRow');
-    if (state === 'WARMUP' && wr > 0) {
-        warmupRow.style.display = 'block';
-        document.getElementById('warmupVal').textContent = wr;
-        /* Progress bar — handles any warmup window count (not hardcoded to 30) */
-        const total  = 300;   /* matches DETECTION_WARMUP_WINDOWS in C code */
-        const filled = Math.max(0, total - wr);   /* clamp to 0 if wr > total */
-        const remain = Math.min(wr, total);       /* clamp to total if wr > total */
-        /* Cap the bar width to avoid overly long strings */
-        const barWidth = 40;
-        const fillPct  = filled / total;
-        const fillBars = Math.floor(fillPct * barWidth);
-        const emptyBars = barWidth - fillBars;
-        document.getElementById('warmupBar').textContent =
-            '█'.repeat(fillBars) + '░'.repeat(emptyBars);
-    } else {
-        warmupRow.style.display = 'none';
+function setMetaTile(id, value, note) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+    if (note) {
+        const tile = el ? el.parentElement : null;
+        const noteEl = tile ? tile.querySelector('.meta-note') : null;
+        if (noteEl) noteEl.textContent = note;
     }
-
-    /* Score bars */
-    const t1ev = rec.tier1_evaluated;
-    setScoreBar('bar-t0',   'val-t0',   rec.tier0_score        || 0, true);
-    setScoreBar('bar-tcp',  'val-tcp',  rec.tier1_tcp_score    || 0, t1ev);
-    setScoreBar('bar-udp',  'val-udp',  rec.tier1_udp_score    || 0, t1ev);
-    setScoreBar('bar-icmp', 'val-icmp', rec.tier1_icmp_score   || 0, t1ev);
-    setScoreBar('bar-dist', 'val-dist', rec.tier1_dist_score   || 0, t1ev);
 }
 
-// ============================================================================
-// CHART UPDATE
-// ============================================================================
-
-function updateCharts(data) {
-    /* Parse timestamps with fallback for different formats */
-    const labels = data.map(d => {
-        const ts = d.timestamp;
-        if (typeof ts === 'number') return new Date(ts);
-        if (typeof ts === 'string') return new Date(ts);
-        /* datetime object serialized as ISO string */
-        if (ts instanceof Date) return ts;
-        console.error('[updateCharts] Invalid timestamp:', ts);
-        return new Date();
-    });
-
-    console.log(`[updateCharts] Processing ${data.length} records`);
-    console.log(`[updateCharts] First timestamp raw:`, data[0]?.timestamp, '→', labels[0]);
-    console.log(`[updateCharts] Last timestamp raw:`, data[data.length - 1]?.timestamp, '→', labels[labels.length - 1]);
-
-    let createdCount = 0;
-    let updatedCount = 0;
-
-    METRICS.forEach(m => {
-        const rawColor = TIER_COLOR[m.tier];
-        const rawArr   = data.map(d => d[m.key]  ?? 0);
-        const emArr    = data.map(d => d[m.em]   ?? 0);
-
-        if (charts[m.key]) {
-            const c = charts[m.key];
-            c.data.labels           = labels;
-            c.data.datasets[0].data = rawArr;
-            c.data.datasets[1].data = emArr;
-            c.update('none');
-            updatedCount++;
-        } else {
-            const ctx = document.getElementById(`chart_${m.key}`);
-            if (!ctx) {
-                console.error(`[updateCharts] ✗ Canvas #chart_${m.key} NOT FOUND in DOM`);
-                return;
-            }
-
-            charts[m.key] = makeChart(`chart_${m.key}`, rawColor);
-            if (charts[m.key]) {
-                charts[m.key].data.labels           = labels;
-                charts[m.key].data.datasets[0].data = rawArr;
-                charts[m.key].data.datasets[1].data = emArr;
-                charts[m.key].update('none');
-                createdCount++;
-                console.log(`[updateCharts] ✓ Created ${m.key}: ${rawArr.length} pts, first=${rawArr[0]}, last=${rawArr[rawArr.length-1]}`);
-            } else {
-                console.error(`[updateCharts] ✗ makeChart() returned NULL for ${m.key}`);
-            }
-        }
-    });
-
-    console.log(`[updateCharts] Summary: ${createdCount} created, ${updatedCount} updated`);
+function setCardAccent(id, state) {
+    const card = document.getElementById(id);
+    if (!card) return;
+    const meta = stateMeta(state);
+    let accent = 'rgba(255,255,255,0.04)';
+    if (meta.className === 'st-warmup') accent = 'rgba(77, 163, 255, 0.18)';
+    if (meta.className === 'st-normal') accent = 'rgba(51, 194, 127, 0.16)';
+    if (meta.className === 'st-suspicious') accent = 'rgba(246, 196, 83, 0.16)';
+    if (meta.className === 'st-attack') accent = 'rgba(239, 83, 80, 0.18)';
+    card.style.borderColor = accent;
+    card.style.boxShadow = `inset 0 1px 0 rgba(255,255,255,0.03), 0 18px 50px rgba(0,0,0,0.28), 0 0 0 1px ${accent}`;
 }
 
-// ============================================================================
-// MAIN REFRESH LOOP
-// ============================================================================
+function updateWarmup(record, history) {
+    const panel = document.getElementById('warmupPanel');
+    const remaining = Number(record.warmup_remaining || 0);
+    const state = stateKey(record.detection_state);
 
-async function refresh() {
-    const debugEl = document.getElementById('debugStatus');
-    
-    if (!currentTarget) {
-        debugEl.textContent = '❌ No IP selected';
-        debugEl.style.color = '#dc3545';
+    if (state !== 'WARMUP' || remaining <= 0) {
+        panel.style.display = 'none';
         return;
     }
 
-    try {
-        const url = `${API_BASE}/stats/${currentTarget}`;
-        debugEl.textContent = `⏳ Fetching ${url}...`;
-        debugEl.style.color = '#ffc107';
-        
-        const r    = await fetch(url);
-        const data = await r.json();
+    const observedMax = Math.max(
+        remaining,
+        ...history.map(item => Number(item.warmup_remaining || 0))
+    );
+    const progress = observedMax > 0 ? ((observedMax - remaining) / observedMax) * 100 : 0;
 
-        if (!data || !data.length) {
-            debugEl.innerHTML = `❌ Received EMPTY array for ${currentTarget}<br>` +
-                `Check: (1) Is DPDK running? (2) Is collector.py receiving data? (3) Does shared_state have records?`;
-            debugEl.style.color = '#dc3545';
-            console.warn('[Refresh] ⚠ Empty response');
-            return;
+    document.getElementById('warmupLabel').textContent = `${remaining} windows remaining`;
+    document.getElementById('warmupFill').style.width = `${Math.max(4, Math.min(100, progress || 4))}%`;
+    panel.style.display = 'block';
+}
+
+function setScoreBar(fillId, valueId, score, active = true) {
+    const fill = document.getElementById(fillId);
+    const value = document.getElementById(valueId);
+    const numeric = Number(score || 0);
+    if (!fill || !value) return;
+    fill.style.width = active ? `${Math.max(0, Math.min(100, numeric * 100))}%` : '0%';
+    fill.style.background = scoreColor(numeric, active);
+    value.textContent = formatScore(numeric, active);
+}
+
+function updateStatus(record, history) {
+    const state = stateKey(record.detection_state);
+    const dominant = dominantBranch(record);
+    const driver = reasoningDriver(record, dominant);
+    const attackType = record.attack_type || 'Unavailable';
+    const tier0State = record.tier0_state || 'Unavailable';
+
+    document.getElementById('selectedTargetLabel').textContent = record.dst_ip || currentTarget || 'Unknown target';
+    document.getElementById('lastUpdated').textContent = formatTimestamp(record.timestamp);
+    document.getElementById('heroSummary').textContent =
+        record.tier1_evaluated
+            ? `Tier-1 dominant branch: ${dominant.label} (${Number(dominant.score || 0).toFixed(3)})`
+            : 'Tier-1 has not been evaluated for this window.';
+
+    setStatusBadge(state);
+    setMetaTile('metaDetectionState', state);
+    setMetaTile('metaTier0State', String(tier0State));
+    setMetaTile('metaAttackType', String(attackType));
+    setMetaTile('metaTier1Evaluated', record.tier1_evaluated ? 'Yes' : 'No');
+    setMetaTile('metaWarmup', `${Number(record.warmup_remaining || 0)}`);
+
+    document.getElementById('livePPS').textContent = formatNumber(record.pps || 0);
+    document.getElementById('liveBPS').textContent = formatNumber(record.bps || 0);
+    document.getElementById('liveFPS').textContent = formatNumber(record.fps || 0);
+    document.getElementById('liveUniqueSrcIps').textContent = formatNumber(record.unique_src_ips || 0);
+    document.getElementById('liveUniqueDstPorts').textContent = formatNumber(record.unique_dst_ports || 0);
+    document.getElementById('liveTier0').textContent = formatScore(record.tier0_global_risk || 0, true);
+    document.getElementById('liveTier1Final').textContent = formatScore(record.tier1_final_score || 0, !!record.tier1_evaluated);
+    document.getElementById('liveDominantBranch').textContent = dominant.label;
+    document.getElementById('liveDominantNote').textContent = record.tier1_evaluated
+        ? `Highest Tier-1 branch at ${formatScore(dominant.score || 0, true)}`
+        : 'Tier-1 not evaluated in this window';
+
+    setCardAccent('kpiPpsCard', state);
+    setCardAccent('kpiBpsCard', state);
+    setCardAccent('kpiFpsCard', state);
+    setCardAccent('kpiSrcIpsCard', state);
+    setCardAccent('kpiDstPortsCard', state);
+    setCardAccent('kpiTier0Card', tier0State === 'ATTACK' ? 'ATTACK' : tier0State === 'SUSPICIOUS' ? 'SUSPICIOUS' : state);
+    setCardAccent('kpiTier1Card', state);
+    setCardAccent('kpiBranchCard', dominant.key === 'none' ? 'NORMAL' : state);
+
+    setScoreBar('bar-t0', 'val-t0', record.tier0_global_risk || 0, true);
+    setScoreBar('bar-tcp', 'val-tcp', record.tier1_tcp_score || 0, !!record.tier1_evaluated);
+    setScoreBar('bar-udp', 'val-udp', record.tier1_udp_score || 0, !!record.tier1_evaluated);
+    setScoreBar('bar-icmp', 'val-icmp', record.tier1_icmp_score || 0, !!record.tier1_evaluated);
+    setScoreBar('bar-dist', 'val-dist', record.tier1_dist_score || 0, !!record.tier1_evaluated);
+    setScoreBar('bar-final', 'val-final', record.tier1_final_score || 0, !!record.tier1_evaluated);
+    updateTier0RiskBreakdown(record);
+
+    document.getElementById('reasonState').textContent = state;
+    document.getElementById('reasonTier0').textContent = formatScore(record.tier0_global_risk || 0, true);
+    document.getElementById('reasonTier1Eval').textContent = record.tier1_evaluated ? 'Yes' : 'No';
+    document.getElementById('reasonDominant').textContent = record.tier1_evaluated
+        ? `${dominant.label} (${formatScore(dominant.score || 0, true)})`
+        : 'Not evaluated';
+    document.getElementById('reasonDriver').textContent = driver.label;
+    document.getElementById('reasonAttackType').textContent = attackType;
+
+    const pills = [];
+    pills.push(renderInfoPill('State', state, stateMeta(state).chipClass));
+    pills.push(renderInfoPill('Tier-0', String(tier0State), tier0State === 'ATTACK' ? 'state-attack' : tier0State === 'SUSPICIOUS' ? 'state-suspicious' : tier0State === 'NORMAL' ? 'state-normal' : 'state-warmup'));
+    pills.push(renderInfoPill('Branch', dominant.label, BRANCH_META[dominant.key]?.chipClass || 'branch-none'));
+    pills.push(renderInfoPill('Driver', driver.label, BRANCH_META[driver.key]?.chipClass || 'branch-none'));
+    if (record.attack_type) {
+        pills.push(renderInfoPill('Type', record.attack_type, record.attack_type === 'MIXED' ? 'state-suspicious' : 'branch-none'));
+    }
+    document.getElementById('reasoningPills').innerHTML = pills.join('');
+
+    updateWarmup(record, history);
+}
+
+function renderInfoPill(label, value, className) {
+    return `<span class="info-pill"><span class="${className} state-chip">${label}</span><span>${value}</span></span>`;
+}
+
+function renderStateChip(state) {
+    const meta = stateMeta(state);
+    return `<span class="event-state ${meta.chipClass}">${stateKey(state)}</span>`;
+}
+
+function renderBranchChip(branchKey, text) {
+    const meta = BRANCH_META[branchKey] || BRANCH_META.none;
+    return `<span class="branch-chip ${meta.chipClass}">${text}</span>`;
+}
+
+function updateTargetSummary(summaries) {
+    const list = document.getElementById('targetSituationalList');
+    document.getElementById('diagTargetCount').textContent = String(Array.isArray(summaries) ? summaries.length : 0);
+
+    if (!summaries || !summaries.length) {
+        list.innerHTML = '<div class="empty-state">No active targets in RAM.</div>';
+        return;
+    }
+
+    list.innerHTML = summaries.map(item => {
+        const activeClass = item.dst_ip === currentTarget ? 'active' : '';
+        return `
+            <div class="target-item ${activeClass}">
+                <div>
+                    <div class="target-ip text-mono">${item.dst_ip}</div>
+                    <div class="target-meta">
+                        PPS ${formatNumber(item.pps || 0)} · BPS ${formatNumber(item.bps || 0)} · ${formatTimestamp(item.timestamp)}
+                    </div>
+                </div>
+                ${renderStateChip(item.detection_state)}
+            </div>
+        `;
+    }).join('');
+}
+
+function updateEvents(events) {
+    const body = document.getElementById('eventsTableBody');
+    if (!events || !events.length) {
+        body.innerHTML = '<tr><td colspan="7" class="empty-state">No recent suspicious, attack, or transition events for this target.</td></tr>';
+        return;
+    }
+
+    body.innerHTML = events.map(event => `
+        <tr>
+            <td class="text-mono">${formatTimestamp(event.timestamp)}</td>
+            <td>${renderStateChip(event.state)}</td>
+            <td>${event.attack_type ? renderBranchChip(event.attack_type === 'MIXED' ? 'none' : 'tier0', event.attack_type) : '<span class="text-secondary">—</span>'}</td>
+            <td class="text-mono">${formatScore(event.tier0_global_risk || 0, true)}</td>
+            <td class="text-mono">${formatScore(event.tier1_final_score || 0, true)}</td>
+            <td class="text-mono">${formatNumber(event.pps || 0)}</td>
+            <td class="text-mono">${formatNumber(event.bps || 0)}</td>
+        </tr>
+    `).join('');
+}
+
+function updateDiagnostics(recordCount, latestRecord) {
+    document.getElementById('diagRecordCount').textContent = String(recordCount || 0);
+    document.getElementById('diagLatestTs').textContent = latestRecord ? formatTimestamp(latestRecord.timestamp) : 'Unavailable';
+}
+
+function updateCharts(history) {
+    const labels = history.map(item => parseTimestamp(item.timestamp)).filter(Boolean);
+    const states = history.map(item => stateKey(item.detection_state));
+
+    ALL_METRICS.forEach(metric => {
+        if (!charts[metric.key]) {
+            charts[metric.key] = createChart(metric);
         }
 
-        const sample = data[data.length - 1];
-        debugEl.innerHTML = `✓ ${data.length} records | IP: ${currentTarget} | ` +
-            `PPS: ${sample.pps?.toFixed(0) ?? '?'} | ` +
-            `State: ${sample.detection_state ?? '?'} | ` +
-            `Timestamp: ${sample.timestamp}`;
-        debugEl.style.color = '#198754';
+        const chart = charts[metric.key];
+        if (!chart) return;
 
-        console.log(`[Refresh] ← ${data.length} records`);
-        console.log('[Refresh] Sample:', JSON.stringify(sample).substring(0, 300));
+        const raw = history.map(item => Number(item[metric.key] ?? 0));
 
-        updateStatus(sample);
-        updateCharts(data);
-    } catch (e) {
-        debugEl.textContent = `❌ ERROR: ${e.message}`;
-        debugEl.style.color = '#dc3545';
-        console.error('[Refresh] ✗ Error:', e);
+        chart.data.labels = labels;
+        chart.data.datasets[0].data = raw;
+        if (metric.em && chart.data.datasets[1]) {
+            chart.data.datasets[1].data = history.map(item => Number(item[metric.em] ?? 0));
+        }
+
+        if (metric.markers) {
+            chart.data.datasets[0].pointRadius = states.map(markerRadius);
+            chart.data.datasets[0].pointHoverRadius = states.map(markerRadius);
+            chart.data.datasets[0].pointBackgroundColor = states.map(markerColor);
+            chart.data.datasets[0].pointBorderColor = states.map(markerColor);
+            chart.data.datasets[0].pointBorderWidth = states.map(state => markerRadius(state) > 0 ? 1 : 0);
+        } else {
+            chart.data.datasets[0].pointRadius = 0;
+            chart.data.datasets[0].pointHoverRadius = 0;
+            chart.data.datasets[0].pointBackgroundColor = metric.color;
+            chart.data.datasets[0].pointBorderColor = metric.color;
+            chart.data.datasets[0].pointBorderWidth = 0;
+        }
+
+        chart.update('none');
+    });
+}
+
+async function fetchTargets() {
+    try {
+        const response = await fetch(`${API_BASE}/targets`);
+        const ips = await response.json();
+        if (!Array.isArray(ips) || !ips.length) return;
+
+        const newKey = ips.slice().sort().join('|');
+        const oldKey = knownIPs.slice().sort().join('|');
+        if (newKey === oldKey) return;
+
+        knownIPs = ips.slice();
+        const select = document.getElementById('targetSelect');
+        const previous = currentTarget || select.value;
+
+        select.innerHTML = '';
+        ips.forEach(ip => {
+            const option = document.createElement('option');
+            option.value = ip;
+            option.textContent = ip;
+            select.appendChild(option);
+        });
+
+        const nextTarget = ips.find(ip => ip === previous) || ips[0];
+        select.value = nextTarget;
+        currentTarget = nextTarget;
+        document.getElementById('selectedTargetLabel').textContent = currentTarget;
+    } catch (error) {
+        document.getElementById('diagPollStatus').textContent = `Target refresh failed: ${error.message}`;
     }
 }
 
-// ============================================================================
-// BOOT
-// ============================================================================
+async function refresh() {
+    if (!currentTarget) return;
 
-buildGrid();
+    document.getElementById('diagPollStatus').textContent = `Polling ${currentTarget}`;
 
-/* Initial target load, then poll for new IPs every 5 s */
-fetchTargets();
+    try {
+        const [historyResponse, eventsResponse, summaryResponse] = await Promise.all([
+            fetch(`${API_BASE}/stats/${currentTarget}`),
+            fetch(`${API_BASE}/events/${currentTarget}`),
+            fetch(`${API_BASE}/targets/summary`),
+        ]);
+
+        const [history, events, summaries] = await Promise.all([
+            historyResponse.json(),
+            eventsResponse.json(),
+            summaryResponse.json(),
+        ]);
+
+        if (!Array.isArray(history) || !history.length) {
+            document.getElementById('diagPollStatus').textContent = `No RAM history for ${currentTarget}`;
+            updateEvents([]);
+            updateTargetSummary(Array.isArray(summaries) ? summaries : []);
+            return;
+        }
+
+        const latest = history[history.length - 1];
+        updateStatus(latest, history);
+        updateCharts(history);
+        updateEvents(Array.isArray(events) ? events : []);
+        updateTargetSummary(Array.isArray(summaries) ? summaries : []);
+        updateDiagnostics(history.length, latest);
+
+        document.getElementById('diagPollStatus').textContent = `Live: ${currentTarget}`;
+    } catch (error) {
+        document.getElementById('diagPollStatus').textContent = `Refresh failed: ${error.message}`;
+    }
+}
+
+document.getElementById('targetSelect').addEventListener('change', event => {
+    currentTarget = event.target.value;
+    document.getElementById('selectedTargetLabel').textContent = currentTarget;
+    refresh();
+});
+
+buildChartSections();
+fetchTargets().then(refresh);
 setInterval(fetchTargets, 5000);
-
-/* Data refresh every 1 s — independent of target polling */
 setInterval(refresh, 1000);
 </script>
 </body>

@@ -91,7 +91,7 @@ struct __rte_cache_aligned lcore_queue_conf {
 	unsigned rx_port_list[MAX_RX_QUEUE_PER_LCORE];
 };
 struct lcore_queue_conf lcore_queue_conf[RTE_MAX_LCORE];
-/* >8 End of list of queues to be polled for a given lcore. */
+/* >8 End of list of queues to be polled f░░░░░░░░░░or a given lcore. */
 
 static struct rte_eth_dev_tx_buffer *tx_buffer[RTE_MAX_ETHPORTS];
 

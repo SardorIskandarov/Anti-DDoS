@@ -303,7 +303,7 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
     uint16_t offset    = sizeof(struct rte_ether_hdr);
     uint64_t timestamp = rte_get_timer_cycles();
 
-    if (unlikely(portid != MONITORED_PORT)) return;
+    // if (unlikely(portid != MONITORED_PORT)) return;
     if (unlikely(portid >= RTE_MAX_ETHPORTS)) return;
     if (unlikely(port_stats == NULL)) return;
 
@@ -431,7 +431,7 @@ static void log_raw_features_to_csv(long long timestamp_ms,
                                       const struct tier1_dist_features *t1_dist) {
     
     /* ★ FILTER: Only log data for IP 93.188.85.234 ★ */
-    if (dst_ip != 0x5DBC55EA) return;  /* 93.188.85.234 in host byte order */
+    if (dst_ip != DEBUG_IP) return;  /* 93.188.85.234 in host byte order */
     
     /* Open CSV file on first call */
     if (csv_file == NULL) {
@@ -440,7 +440,7 @@ static void log_raw_features_to_csv(long long timestamp_ms,
             perror("[Collector] Failed to open CSV file");
             return;
         }
-        printf("[Collector] CSV raw features log created at %s (filtering IP: 93.188.85.234)\n", CSV_PATH);
+        printf("[Collector] CSV raw features log created at %s (filtering IP: 93.188.85.34)\n", CSV_PATH);
     }
 
     /* Write CSV header on first write with clear, descriptive names */
@@ -562,7 +562,7 @@ static void log_raw_features_to_csv(long long timestamp_ms,
 // ============================================================================
 
 /**
- * CSV schema  (3 + 20 + 20 + 9 = 52 columns):
+ * CSV schema  (60 columns total):
  *
  *  Header (3):
  *    timestamp_ms, port, dst_ip
@@ -598,20 +598,26 @@ static void log_raw_features_to_csv(long long timestamp_ms,
  *  Tier 1.4 EWMA means (2):
  *    em_src_ip_ratio, em_dst_port_ratio
  *
- *  Detection fields (9):
+ *  Detection fields (15):
  *    detection_state,
- *    tier0_score,
+ *    tier0_global_risk,
+ *    tier0_risk_pps, tier0_risk_bps, tier0_risk_fps,
+ *    tier0_risk_burst_pps, tier0_risk_burst_bps, tier0_risk_burst_fps,
  *    tier1_tcp_score, tier1_udp_score, tier1_icmp_score, tier1_dist_score,
  *    tier1_final_score,
  *    tier1_evaluated,
  *    warmup_remaining
+ *
+ *  HLL observability fields (2):
+ *    unique_src_ips,
+ *    unique_dst_ports
  */
 void ddos_log_and_reset_stats(void) {
     struct timespec ts;
     long long timestamp_ms;
 
     /*
-     * 52 fields × ~12 chars + separators ≈ 700 bytes; 1536 is safe.
+     * 60 fields × ~12 chars + separators still fits comfortably in 1536 bytes.
      */
     char buffer[1536];
     int  len;
@@ -624,201 +630,223 @@ void ddos_log_and_reset_stats(void) {
     timestamp_ms = (long long)ts.tv_sec * 1000LL +
                    (long long)ts.tv_nsec / 1000000LL;
 
-    struct dst_ip_table *table = &port_stats[MONITORED_PORT].dst_table;
+    for (uint16_t port = 0; port < RTE_MAX_ETHPORTS; port++) {
+        struct dst_ip_table *table = &port_stats[port].dst_table;
 
-    for (uint32_t i = 0; i < MAX_DST_IPS; i++) {
-        struct dst_ip_stats *s = &table->entries[i];
-        if (!s->active || s->total_pkts == 0) continue;
+        for (uint32_t i = 0; i < MAX_DST_IPS; i++) {
+            struct dst_ip_stats *s = &table->entries[i];
+            if (!s->active) continue;
+            if (s->total_pkts == 0) continue;
 
-        uint64_t now       = rte_get_timer_cycles();
-        double   time_sec  = (double)STATS_PERIOD_US / 1000000.0;
+            struct in_addr addr;
+            addr.s_addr = htonl(s->dst_ip);
+            char dst_ip_str[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &addr, dst_ip_str, sizeof(dst_ip_str));
 
-        /* ----------------------------------------------------------------
-         * STEP 1: Push current window into burst circular buffers.
-         *         (Must happen before feature extraction so burst factors
-         *          incorporate the current second's counts.)
-         * -------------------------------------------------------------- */
-        burst_window_push(&s->bw_pps, s->total_pkts);
-        burst_window_push(&s->bw_bps, s->total_bytes * 8);
-        burst_window_push(&s->bw_fps, hll_count(&s->unique_flows));
+            // you should remove it later
+            if (s->dst_ip == DEBUG_IP) {
+                printf("[DEBUG] Processing port=%u dst_ip=%s (0x%08x), pkts=%llu\n",
+                    port,
+                    dst_ip_str,
+                    s->dst_ip,
+                    (unsigned long long)s->total_pkts);
+            }
 
-        /* ----------------------------------------------------------------
-         * STEP 2: Extract raw feature vectors for all tiers.
-         * -------------------------------------------------------------- */
-        struct tier0_features      t0;
-        struct tier1_tcp_features  t1_tcp;
-        struct tier1_udp_features  t1_udp;
-        struct tier1_icmp_features t1_icmp;
-        struct tier1_dist_features t1_dist;
+            uint64_t now       = rte_get_timer_cycles();
+            double   time_sec  = (double)STATS_PERIOD_US / 1000000.0;
 
-        extract_tier0_features     (s, &t0,     time_sec);
-        extract_tier1_tcp_features (s, &t1_tcp,  time_sec);
-        extract_tier1_udp_features (s, &t1_udp,  time_sec);
-        extract_tier1_icmp_features(s, &t1_icmp, time_sec);
-        extract_tier1_dist_features(s, &t1_dist, time_sec);
+            /* ----------------------------------------------------------------
+             * STEP 1: Push current window into burst circular buffers.
+             *         (Must happen before feature extraction so burst factors
+             *          incorporate the current second's counts.)
+             * -------------------------------------------------------------- */
+            burst_window_push(&s->bw_pps, s->total_pkts);
+            burst_window_push(&s->bw_bps, s->total_bytes * 8);
+            burst_window_push(&s->bw_fps, hll_count(&s->unique_flows));
 
-        /* Log raw features to CSV file */
-        log_raw_features_to_csv(timestamp_ms, s->dst_ip, &t0, &t1_tcp, &t1_udp, &t1_icmp, &t1_dist);
+            /* ----------------------------------------------------------------
+             * STEP 2: Extract raw feature vectors for all tiers.
+             * -------------------------------------------------------------- */
+            struct tier0_features      t0;
+            struct tier1_tcp_features  t1_tcp;
+            struct tier1_udp_features  t1_udp;
+            struct tier1_icmp_features t1_icmp;
+            struct tier1_dist_features t1_dist;
 
-        /* ----------------------------------------------------------------
-         * STEP 3: Run the detection engine (updates EWMA baselines too).
-         * -------------------------------------------------------------- */
-        struct detection_result det;
+            extract_tier0_features     (s, &t0,     time_sec);
+            extract_tier1_tcp_features (s, &t1_tcp,  time_sec);
+            extract_tier1_udp_features (s, &t1_udp,  time_sec);
+            extract_tier1_icmp_features(s, &t1_icmp, time_sec);
+            extract_tier1_dist_features(s, &t1_dist, time_sec);
+
+            /* Log raw features to CSV file */
+            log_raw_features_to_csv(timestamp_ms, s->dst_ip, &t0, &t1_tcp, &t1_udp, &t1_icmp, &t1_dist);
+
+            /* ----------------------------------------------------------------
+             * STEP 3: Run the detection engine (updates EWMA baselines too).
+             * -------------------------------------------------------------- */
+            struct detection_result det;
             memset(&det, 0, sizeof(det));
             if (s->detection) {
                 det = detection_engine_process(s->detection, s, now, s->dst_ip);
             }
-        /* ----------------------------------------------------------------
-         * STEP 4: Snapshot EWMA means for CSV output.
-         * -------------------------------------------------------------- */
-        /* Tier 0 */
-        double em_pps       = s->ewma_t0.pps.mean;
-        double em_bps       = s->ewma_t0.bps.mean;
-        double em_fps       = s->ewma_t0.fps.mean;
-        double em_burst_pps = s->ewma_t0.burst_pps.mean;
-        double em_burst_bps = s->ewma_t0.burst_bps.mean;
-        double em_burst_fps = s->ewma_t0.burst_fps.mean;
 
-        /* Tier 1.1 */
-        double em_syn       = s->ewma_t1_tcp.syn_ratio.mean;
-        double em_synack    = s->ewma_t1_tcp.synack_ratio.mean;
-        double em_finack    = s->ewma_t1_tcp.finack_ratio.mean;
-        double em_rst       = s->ewma_t1_tcp.rst_ratio.mean;
-        double em_ack_data  = s->ewma_t1_tcp.ack_data_ratio.mean;
-        double em_tcp_pps_r = s->ewma_t1_tcp.tcp_pps_ratio.mean;
-        double em_tcp_bps_r = s->ewma_t1_tcp.tcp_bps_ratio.mean;
+            /* ----------------------------------------------------------------
+             * STEP 4: Snapshot EWMA means for CSV output.
+             * -------------------------------------------------------------- */
+            /* Tier 0 */
+            double em_pps       = s->ewma_t0.pps.mean;
+            double em_bps       = s->ewma_t0.bps.mean;
+            double em_fps       = s->ewma_t0.fps.mean;
+            double em_burst_pps = s->ewma_t0.burst_pps.mean;
+            double em_burst_bps = s->ewma_t0.burst_bps.mean;
+            double em_burst_fps = s->ewma_t0.burst_fps.mean;
 
-        /* Tier 1.2 */
-        double em_udp_bps_r  = s->ewma_t1_udp.udp_bps_ratio.mean;
-        double em_udp_pps_r  = s->ewma_t1_udp.udp_pps_ratio.mean;
-        double em_udp_flow_r = s->ewma_t1_udp.udp_flow_ratio.mean;
+            /* Tier 1.1 */
+            double em_syn       = s->ewma_t1_tcp.syn_ratio.mean;
+            double em_synack    = s->ewma_t1_tcp.synack_ratio.mean;
+            double em_finack    = s->ewma_t1_tcp.finack_ratio.mean;
+            double em_rst       = s->ewma_t1_tcp.rst_ratio.mean;
+            double em_ack_data  = s->ewma_t1_tcp.ack_data_ratio.mean;
+            double em_tcp_pps_r = s->ewma_t1_tcp.tcp_pps_ratio.mean;
+            double em_tcp_bps_r = s->ewma_t1_tcp.tcp_bps_ratio.mean;
 
-        /* Tier 1.3 */
-        double em_icmp_echo  = s->ewma_t1_icmp.icmp_echo_ratio.mean;
-        double em_icmp_pps_r = s->ewma_t1_icmp.icmp_pps_ratio.mean;
+            /* Tier 1.2 */
+            double em_udp_bps_r  = s->ewma_t1_udp.udp_bps_ratio.mean;
+            double em_udp_pps_r  = s->ewma_t1_udp.udp_pps_ratio.mean;
+            double em_udp_flow_r = s->ewma_t1_udp.udp_flow_ratio.mean;
 
-        /* Tier 1.4 */
-        double em_src_ip_r  = s->ewma_t1_dist.src_ip_ratio.mean;
-        double em_dst_port_r = s->ewma_t1_dist.dst_port_ratio.mean;
+            /* Tier 1.3 */
+            double em_icmp_echo  = s->ewma_t1_icmp.icmp_echo_ratio.mean;
+            double em_icmp_pps_r = s->ewma_t1_icmp.icmp_pps_ratio.mean;
 
-        /* ----------------------------------------------------------------
-         * STEP 5: Format and emit CSV.
-         * -------------------------------------------------------------- */
-        struct in_addr addr;
-        addr.s_addr = htonl(s->dst_ip);
-        char dst_ip_str[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &addr, dst_ip_str, sizeof(dst_ip_str));
+            /* Tier 1.4 */
+            double em_src_ip_r  = s->ewma_t1_dist.src_ip_ratio.mean;
+            double em_dst_port_r = s->ewma_t1_dist.dst_port_ratio.mean;
 
-        uint32_t warmup_rem = 0;
-        if (s->detection && s->detection->state == DETECTION_STATE_WARMUP) {
-            uint32_t wc = s->detection->warmup_counter;
-            warmup_rem  = (wc < DETECTION_WARMUP_WINDOWS)
-                            ? (DETECTION_WARMUP_WINDOWS - wc) : 0;
-        }
-
-        len = snprintf(buffer, sizeof(buffer),
-            /* Header */
-            "%lld,%u,%s,"
-            /* Tier 0 raw (6) */
-            "%.2f,%.2f,%.2f,%.4f,%.4f,%.4f,"
-            /* Tier 1.1 raw (7) */
-            "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
-            /* Tier 1.2 raw (3) */
-            "%.4f,%.4f,%.4f,"
-            /* Tier 1.3 raw (2) */
-            "%.4f,%.4f,"
-            /* Tier 1.4 raw (2) */
-            "%.4f,%.4f,"
-            /* Tier 0 EWMA means (6) */
-            "%.2f,%.2f,%.2f,%.4f,%.4f,%.4f,"
-            /* Tier 1.1 EWMA means (7) */
-            "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
-            /* Tier 1.2 EWMA means (3) */
-            "%.4f,%.4f,%.4f,"
-            /* Tier 1.3 EWMA means (2) */
-            "%.4f,%.4f,"
-            /* Tier 1.4 EWMA means (2) */
-            "%.4f,%.4f,"
-            /* Detection (9) */
-            "%s,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%u\n",
-
-            /* Header values */
-            timestamp_ms, (unsigned)MONITORED_PORT, dst_ip_str,
-
-            /* Tier 0 raw */
-            t0.pps, t0.bps, t0.fps,
-            t0.burst_pps, t0.burst_bps, t0.burst_fps,
-
-            /* Tier 1.1 raw */
-            t1_tcp.syn_ratio, t1_tcp.synack_ratio,
-            t1_tcp.finack_ratio, t1_tcp.rst_ratio,
-            t1_tcp.ack_data_ratio,
-            t1_tcp.tcp_pps_ratio, t1_tcp.tcp_bps_ratio,
-
-            /* Tier 1.2 raw */
-            t1_udp.udp_bps_ratio, t1_udp.udp_pps_ratio, t1_udp.udp_flow_ratio,
-
-            /* Tier 1.3 raw */
-            t1_icmp.icmp_echo_ratio, t1_icmp.icmp_pps_ratio,
-
-            /* Tier 1.4 raw */
-            t1_dist.src_ip_ratio, t1_dist.dst_port_ratio,
-
-            /* Tier 0 EWMA means */
-            em_pps, em_bps, em_fps,
-            em_burst_pps, em_burst_bps, em_burst_fps,
-
-            /* Tier 1.1 EWMA means */
-            em_syn, em_synack, em_finack, em_rst, em_ack_data,
-            em_tcp_pps_r, em_tcp_bps_r,
-
-            /* Tier 1.2 EWMA means */
-            em_udp_bps_r, em_udp_pps_r, em_udp_flow_r,
-
-            /* Tier 1.3 EWMA means */
-            em_icmp_echo, em_icmp_pps_r,
-
-            /* Tier 1.4 EWMA means */
-            em_src_ip_r, em_dst_port_r,
-
-            /* Detection fields */
-            detection_state_str(det.state),
-            det.tier0_score,
-            det.tier1_tcp_score,  det.tier1_udp_score,
-            det.tier1_icmp_score, det.tier1_dist_score,
-            det.tier1_final_score,
-            (int)det.tier1_evaluated,
-            warmup_rem);
-
-        if (sock_fd >= 0) {
-            if (send(sock_fd, buffer, len, MSG_NOSIGNAL) < 0) {
-                perror("[Collector] send()");
-                close(sock_fd);
-                sock_fd = -1;
+            /* ----------------------------------------------------------------
+             * STEP 5: Format and emit CSV.
+             * -------------------------------------------------------------- */
+            uint32_t warmup_rem = 0;
+            uint64_t unique_src_ips = hll_count(&s->unique_src_ips);
+            uint64_t unique_dst_ports = hll_count(&s->unique_dst_ports);
+            if (s->detection && s->detection->state == DETECTION_STATE_WARMUP) {
+                uint32_t wc = s->detection->warmup_counter;
+                warmup_rem  = (wc < DETECTION_WARMUP_WINDOWS)
+                                ? (DETECTION_WARMUP_WINDOWS - wc) : 0;
             }
+
+            len = snprintf(buffer, sizeof(buffer),
+                /* Header */
+                "%lld,%u,%s,"
+                /* Tier 0 raw (6) */
+                "%.2f,%.2f,%.2f,%.4f,%.4f,%.4f,"
+                /* Tier 1.1 raw (7) */
+                "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
+                /* Tier 1.2 raw (3) */
+                "%.4f,%.4f,%.4f,"
+                /* Tier 1.3 raw (2) */
+                "%.4f,%.4f,"
+                /* Tier 1.4 raw (2) */
+                "%.4f,%.4f,"
+                /* Tier 0 EWMA means (6) */
+                "%.2f,%.2f,%.2f,%.4f,%.4f,%.4f,"
+                /* Tier 1.1 EWMA means (7) */
+                "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
+                /* Tier 1.2 EWMA means (3) */
+                "%.4f,%.4f,%.4f,"
+                /* Tier 1.3 EWMA means (2) */
+                "%.4f,%.4f,"
+                /* Tier 1.4 EWMA means (2) */
+                "%.4f,%.4f,"
+                /* Detection (15) */
+                "%s,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%u,"
+                /* HLL observability (2) */
+                "%llu,%llu\n",
+
+                /* Header values */
+                timestamp_ms, (unsigned)port, dst_ip_str,
+                /* Tier 0 raw */
+                t0.pps, t0.bps, t0.fps,
+                t0.burst_pps, t0.burst_bps, t0.burst_fps,
+
+                /* Tier 1.1 raw */
+                t1_tcp.syn_ratio, t1_tcp.synack_ratio,
+                t1_tcp.finack_ratio, t1_tcp.rst_ratio,
+                t1_tcp.ack_data_ratio,
+                t1_tcp.tcp_pps_ratio, t1_tcp.tcp_bps_ratio,
+
+                /* Tier 1.2 raw */
+                t1_udp.udp_bps_ratio, t1_udp.udp_pps_ratio, t1_udp.udp_flow_ratio,
+
+                /* Tier 1.3 raw */
+                t1_icmp.icmp_echo_ratio, t1_icmp.icmp_pps_ratio,
+
+                /* Tier 1.4 raw */
+                t1_dist.src_ip_ratio, t1_dist.dst_port_ratio,
+
+                /* Tier 0 EWMA means */
+                em_pps, em_bps, em_fps,
+                em_burst_pps, em_burst_bps, em_burst_fps,
+
+                /* Tier 1.1 EWMA means */
+                em_syn, em_synack, em_finack, em_rst, em_ack_data,
+                em_tcp_pps_r, em_tcp_bps_r,
+
+                /* Tier 1.2 EWMA means */
+                em_udp_bps_r, em_udp_pps_r, em_udp_flow_r,
+
+                /* Tier 1.3 EWMA means */
+                em_icmp_echo, em_icmp_pps_r,
+
+                /* Tier 1.4 EWMA means */
+                em_src_ip_r, em_dst_port_r,
+
+                /* Detection fields */
+                detection_state_str(det.state),
+                det.tier0_global_risk,
+                det.tier0_risk_pps, det.tier0_risk_bps, det.tier0_risk_fps,
+                det.tier0_risk_burst_pps, det.tier0_risk_burst_bps, det.tier0_risk_burst_fps,
+                det.tier1_tcp_score,  det.tier1_udp_score,
+                det.tier1_icmp_score, det.tier1_dist_score,
+                det.tier1_final_score,
+                (int)det.tier1_evaluated,
+                warmup_rem,
+
+                /* HLL observability */
+                (unsigned long long)unique_src_ips,
+                (unsigned long long)unique_dst_ports);
+
+            if (sock_fd >= 0) {
+                if (send(sock_fd, buffer, len, MSG_NOSIGNAL) < 0) {
+                    perror("[Collector] send()");
+                    close(sock_fd);
+                    sock_fd = -1;
+                }
+            }
+
+            /* ----------------------------------------------------------------
+             * STEP 6: Reset per-window counters and HLL sketches.
+             *         EWMA states and burst window buffers are NOT reset.
+             * -------------------------------------------------------------- */
+            s->total_pkts     = 0;
+            s->total_bytes    = 0;
+            s->tcp_pkts       = 0;
+            s->tcp_bytes      = 0;
+            s->udp_pkts       = 0;
+            s->udp_bytes      = 0;
+            s->icmp_pkts      = 0;
+            s->icmp_echo_pkts = 0;
+            s->syn_pkts       = 0;
+            s->syn_ack_pkts   = 0;
+            s->fin_ack_pkts   = 0;
+            s->rst_pkts       = 0;
+            s->ack_data_pkts  = 0;
+
+            hll_init(&s->unique_src_ips,  0x11111111 + s->dst_ip);
+            hll_init(&s->unique_dst_ports,0x22222222 + s->dst_ip);
+            hll_init(&s->udp_flows,       0x33333333 + s->dst_ip);
+            hll_init(&s->unique_flows,    0x44444444 + s->dst_ip);
         }
-
-        /* ----------------------------------------------------------------
-         * STEP 6: Reset per-window counters and HLL sketches.
-         *         EWMA states and burst window buffers are NOT reset.
-         * -------------------------------------------------------------- */
-        s->total_pkts     = 0;
-        s->total_bytes    = 0;
-        s->tcp_pkts       = 0;
-        s->tcp_bytes      = 0;
-        s->udp_pkts       = 0;
-        s->udp_bytes      = 0;
-        s->icmp_pkts      = 0;
-        s->icmp_echo_pkts = 0;
-        s->syn_pkts       = 0;
-        s->syn_ack_pkts   = 0;
-        s->fin_ack_pkts   = 0;
-        s->rst_pkts       = 0;
-        s->ack_data_pkts  = 0;
-
-        hll_init(&s->unique_src_ips,  0x11111111 + s->dst_ip);
-        hll_init(&s->unique_dst_ports,0x22222222 + s->dst_ip);
-        hll_init(&s->udp_flows,       0x33333333 + s->dst_ip);
-        hll_init(&s->unique_flows,    0x44444444 + s->dst_ip);
     }
 }

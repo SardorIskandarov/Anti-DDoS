@@ -8,7 +8,7 @@ import shared_state
 
 
 # ============================================================================
-# CSV SCHEMA  (52 columns total)
+# CSV SCHEMA  (60 columns total, 58/52-column legacy formats still accepted)
 # ============================================================================
 #
 #  Header (3):
@@ -76,18 +76,30 @@ import shared_state
 #   41  em_src_ip_ratio
 #   42  em_dst_port_ratio
 #
-#  Detection fields (9):
+#  Detection fields (15):
 #   43  detection_state         (string: WARMUP|NORMAL|SUSPICIOUS|ATTACK|RECOVERING)
-#   44  tier0_score             (float [0,1])
-#   45  tier1_tcp_score         (float [0,1])
-#   46  tier1_udp_score         (float [0,1])
-#   47  tier1_icmp_score        (float [0,1])
-#   48  tier1_dist_score        (float [0,1])
-#   49  tier1_final_score       (float [0,1], worst-case across sub-tiers)
-#   50  tier1_evaluated         (int 0|1)
-#   51  warmup_remaining        (int, windows left in warm-up phase)
+#   44  tier0_global_risk       (float, fused Tier-0 continuous risk)
+#   45  tier0_risk_pps          (float [0,1])
+#   46  tier0_risk_bps          (float [0,1])
+#   47  tier0_risk_fps          (float [0,1])
+#   48  tier0_risk_burst_pps    (float [0,1])
+#   49  tier0_risk_burst_bps    (float [0,1])
+#   50  tier0_risk_burst_fps    (float [0,1])
+#   51  tier1_tcp_score         (float [0,1])
+#   52  tier1_udp_score         (float [0,1])
+#   53  tier1_icmp_score        (float [0,1])
+#   54  tier1_dist_score        (float [0,1])
+#   55  tier1_final_score       (float [0,1], worst-case across sub-tiers)
+#   56  tier1_evaluated         (int 0|1)
+#   57  warmup_remaining        (int, windows left in warm-up phase)
+# 
+#  HLL observability fields (2):
+#   58  unique_src_ips          (int, HyperLogLog-estimated count)
+#   59  unique_dst_ports        (int, HyperLogLog-estimated count)
 
-EXPECTED_CSV_FIELDS = 52
+EXPECTED_CSV_FIELDS = 60
+PRE_HLL_CSV_FIELDS = 58
+LEGACY_CSV_FIELDS = 52
 
 
 def parse_csv_line(line):
@@ -95,10 +107,15 @@ def parse_csv_line(line):
     try:
         parts = line.strip().split(',')
 
-        if len(parts) != EXPECTED_CSV_FIELDS:
-            print(f"[Collector] Bad CSV: expected {EXPECTED_CSV_FIELDS} fields, "
-                  f"got {len(parts)}")
+        if len(parts) not in (EXPECTED_CSV_FIELDS, PRE_HLL_CSV_FIELDS, LEGACY_CSV_FIELDS):
+            print(f"[Collector] Bad CSV: expected {EXPECTED_CSV_FIELDS} "
+                  f"(or legacy {PRE_HLL_CSV_FIELDS}/{LEGACY_CSV_FIELDS}) "
+                  f"fields, got {len(parts)}")
             return None
+
+        has_tier0_breakdown = (len(parts) in (EXPECTED_CSV_FIELDS, PRE_HLL_CSV_FIELDS))
+        has_hll_observability = (len(parts) == EXPECTED_CSV_FIELDS)
+        tier1_base = 51 if has_tier0_breakdown else 45
 
         return {
             # ── header ──────────────────────────────────────────────────
@@ -168,14 +185,22 @@ def parse_csv_line(line):
 
             # ── Detection fields ─────────────────────────────────────────
             'detection_state':        parts[43],
-            'tier0_score':            float(parts[44]),
-            'tier1_tcp_score':        float(parts[45]),
-            'tier1_udp_score':        float(parts[46]),
-            'tier1_icmp_score':       float(parts[47]),
-            'tier1_dist_score':       float(parts[48]),
-            'tier1_final_score':      float(parts[49]),
-            'tier1_evaluated':        bool(int(parts[50])),
-            'warmup_remaining':       int(parts[51]),
+            'tier0_global_risk':      float(parts[44]),
+            'tier0_risk_pps':         float(parts[45]) if has_tier0_breakdown else 0.0,
+            'tier0_risk_bps':         float(parts[46]) if has_tier0_breakdown else 0.0,
+            'tier0_risk_fps':         float(parts[47]) if has_tier0_breakdown else 0.0,
+            'tier0_risk_burst_pps':   float(parts[48]) if has_tier0_breakdown else 0.0,
+            'tier0_risk_burst_bps':   float(parts[49]) if has_tier0_breakdown else 0.0,
+            'tier0_risk_burst_fps':   float(parts[50]) if has_tier0_breakdown else 0.0,
+            'tier1_tcp_score':        float(parts[tier1_base]),
+            'tier1_udp_score':        float(parts[tier1_base + 1]),
+            'tier1_icmp_score':       float(parts[tier1_base + 2]),
+            'tier1_dist_score':       float(parts[tier1_base + 3]),
+            'tier1_final_score':      float(parts[tier1_base + 4]),
+            'tier1_evaluated':        bool(int(parts[tier1_base + 5])),
+            'warmup_remaining':       int(parts[tier1_base + 6]),
+            'unique_src_ips':         int(parts[58]) if has_hll_observability else 0,
+            'unique_dst_ports':       int(parts[59]) if has_hll_observability else 0,
         }
 
     except Exception as e:
@@ -238,7 +263,7 @@ def dpdk_collector_thread():
                         if state in ('SUSPICIOUS', 'ATTACK'):
                             t1_ev = record['tier1_evaluated']
                             print(f"[ALERT] {state} | IP={record['dst_ip']} "
-                                  f"t0={record['tier0_score']:.3f}",
+                                  f"t0_risk={record['tier0_global_risk']:.3f}",
                                   end="")
                             if t1_ev:
                                 print(f" tcp={record['tier1_tcp_score']:.3f}"

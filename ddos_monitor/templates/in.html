@@ -384,7 +384,7 @@ function updateStatus(rec) {
 
     /* Score bars */
     const t1ev = rec.tier1_evaluated;
-    setScoreBar('bar-t0',   'val-t0',   rec.tier0_score        || 0, true);
+    setScoreBar('bar-t0',   'val-t0',   rec.tier0_global_risk  || 0, true);
     setScoreBar('bar-tcp',  'val-tcp',  rec.tier1_tcp_score    || 0, t1ev);
     setScoreBar('bar-udp',  'val-udp',  rec.tier1_udp_score    || 0, t1ev);
     setScoreBar('bar-icmp', 'val-icmp', rec.tier1_icmp_score   || 0, t1ev);
