@@ -40,6 +40,7 @@
 
 
 #include "l2fwd_ddos_collector.h"
+#include "l2fwd_policy.h"
 
 static volatile bool force_quit;
 
@@ -224,8 +225,16 @@ l2fwd_main_loop(void)
 						// print_stats();
 						/* reset the timer */
                         // *** NEW: Log DDoS stats and reset ***
-                        ddos_log_and_reset_stats(); 
+                        ddos_log_and_reset_stats();
                         // ***********************************
+
+                        /* L3 policy slow-path tick (main lcore only):
+                         * reload replaces the table from the Python-written
+                         * file; expire_tick then decrements TTLs and refills
+                         * token buckets as a safety net if Python stops. */
+                        l3_policy_reload();
+                        l3_policy_expire_tick();
+
 						timer_tsc = 0;
 					}
 				}
@@ -253,8 +262,33 @@ l2fwd_main_loop(void)
 
 
                 // *** NEW: Collect DDoS statistics ***
-                ddos_collect_packet_stats(m, portid); 
+                ddos_collect_packet_stats(m, portid);
                 // **********************************
+
+                /* L3 policy hot-path check.
+                 * Only applied to IPv4 unicast packets; all other frames
+                 * (ARP, IPv6, VLAN-tagged, etc.) are forwarded as-is so
+                 * that control-plane traffic is never blocked.
+                 *
+                 * Both addresses are converted to host byte order before
+                 * the lookup, matching l2fwd_policy.h's convention. */
+                if (m->data_len >= (uint16_t)(sizeof(struct rte_ether_hdr) +
+                                              sizeof(struct rte_ipv4_hdr))) {
+                    struct rte_ether_hdr *eth =
+                        rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+                    if (rte_be_to_cpu_16(eth->ether_type) ==
+                            RTE_ETHER_TYPE_IPV4) {
+                        struct rte_ipv4_hdr *ip =
+                            (struct rte_ipv4_hdr *)(eth + 1);
+                        uint32_t src_ip = rte_be_to_cpu_32(ip->src_addr);
+                        uint32_t dst_ip = rte_be_to_cpu_32(ip->dst_addr);
+                        if (!l3_policy_check(src_ip, dst_ip)) {
+                            rte_pktmbuf_free(m);
+                            continue;
+                        }
+                    }
+                }
+
 				l2fwd_simple_forward(m, portid);
 			}
 		}
@@ -645,6 +679,7 @@ main(int argc, char **argv)
 	/* Initialization of the driver. 8< */
 
     ddos_collector_init();
+    l3_policy_init();
 
 	/* reset l2fwd_dst_ports */
 	for (portid = 0; portid < RTE_MAX_ETHPORTS; portid++)

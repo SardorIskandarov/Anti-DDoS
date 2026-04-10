@@ -567,6 +567,86 @@
             margin-top: 22px;
         }
 
+        .l3-mode-chip,
+        .l3-action-chip,
+        .l3-event-chip {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 999px;
+            padding: 5px 10px;
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .l3-mode-shadow {
+            background: rgba(246, 196, 83, 0.14);
+            color: #fff7dc;
+            border: 1px solid rgba(246, 196, 83, 0.28);
+        }
+
+        .l3-mode-enforce {
+            background: rgba(239, 83, 80, 0.16);
+            color: #ffe4e3;
+            border: 1px solid rgba(239, 83, 80, 0.30);
+        }
+
+        .l3-action-allow {
+            background: rgba(51, 194, 127, 0.14);
+            color: #dffbef;
+        }
+
+        .l3-action-rate-limit-soft {
+            background: rgba(77, 163, 255, 0.14);
+            color: #d6ebff;
+        }
+
+        .l3-action-rate-limit-hard {
+            background: rgba(246, 196, 83, 0.14);
+            color: #fff7dc;
+        }
+
+        .l3-action-block {
+            background: rgba(239, 83, 80, 0.16);
+            color: #ffe4e3;
+        }
+
+        .l3-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 16px;
+            margin-bottom: 18px;
+        }
+
+        .l3-summary-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .l3-summary-card {
+            padding: 14px;
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(145, 160, 189, 0.10);
+        }
+
+        .l3-summary-label {
+            color: var(--muted);
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            margin-bottom: 6px;
+        }
+
+        .l3-summary-value {
+            font-size: 0.92rem;
+            font-weight: 600;
+            word-break: break-word;
+        }
+
         .section-header {
             margin-bottom: 14px;
         }
@@ -712,6 +792,11 @@
 
             .diagnostics-body {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+
+            .l3-grid,
+            .l3-summary-grid {
+                grid-template-columns: 1fr;
             }
         }
 
@@ -1065,6 +1150,124 @@
         </div>
     </div>
 
+    <div class="row g-4 mt-1">
+        <div class="col-12">
+            <section class="panel">
+                <div class="panel-head">
+                    <div>
+                        <div class="panel-title">Layer 3 Runtime</div>
+                        <p class="panel-subtitle">Selected target Layer 3 mode, session, top sources, active policies, and recent policy events.</p>
+                    </div>
+                    <div id="layer3ModeBadge" class="l3-mode-chip l3-mode-shadow">Shadow</div>
+                </div>
+                <div class="panel-body">
+                    <div class="l3-grid">
+                        <div>
+                            <div class="section-title">Attack Session</div>
+                            <p class="section-copy">Current Layer 3 session state for the selected target.</p>
+                            <div class="l3-summary-grid mt-3">
+                                <div class="l3-summary-card">
+                                    <div class="l3-summary-label">Active</div>
+                                    <div id="l3SessionActive" class="l3-summary-value">No</div>
+                                </div>
+                                <div class="l3-summary-card">
+                                    <div class="l3-summary-label">Detection State</div>
+                                    <div id="l3SessionState" class="l3-summary-value">No active session</div>
+                                </div>
+                                <div class="l3-summary-card">
+                                    <div class="l3-summary-label">Attack Type</div>
+                                    <div id="l3SessionType" class="l3-summary-value">Unavailable</div>
+                                </div>
+                                <div class="l3-summary-card">
+                                    <div class="l3-summary-label">Windows Seen</div>
+                                    <div id="l3SessionWindows" class="l3-summary-value text-mono">0</div>
+                                </div>
+                                <div class="l3-summary-card">
+                                    <div class="l3-summary-label">Started</div>
+                                    <div id="l3SessionStarted" class="l3-summary-value">Unavailable</div>
+                                </div>
+                                <div class="l3-summary-card">
+                                    <div class="l3-summary-label">Last Seen</div>
+                                    <div id="l3SessionLastSeen" class="l3-summary-value">Unavailable</div>
+                                </div>
+                                <div class="l3-summary-card">
+                                    <div class="l3-summary-label">Active Policies</div>
+                                    <div id="l3PolicyCount" class="l3-summary-value text-mono">0</div>
+                                </div>
+                                <div class="l3-summary-card">
+                                    <div class="l3-summary-label">Tracked Sources</div>
+                                    <div id="l3TopSourceCount" class="l3-summary-value text-mono">0</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="section-title">Recent Layer 3 Events</div>
+                            <p class="section-copy">Latest target-specific state transitions and policy activity.</p>
+                            <div class="table-wrap mt-3">
+                                <table class="table table-dark table-sm align-middle">
+                                    <thead>
+                                        <tr>
+                                            <th>Time</th>
+                                            <th>Event</th>
+                                            <th>Source</th>
+                                            <th>Action</th>
+                                            <th>Score</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="layer3EventsTableBody">
+                                        <tr><td colspan="5" class="empty-state">No Layer 3 events for this target.</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row g-4">
+                        <div class="col-12 col-xl-6">
+                            <div class="section-title">Top Suspicious Sources</div>
+                            <p class="section-copy">Highest Layer 3 suspicious scores for the selected target.</p>
+                            <div class="table-wrap mt-3">
+                                <table class="table table-dark table-sm align-middle">
+                                    <thead>
+                                        <tr>
+                                            <th>Source IP</th>
+                                            <th>Context</th>
+                                            <th>Score</th>
+                                            <th>Window</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="layer3SourcesTableBody">
+                                        <tr><td colspan="4" class="empty-state">No Layer 3 source scores for this target.</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="col-12 col-xl-6">
+                            <div class="section-title">Active Layer 3 Policies</div>
+                            <p class="section-copy">Current enforced or shadow-generated policies for the selected target.</p>
+                            <div class="table-wrap mt-3">
+                                <table class="table table-dark table-sm align-middle">
+                                    <thead>
+                                        <tr>
+                                            <th>Source IP</th>
+                                            <th>Action</th>
+                                            <th>TTL</th>
+                                            <th>Rate PPS</th>
+                                            <th>Score</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="layer3PoliciesTableBody">
+                                        <tr><td colspan="5" class="empty-state">No active Layer 3 policies for this target.</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+
     <details class="diagnostics mt-4">
         <summary>Diagnostics</summary>
         <div class="diagnostics-body">
@@ -1216,6 +1419,12 @@ function formatTimestamp(value) {
     const ts = parseTimestamp(value);
     if (!ts) return 'Unavailable';
     return ts.toLocaleTimeString();
+}
+
+function formatUnixTimestamp(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) return 'Unavailable';
+    return new Date(numeric * 1000).toLocaleTimeString();
 }
 
 function stateKey(value) {
@@ -1552,6 +1761,96 @@ function renderBranchChip(branchKey, text) {
     return `<span class="branch-chip ${meta.chipClass}">${text}</span>`;
 }
 
+function renderLayer3ModeChip(mode) {
+    const normalized = String(mode || 'shadow').toLowerCase();
+    const cls = normalized === 'enforce' ? 'l3-mode-enforce' : 'l3-mode-shadow';
+    return `<span id="layer3ModeBadge" class="l3-mode-chip ${cls}">${normalized}</span>`;
+}
+
+function renderLayer3ActionChip(action) {
+    const normalized = String(action || 'ALLOW').toUpperCase();
+    const clsMap = {
+        ALLOW: 'l3-action-allow',
+        RATE_LIMIT_SOFT: 'l3-action-rate-limit-soft',
+        RATE_LIMIT_HARD: 'l3-action-rate-limit-hard',
+        BLOCK: 'l3-action-block',
+    };
+    const cls = clsMap[normalized] || 'l3-action-allow';
+    return `<span class="l3-action-chip ${cls}">${normalized.replaceAll('_', ' ')}</span>`;
+}
+
+function renderLayer3EventRows(events) {
+    const body = document.getElementById('layer3EventsTableBody');
+    if (!Array.isArray(events) || !events.length) {
+        body.innerHTML = '<tr><td colspan="5" class="empty-state">No Layer 3 events for this target.</td></tr>';
+        return;
+    }
+
+    body.innerHTML = events.map(event => `
+        <tr>
+            <td class="text-mono">${formatUnixTimestamp(event.timestamp)}</td>
+            <td><span class="l3-event-chip branch-none">${event.event_type || 'UNKNOWN'}</span></td>
+            <td class="text-mono">${event.src_ip || '—'}</td>
+            <td>${event.action ? renderLayer3ActionChip(event.action) : '<span class="text-secondary">—</span>'}</td>
+            <td class="text-mono">${formatScore(event.score || 0, Number(event.score || 0) > 0)}</td>
+        </tr>
+    `).join('');
+}
+
+function renderLayer3SourceRows(sources) {
+    const body = document.getElementById('layer3SourcesTableBody');
+    if (!Array.isArray(sources) || !sources.length) {
+        body.innerHTML = '<tr><td colspan="4" class="empty-state">No Layer 3 source scores for this target.</td></tr>';
+        return;
+    }
+
+    body.innerHTML = sources.map(source => `
+        <tr>
+            <td class="text-mono">${source.src_ip || '—'}</td>
+            <td>${source.context || '—'}</td>
+            <td class="text-mono">${formatScore(source.score || 0, true)}</td>
+            <td class="text-mono">${source.window_ms || '—'}</td>
+        </tr>
+    `).join('');
+}
+
+function renderLayer3PolicyRows(policies) {
+    const body = document.getElementById('layer3PoliciesTableBody');
+    if (!Array.isArray(policies) || !policies.length) {
+        body.innerHTML = '<tr><td colspan="5" class="empty-state">No active Layer 3 policies for this target.</td></tr>';
+        return;
+    }
+
+    body.innerHTML = policies.map(policy => `
+        <tr>
+            <td class="text-mono">${policy.src_ip || '—'}</td>
+            <td>${renderLayer3ActionChip(policy.action)}</td>
+            <td class="text-mono">${policy.ttl_sec ?? '—'}</td>
+            <td class="text-mono">${policy.rate_pps ?? '—'}</td>
+            <td class="text-mono">${formatScore(policy.score || 0, true)}</td>
+        </tr>
+    `).join('');
+}
+
+function updateLayer3Panel(modePayload, statusPayload, topSources, policies, events) {
+    const mode = modePayload?.mode || statusPayload?.mode || 'shadow';
+    const session = statusPayload?.session || null;
+
+    document.getElementById('layer3ModeBadge').outerHTML = renderLayer3ModeChip(mode);
+    document.getElementById('l3SessionActive').textContent = statusPayload?.active ? 'Yes' : 'No';
+    document.getElementById('l3SessionState').textContent = session?.det_state || 'No active session';
+    document.getElementById('l3SessionType').textContent = session?.attack_type || 'Unavailable';
+    document.getElementById('l3SessionWindows').textContent = String(session?.window_count || 0);
+    document.getElementById('l3SessionStarted').textContent = formatUnixTimestamp(session?.started_at);
+    document.getElementById('l3SessionLastSeen').textContent = formatUnixTimestamp(session?.last_seen_at);
+    document.getElementById('l3PolicyCount').textContent = String(statusPayload?.policy_count || (Array.isArray(policies) ? policies.length : 0));
+    document.getElementById('l3TopSourceCount').textContent = String(statusPayload?.top_source_count || (Array.isArray(topSources) ? topSources.length : 0));
+
+    renderLayer3EventRows(events);
+    renderLayer3SourceRows(topSources);
+    renderLayer3PolicyRows(policies);
+}
+
 function updateTargetSummary(summaries) {
     const list = document.getElementById('targetSituationalList');
     document.getElementById('diagTargetCount').textContent = String(Array.isArray(summaries) ? summaries.length : 0);
@@ -1677,17 +1976,53 @@ async function refresh() {
     document.getElementById('diagPollStatus').textContent = `Polling ${currentTarget}`;
 
     try {
-        const [historyResponse, eventsResponse, summaryResponse] = await Promise.all([
+        const [
+            historyResponse,
+            eventsResponse,
+            summaryResponse,
+            layer3StatusResponse,
+            layer3PoliciesResponse,
+            layer3SourcesResponse,
+            layer3EventsResponse,
+            layer3ModeResponse,
+        ] = await Promise.all([
             fetch(`${API_BASE}/stats/${currentTarget}`),
             fetch(`${API_BASE}/events/${currentTarget}`),
             fetch(`${API_BASE}/targets/summary`),
+            fetch(`${API_BASE}/layer3/status/${currentTarget}`),
+            fetch(`${API_BASE}/layer3/policies/${currentTarget}`),
+            fetch(`${API_BASE}/layer3/top_sources/${currentTarget}`),
+            fetch(`${API_BASE}/layer3/events/${currentTarget}`),
+            fetch(`${API_BASE}/layer3/mode`),
         ]);
 
-        const [history, events, summaries] = await Promise.all([
+        const [
+            history,
+            events,
+            summaries,
+            layer3Status,
+            layer3Policies,
+            layer3Sources,
+            layer3Events,
+            layer3Mode,
+        ] = await Promise.all([
             historyResponse.json(),
             eventsResponse.json(),
             summaryResponse.json(),
+            layer3StatusResponse.json(),
+            layer3PoliciesResponse.json(),
+            layer3SourcesResponse.json(),
+            layer3EventsResponse.json(),
+            layer3ModeResponse.json(),
         ]);
+
+        updateLayer3Panel(
+            layer3Mode,
+            layer3Status,
+            Array.isArray(layer3Sources) ? layer3Sources : [],
+            Array.isArray(layer3Policies) ? layer3Policies : [],
+            Array.isArray(layer3Events) ? layer3Events : [],
+        );
 
         if (!Array.isArray(history) || !history.length) {
             document.getElementById('diagPollStatus').textContent = `No RAM history for ${currentTarget}`;

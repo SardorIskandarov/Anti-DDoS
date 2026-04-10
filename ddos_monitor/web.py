@@ -1,4 +1,5 @@
-from flask import Flask, render_template, jsonify
+from dataclasses import asdict, is_dataclass
+from flask import Flask, render_template, jsonify, request
 import shared_state
 import config
 from datetime import datetime, timedelta
@@ -10,6 +11,24 @@ def _serialize_timestamp(value):
     if isinstance(value, datetime):
         return value.isoformat()
     return str(value)
+
+
+def _serialize_json_value(value):
+    if is_dataclass(value):
+        return _serialize_json_value(asdict(value))
+    if isinstance(value, dict):
+        return {key: _serialize_json_value(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_serialize_json_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_serialize_json_value(item) for item in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
+def _layer3_mode():
+    return 'enforce' if config.L3_ENFORCE_MODE else 'shadow'
 
 
 def _state_rank(state):
@@ -228,6 +247,76 @@ def get_stats():
             'unique_dst_ports': unique_dst_ports,
             'record_count': len(data)
         })
+
+
+@app.route('/api/layer3/status/<target_ip>')
+def get_layer3_status(target_ip):
+    """Returns current Layer 3 status for a specific victim IP."""
+    session = shared_state.l3.get_attack_session(target_ip)
+    policies = shared_state.l3.get_policies_for_victim(target_ip)
+    top_sources = shared_state.l3.get_top_sources(target_ip)
+    events = shared_state.l3.get_events_for_victim(target_ip, n=25)
+
+    return jsonify({
+        'target_ip': target_ip,
+        'mode': _layer3_mode(),
+        'active': session is not None,
+        'session': _serialize_json_value(session) if session is not None else None,
+        'policy_count': len(policies),
+        'top_source_count': len(top_sources),
+        'recent_event_count': len(events),
+    })
+
+
+@app.route('/api/layer3/policies/<target_ip>')
+def get_layer3_policies(target_ip):
+    """Returns active Layer 3 policies for a specific victim IP."""
+    policies = shared_state.l3.get_policies_for_victim(target_ip)
+    return jsonify(_serialize_json_value(policies))
+
+
+@app.route('/api/layer3/top_sources/<target_ip>')
+def get_layer3_top_sources(target_ip):
+    """Returns top scored Layer 3 sources for a specific victim IP."""
+    top_sources = shared_state.l3.get_top_sources(target_ip)
+    return jsonify(_serialize_json_value(top_sources))
+
+
+@app.route('/api/layer3/events/<target_ip>')
+def get_layer3_events(target_ip):
+    """Returns recent Layer 3 events for a specific victim IP."""
+    events = shared_state.l3.get_events_for_victim(target_ip, n=50)
+    return jsonify(_serialize_json_value(events))
+
+
+@app.route('/api/layer3/mode', methods=['GET', 'POST'])
+def get_layer3_mode():
+    """Returns or updates the current Layer 3 shadow/enforce mode."""
+    if request.method == 'POST':
+        payload = request.get_json(silent=True) or {}
+        requested_mode = str(payload.get('mode', '')).strip().lower()
+
+        if requested_mode not in ('shadow', 'enforce'):
+            return jsonify({
+                'error': 'mode must be "shadow" or "enforce"',
+                'mode': _layer3_mode(),
+            }), 400
+
+        config.L3_ENFORCE_MODE = (requested_mode == 'enforce')
+
+        # Re-export immediately so the policy file reflects the selected mode.
+        import layer3_v1
+        layer3_v1.export_policies()
+
+        return jsonify({
+            'mode': _layer3_mode(),
+            'enforce': config.L3_ENFORCE_MODE,
+        })
+
+    return jsonify({
+        'mode': _layer3_mode(),
+        'enforce': config.L3_ENFORCE_MODE,
+    })
 
 
 def start_server():

@@ -1,5 +1,6 @@
 #include "l2fwd_ddos_collector.h"
 #include "l2fwd_detection_engine.h"
+#include "l2fwd_l3_bridge.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -324,6 +325,11 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
     uint8_t  protocol = ipv4_hdr->next_proto_id;
     uint16_t ip_hl    = ipv4_hdr->ihl * 4;
 
+    /* Layer 3 bridge: packet-type flags and ports, filled in per-protocol below */
+    uint32_t bridge_pkt_flags = 0;
+    uint16_t bridge_src_port  = 0;
+    uint16_t bridge_dst_port  = 0;
+
     struct dst_ip_stats *s = dst_ip_table_get_or_create(
         &port_stats[portid].dst_table, dst_ip, timestamp, portid);
     if (!s) return;
@@ -366,6 +372,14 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
         /* ACK-only data packet: ACK set, no SYN / FIN / RST */
         if (ack && !syn && !fin && !rst) s->ack_data_pkts++;
 
+        /* Layer 3 bridge: record TCP flags and ports for bridge collection */
+        bridge_src_port  = src_port;
+        bridge_dst_port  = dst_port;
+        bridge_pkt_flags = L3_BRIDGE_PKT_TCP;
+        if (syn && !ack)                 bridge_pkt_flags |= L3_BRIDGE_PKT_SYN;
+        if (rst)                         bridge_pkt_flags |= L3_BRIDGE_PKT_RST;
+        if (ack && !syn && !fin && !rst) bridge_pkt_flags |= L3_BRIDGE_PKT_ACK_ONLY;
+
         break;
     }
 
@@ -388,6 +402,10 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
             flow_key = { src_ip, src_port, dst_port, IPPROTO_UDP };
         hll_add(&s->unique_flows, &flow_key, sizeof(flow_key));
 
+        /* Layer 3 bridge: record ports for bridge collection (no flags for UDP) */
+        bridge_src_port = src_port;
+        bridge_dst_port = dst_port;
+
         break;
     }
 
@@ -408,6 +426,15 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
     default:
         break;
     }
+
+    /* Layer 3 bridge: collect per-source stats only when victim is under attack.
+     * l3_bridge_collect_src_packet() checks under_attack internally, but the
+     * outer is_under_attack() guard avoids flag-computation overhead on the
+     * common (non-attacked) case. */
+    if (l3_bridge_is_under_attack(dst_ip))
+        l3_bridge_collect_src_packet(dst_ip, src_ip,
+                                     bridge_dst_port, bridge_src_port,
+                                     m->pkt_len, bridge_pkt_flags);
 }
 
 // ============================================================================
@@ -691,6 +718,22 @@ void ddos_log_and_reset_stats(void) {
                 det = detection_engine_process(s->detection, s, now, s->dst_ip);
             }
 
+            /* --- Layer 3 bridge: inform bridge of this victim's attack state.
+             *     Must run after detection (det.state known) and before STEP 6
+             *     reset (s->total_pkts / total_bytes still reflect this window). */
+            {
+                bool under_attack = (det.state == DETECTION_STATE_SUSPICIOUS ||
+                                     det.state == DETECTION_STATE_ATTACK);
+                l3_bridge_set_attack_state(
+                    s->dst_ip,
+                    under_attack,
+                    detection_state_str(det.state),
+                    attack_type_str(det.attack_type),
+                    (uint64_t)timestamp_ms,
+                    s->total_pkts,
+                    s->total_bytes);
+            }
+
             /* ----------------------------------------------------------------
              * STEP 4: Snapshot EWMA means for CSV output.
              * -------------------------------------------------------------- */
@@ -849,4 +892,10 @@ void ddos_log_and_reset_stats(void) {
             hll_init(&s->unique_flows,    0x44444444 + s->dst_ip);
         }
     }
+
+    /* --- Layer 3 bridge: export this window's collected data to Python.
+     *     Called once after all victims have been processed so Python sees
+     *     a complete set of src_snapshots followed by window_end for each
+     *     victim before it starts scoring. */
+    l3_bridge_export_and_reset();
 }

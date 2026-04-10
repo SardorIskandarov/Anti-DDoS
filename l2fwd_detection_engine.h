@@ -10,7 +10,7 @@
  * DEBUG ONLY: Show lightweight Tier-0 risk output
  * ONLY for this exact IP. Change the value when you switch test IPs.
  */
-#define DEBUG_IP RTE_IPV4(10, 0, 0, 190)
+#define DEBUG_IP RTE_IPV4(10, 10, 10, 1)
 
 /* ================================================================ */
 

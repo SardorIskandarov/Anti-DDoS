@@ -61,7 +61,7 @@ void extract_tier1_tcp_features(const struct dst_ip_stats *stats,
 
     out->syn_ratio      = (double)stats->syn_pkts      / tcp_safe;
     out->synack_ratio   = (double)stats->syn_ack_pkts  / tcp_safe;
-    out->finack_ratio   = (double)stats->fin_ack_pkts  / tcp_safe;
+    out->finack_ratio   = (double)stats->fin_ack_pkts  / tcp_safe;  
     out->rst_ratio      = (double)stats->rst_pkts      / tcp_safe;
     out->ack_data_ratio = (double)stats->ack_data_pkts / tcp_safe;
     out->tcp_pps_ratio  = (double)stats->tcp_pkts      / tot_safe;
