@@ -2,9 +2,28 @@ import socket
 import os
 import time
 from datetime import datetime
+from ipaddress import ip_address, ip_network
 import config
 import database
 import shared_state
+
+
+# ---------------------------------------------------------------------------
+# Build a frozenset of target networks once at import time so the per-record
+# lookup is a simple "any(addr in net …)" check.
+# ---------------------------------------------------------------------------
+_TARGET_NETS = frozenset(
+    ip_network(prefix, strict=False) for prefix in config.TARGET_PREFIXES
+)
+
+
+def _is_target_ip(ip_str):
+    """Return True if *ip_str* falls within any configured target prefix."""
+    try:
+        addr = ip_address(ip_str)
+        return any(addr in net for net in _TARGET_NETS)
+    except ValueError:
+        return False
 
 
 # ============================================================================
@@ -97,112 +116,137 @@ import shared_state
 #   58  unique_src_ips          (int, HyperLogLog-estimated count)
 #   59  unique_dst_ports        (int, HyperLogLog-estimated count)
 
-EXPECTED_CSV_FIELDS = 60
-PRE_HLL_CSV_FIELDS = 58
-LEGACY_CSV_FIELDS = 52
+# ----------------------------------------------------------------------------
+# Field schema — (name, type) pairs listed in the EXACT order emitted by the
+# C snprintf() in ddos_log_and_reset_stats(). Editing either side requires
+# editing the other; the column count is enforced below.
+# ----------------------------------------------------------------------------
+CSV_FIELDS = [
+    # ── Header (3) ─────────────────────────────────────────────────────
+    ('timestamp_ms',           'ts_ms'),
+    ('port',                   'int'),
+    ('dst_ip',                 'str'),
+
+    # ── Tier 0 raw (6) ─────────────────────────────────────────────────
+    ('pps',                    'float'),
+    ('bps',                    'float'),
+    ('fps',                    'float'),
+    ('burst_pps',              'float'),
+    ('burst_bps',              'float'),
+    ('burst_fps',              'float'),
+
+    # ── Tier 1.1 TCP raw (7) ───────────────────────────────────────────
+    ('tcp_syn_ratio',          'float'),
+    ('tcp_synack_ratio',       'float'),
+    ('tcp_finack_ratio',       'float'),
+    ('tcp_rst_ratio',          'float'),
+    ('tcp_ack_data_ratio',     'float'),
+    ('tcp_pps_ratio',          'float'),
+    ('tcp_bps_ratio',          'float'),
+
+    # ── Tier 1.2 UDP raw (3) ───────────────────────────────────────────
+    ('udp_bps_ratio',          'float'),
+    ('udp_pps_ratio',          'float'),
+    ('udp_flow_ratio',         'float'),
+
+    # ── Tier 1.3 ICMP raw (2) ──────────────────────────────────────────
+    ('icmp_echo_ratio',        'float'),
+    ('icmp_pps_ratio',         'float'),
+
+    # ── Tier 1.4 Distribution raw (2) ──────────────────────────────────
+    ('src_ip_ratio',           'float'),
+    ('dst_port_ratio',         'float'),
+
+    # ── Tier 0 EWMA means (6) ──────────────────────────────────────────
+    ('em_pps',                 'float'),
+    ('em_bps',                 'float'),
+    ('em_fps',                 'float'),
+    ('em_burst_pps',           'float'),
+    ('em_burst_bps',           'float'),
+    ('em_burst_fps',           'float'),
+
+    # ── Tier 1.1 TCP EWMA means (7) ────────────────────────────────────
+    ('em_tcp_syn_ratio',       'float'),
+    ('em_tcp_synack_ratio',    'float'),
+    ('em_tcp_finack_ratio',    'float'),
+    ('em_tcp_rst_ratio',       'float'),
+    ('em_tcp_ack_data_ratio',  'float'),
+    ('em_tcp_pps_ratio',       'float'),
+    ('em_tcp_bps_ratio',       'float'),
+
+    # ── Tier 1.2 UDP EWMA means (3) ────────────────────────────────────
+    ('em_udp_bps_ratio',       'float'),
+    ('em_udp_pps_ratio',       'float'),
+    ('em_udp_flow_ratio',      'float'),
+
+    # ── Tier 1.3 ICMP EWMA means (2) ───────────────────────────────────
+    ('em_icmp_echo_ratio',     'float'),
+    ('em_icmp_pps_ratio',      'float'),
+
+    # ── Tier 1.4 Distribution EWMA means (2) ───────────────────────────
+    ('em_src_ip_ratio',        'float'),
+    ('em_dst_port_ratio',      'float'),
+
+    # ── Detection fields (15) ──────────────────────────────────────────
+    ('detection_state',        'str'),
+    ('tier0_global_risk',      'float'),
+    ('tier0_risk_pps',         'float'),
+    ('tier0_risk_bps',         'float'),
+    ('tier0_risk_fps',         'float'),
+    ('tier0_risk_burst_pps',   'float'),
+    ('tier0_risk_burst_bps',   'float'),
+    ('tier0_risk_burst_fps',   'float'),
+    ('tier1_tcp_score',        'float'),
+    ('tier1_udp_score',        'float'),
+    ('tier1_icmp_score',       'float'),
+    ('tier1_dist_score',       'float'),
+    ('tier1_final_score',      'float'),
+    ('tier1_evaluated',        'bool'),
+    ('warmup_remaining',       'int'),
+
+    # ── HLL observability fields (2) ───────────────────────────────────
+    ('unique_src_ips',         'int'),
+    ('unique_dst_ports',       'int'),
+]
+
+EXPECTED_CSV_FIELDS = len(CSV_FIELDS)  # 60
+assert EXPECTED_CSV_FIELDS == 60, f"CSV schema drift: {EXPECTED_CSV_FIELDS} fields"
+
+
+def _coerce(raw, kind):
+    if kind == 'ts_ms':
+        return datetime.fromtimestamp(int(raw) / 1000.0)
+    if kind == 'int':
+        return int(raw)
+    if kind == 'float':
+        return float(raw)
+    if kind == 'bool':
+        return bool(int(raw))
+    return raw  # 'str'
 
 
 def parse_csv_line(line):
-    """Parse one CSV line emitted by ddos_log_and_reset_stats()."""
+    """Parse one CSV line emitted by ddos_log_and_reset_stats().
+
+    The mapping of CSV columns to dict keys is driven by CSV_FIELDS so that
+    the parser stays in lock-step with the C snprintf format. Any drift in
+    column count is rejected up-front to prevent silent index shifting.
+    """
+    parts = line.strip().split(',')
+
+    if len(parts) != EXPECTED_CSV_FIELDS:
+        print(f"[Collector] Bad CSV: expected {EXPECTED_CSV_FIELDS} "
+              f"fields, got {len(parts)}")
+        return None
+
     try:
-        parts = line.strip().split(',')
-
-        if len(parts) not in (EXPECTED_CSV_FIELDS, PRE_HLL_CSV_FIELDS, LEGACY_CSV_FIELDS):
-            print(f"[Collector] Bad CSV: expected {EXPECTED_CSV_FIELDS} "
-                  f"(or legacy {PRE_HLL_CSV_FIELDS}/{LEGACY_CSV_FIELDS}) "
-                  f"fields, got {len(parts)}")
-            return None
-
-        has_tier0_breakdown = (len(parts) in (EXPECTED_CSV_FIELDS, PRE_HLL_CSV_FIELDS))
-        has_hll_observability = (len(parts) == EXPECTED_CSV_FIELDS)
-        tier1_base = 51 if has_tier0_breakdown else 45
-
-        return {
-            # ── header ──────────────────────────────────────────────────
-            'timestamp':              datetime.fromtimestamp(int(parts[0]) / 1000.0),
-            'port':                   int(parts[1]),
-            'dst_ip':                 parts[2],
-
-            # ── Tier 0 raw ───────────────────────────────────────────────
-            'pps':                    float(parts[3]),
-            'bps':                    float(parts[4]),
-            'fps':                    float(parts[5]),
-            'burst_pps':              float(parts[6]),
-            'burst_bps':              float(parts[7]),
-            'burst_fps':              float(parts[8]),
-
-            # ── Tier 1.1 TCP raw ─────────────────────────────────────────
-            'tcp_syn_ratio':          float(parts[9]),
-            'tcp_synack_ratio':       float(parts[10]),
-            'tcp_finack_ratio':       float(parts[11]),
-            'tcp_rst_ratio':          float(parts[12]),
-            'tcp_ack_data_ratio':     float(parts[13]),
-            'tcp_pps_ratio':          float(parts[14]),
-            'tcp_bps_ratio':          float(parts[15]),
-
-            # ── Tier 1.2 UDP raw ─────────────────────────────────────────
-            'udp_bps_ratio':          float(parts[16]),
-            'udp_pps_ratio':          float(parts[17]),
-            'udp_flow_ratio':         float(parts[18]),
-
-            # ── Tier 1.3 ICMP raw ────────────────────────────────────────
-            'icmp_echo_ratio':        float(parts[19]),
-            'icmp_pps_ratio':         float(parts[20]),
-
-            # ── Tier 1.4 Distribution raw ────────────────────────────────
-            'src_ip_ratio':           float(parts[21]),
-            'dst_port_ratio':         float(parts[22]),
-
-            # ── Tier 0 EWMA means ────────────────────────────────────────
-            'em_pps':                 float(parts[23]),
-            'em_bps':                 float(parts[24]),
-            'em_fps':                 float(parts[25]),
-            'em_burst_pps':           float(parts[26]),
-            'em_burst_bps':           float(parts[27]),
-            'em_burst_fps':           float(parts[28]),
-
-            # ── Tier 1.1 TCP EWMA means ──────────────────────────────────
-            'em_tcp_syn_ratio':       float(parts[29]),
-            'em_tcp_synack_ratio':    float(parts[30]),
-            'em_tcp_finack_ratio':    float(parts[31]),
-            'em_tcp_rst_ratio':       float(parts[32]),
-            'em_tcp_ack_data_ratio':  float(parts[33]),
-            'em_tcp_pps_ratio':       float(parts[34]),
-            'em_tcp_bps_ratio':       float(parts[35]),
-
-            # ── Tier 1.2 UDP EWMA means ──────────────────────────────────
-            'em_udp_bps_ratio':       float(parts[36]),
-            'em_udp_pps_ratio':       float(parts[37]),
-            'em_udp_flow_ratio':      float(parts[38]),
-
-            # ── Tier 1.3 ICMP EWMA means ─────────────────────────────────
-            'em_icmp_echo_ratio':     float(parts[39]),
-            'em_icmp_pps_ratio':      float(parts[40]),
-
-            # ── Tier 1.4 Distribution EWMA means ─────────────────────────
-            'em_src_ip_ratio':        float(parts[41]),
-            'em_dst_port_ratio':      float(parts[42]),
-
-            # ── Detection fields ─────────────────────────────────────────
-            'detection_state':        parts[43],
-            'tier0_global_risk':      float(parts[44]),
-            'tier0_risk_pps':         float(parts[45]) if has_tier0_breakdown else 0.0,
-            'tier0_risk_bps':         float(parts[46]) if has_tier0_breakdown else 0.0,
-            'tier0_risk_fps':         float(parts[47]) if has_tier0_breakdown else 0.0,
-            'tier0_risk_burst_pps':   float(parts[48]) if has_tier0_breakdown else 0.0,
-            'tier0_risk_burst_bps':   float(parts[49]) if has_tier0_breakdown else 0.0,
-            'tier0_risk_burst_fps':   float(parts[50]) if has_tier0_breakdown else 0.0,
-            'tier1_tcp_score':        float(parts[tier1_base]),
-            'tier1_udp_score':        float(parts[tier1_base + 1]),
-            'tier1_icmp_score':       float(parts[tier1_base + 2]),
-            'tier1_dist_score':       float(parts[tier1_base + 3]),
-            'tier1_final_score':      float(parts[tier1_base + 4]),
-            'tier1_evaluated':        bool(int(parts[tier1_base + 5])),
-            'warmup_remaining':       int(parts[tier1_base + 6]),
-            'unique_src_ips':         int(parts[58]) if has_hll_observability else 0,
-            'unique_dst_ports':       int(parts[59]) if has_hll_observability else 0,
-        }
-
+        record = {}
+        for (name, kind), raw in zip(CSV_FIELDS, parts):
+            if name == 'timestamp_ms':
+                record['timestamp'] = _coerce(raw, kind)
+            else:
+                record[name] = _coerce(raw, kind)
+        return record
     except Exception as e:
         print(f"[Collector] Parse error: {e}")
         return None
@@ -259,6 +303,9 @@ def dpdk_collector_thread():
                         if not record:
                             continue
 
+                        if not _is_target_ip(record['dst_ip']):
+                            continue
+
                         state = record['detection_state']
                         if state in ('SUSPICIOUS', 'ATTACK'):
                             t1_ev = record['tier1_evaluated']
@@ -284,7 +331,7 @@ def dpdk_collector_thread():
 
                         if len(db_batch) >= config.BATCH_SIZE:
                             database.batch_insert(client, db_batch)
-                            print(f"[Collector] Records so far: {records_received}")
+                            # print(f"[Collector] Records so far: {records_received}")
                             db_batch = []
 
                     except Exception as e:

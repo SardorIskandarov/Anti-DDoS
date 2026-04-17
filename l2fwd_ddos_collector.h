@@ -43,11 +43,11 @@ struct hll_counter {
  * Tier 0: alpha = 0.10 (slower, more stable baseline)
  * Tier 1: alpha = 0.20 (behavioral patterns)
  */
-#define EWMA_ALPHA_TIER0   0.008   /* even slower on volumetric */
+#define EWMA_ALPHA_TIER0   0.01   /* even slower on volumetric */
 #define EWMA_ALPHA_TIER1_1 0.04
-#define EWMA_ALPHA_TIER1_2 0.04
-#define EWMA_ALPHA_TIER1_3 0.04
-#define EWMA_ALPHA_TIER1_4 0.04
+#define EWMA_ALPHA_TIER1_2 0.05
+#define EWMA_ALPHA_TIER1_3 0.03
+#define EWMA_ALPHA_TIER1_4 0.05
 
 /** Minimum observations before EWMA mean is stable */
 #define EWMA_WARMUP_PERIODS 12

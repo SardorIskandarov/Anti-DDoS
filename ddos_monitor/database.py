@@ -8,6 +8,8 @@ def get_db_client():
     client = Client(
         host=config.CH_HOST,
         port=config.CH_PORT,
+        user=config.CH_USER,
+        password=config.CH_PASSWORD,
         settings={'use_numpy': False}
     )
     print(f"[Database] Connected to ClickHouse at {config.CH_HOST}:{config.CH_PORT}")
@@ -192,7 +194,7 @@ def batch_insert(client, batch_data):
             f"INSERT INTO {config.CH_DB}.{config.CH_TABLE} VALUES",
             batch_data
         )
-        print(f"[Database] Inserted {len(batch_data)} records")
+        # print(f"[Database] Inserted {len(batch_data)} records")
         return True
     except Exception as e:
         print(f"[Database] Insert failed: {e}")

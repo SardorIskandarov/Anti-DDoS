@@ -62,8 +62,20 @@ void hll_add(struct hll_counter *hll, const void *data, size_t len) {
     uint32_t index = hash >> (32 - HLL_PRECISION);
     uint32_t w     = hash << HLL_PRECISION;
     uint8_t  lz    = clz32(w) + 1;
-    if (lz > hll->registers[index])
-        hll->registers[index] = lz;
+
+    /* Lock-free monotone-max update on the register byte.
+     * Packet-processing lcores may call hll_add concurrently on the same
+     * dst_ip entry; a CAS loop keeps the "max leading-zeros" invariant
+     * without spinlocks. RELAXED ordering is sufficient — HLL registers
+     * have no ordering dependency on other counters. */
+    uint8_t cur = __atomic_load_n(&hll->registers[index], __ATOMIC_RELAXED);
+    while (lz > cur) {
+        if (__atomic_compare_exchange_n(&hll->registers[index], &cur, lz,
+                                        false,
+                                        __ATOMIC_RELAXED,
+                                        __ATOMIC_RELAXED))
+            break;
+    }
 }
 
 uint64_t hll_count(const struct hll_counter *hll) {
@@ -334,9 +346,11 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
         &port_stats[portid].dst_table, dst_ip, timestamp, portid);
     if (!s) return;
 
-    s->total_pkts++;
-    s->total_bytes += m->pkt_len;
-    s->last_update  = timestamp;
+    /* Hot path: RELAXED atomics keep counter updates lock-free and
+     * cache-friendly when multiple lcores touch the same dst_ip entry. */
+    __atomic_fetch_add(&s->total_pkts,  1,            __ATOMIC_RELAXED);
+    __atomic_fetch_add(&s->total_bytes, m->pkt_len,   __ATOMIC_RELAXED);
+    __atomic_store_n  (&s->last_update, timestamp,    __ATOMIC_RELAXED);
 
     /* Track unique source IPs (Tier 1.4) */
     hll_add(&s->unique_src_ips, &src_ip, sizeof(src_ip));
@@ -349,8 +363,8 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
         uint16_t dst_port = rte_be_to_cpu_16(tcp_hdr->dst_port);
         uint8_t  flags    = tcp_hdr->tcp_flags;
 
-        s->tcp_pkts++;
-        s->tcp_bytes += m->pkt_len;
+        __atomic_fetch_add(&s->tcp_pkts,  1,           __ATOMIC_RELAXED);
+        __atomic_fetch_add(&s->tcp_bytes, m->pkt_len,  __ATOMIC_RELAXED);
 
         hll_add(&s->unique_dst_ports, &dst_port, sizeof(dst_port));
 
@@ -365,12 +379,13 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
         uint8_t fin = !!(flags & RTE_TCP_FIN_FLAG);
         uint8_t rst = !!(flags & RTE_TCP_RST_FLAG);
 
-        if (syn && !ack)          s->syn_pkts++;
-        if (syn &&  ack)          s->syn_ack_pkts++;
-        if (fin &&  ack)          s->fin_ack_pkts++;
-        if (rst)                  s->rst_pkts++;
+        if (syn && !ack) __atomic_fetch_add(&s->syn_pkts,      1, __ATOMIC_RELAXED);
+        if (syn &&  ack) __atomic_fetch_add(&s->syn_ack_pkts,  1, __ATOMIC_RELAXED);
+        if (fin &&  ack) __atomic_fetch_add(&s->fin_ack_pkts,  1, __ATOMIC_RELAXED);
+        if (rst)         __atomic_fetch_add(&s->rst_pkts,      1, __ATOMIC_RELAXED);
         /* ACK-only data packet: ACK set, no SYN / FIN / RST */
-        if (ack && !syn && !fin && !rst) s->ack_data_pkts++;
+        if (ack && !syn && !fin && !rst)
+            __atomic_fetch_add(&s->ack_data_pkts, 1, __ATOMIC_RELAXED);
 
         /* Layer 3 bridge: record TCP flags and ports for bridge collection */
         bridge_src_port  = src_port;
@@ -388,8 +403,8 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
         uint16_t src_port = rte_be_to_cpu_16(udp_hdr->src_port);
         uint16_t dst_port = rte_be_to_cpu_16(udp_hdr->dst_port);
 
-        s->udp_pkts++;
-        s->udp_bytes += m->pkt_len;
+        __atomic_fetch_add(&s->udp_pkts,  1,          __ATOMIC_RELAXED);
+        __atomic_fetch_add(&s->udp_bytes, m->pkt_len, __ATOMIC_RELAXED);
 
         hll_add(&s->unique_dst_ports, &dst_port, sizeof(dst_port));
 
@@ -411,9 +426,9 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
 
     case IPPROTO_ICMP: {
         icmp_hdr = (struct rte_icmp_hdr *)((char *)ipv4_hdr + ip_hl);
-        s->icmp_pkts++;
+        __atomic_fetch_add(&s->icmp_pkts, 1, __ATOMIC_RELAXED);
         if (icmp_hdr->icmp_type == RTE_IP_ICMP_ECHO_REQUEST)
-            s->icmp_echo_pkts++;
+            __atomic_fetch_add(&s->icmp_echo_pkts, 1, __ATOMIC_RELAXED);
 
         /* Five-tuple for FPS (ICMP has no ports; use type/code as proxy) */
         struct { uint32_t sip; uint8_t type; uint8_t code; uint8_t proto; }
@@ -457,9 +472,6 @@ static void log_raw_features_to_csv(long long timestamp_ms,
                                       const struct tier1_icmp_features *t1_icmp,
                                       const struct tier1_dist_features *t1_dist) {
     
-    /* ★ FILTER: Only log data for IP 93.188.85.234 ★ */
-    if (dst_ip != DEBUG_IP) return;  /* 93.188.85.234 in host byte order */
-    
     /* Open CSV file on first call */
     if (csv_file == NULL) {
         csv_file = fopen(CSV_PATH, "w");
@@ -467,7 +479,7 @@ static void log_raw_features_to_csv(long long timestamp_ms,
             perror("[Collector] Failed to open CSV file");
             return;
         }
-        printf("[Collector] CSV raw features log created at %s (filtering IP: 93.188.85.34)\n", CSV_PATH);
+        printf("[Collector] CSV raw features log created at %s\n", CSV_PATH);
     }
 
     /* Write CSV header on first write with clear, descriptive names */
@@ -543,11 +555,8 @@ static void log_raw_features_to_csv(long long timestamp_ms,
             "%.2f%%,%.2f%%,"
             
             /* Distribution */
-            "%.2f%%,%.2f%%,"
-            
-            /* Quick Analysis */
-            "%s,%s\n",
-            
+            "%.2f%%,%.2f%%\n",
+
             /* Values */
             timestamp_ms, dst_ip_str,
             
@@ -669,15 +678,6 @@ void ddos_log_and_reset_stats(void) {
             addr.s_addr = htonl(s->dst_ip);
             char dst_ip_str[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &addr, dst_ip_str, sizeof(dst_ip_str));
-
-            // you should remove it later
-            if (s->dst_ip == DEBUG_IP) {
-                printf("[DEBUG] Processing port=%u dst_ip=%s (0x%08x), pkts=%llu\n",
-                    port,
-                    dst_ip_str,
-                    s->dst_ip,
-                    (unsigned long long)s->total_pkts);
-            }
 
             uint64_t now       = rte_get_timer_cycles();
             double   time_sec  = (double)STATS_PERIOD_US / 1000000.0;
@@ -872,20 +872,29 @@ void ddos_log_and_reset_stats(void) {
              * STEP 6: Reset per-window counters and HLL sketches.
              *         EWMA states and burst window buffers are NOT reset.
              * -------------------------------------------------------------- */
-            s->total_pkts     = 0;
-            s->total_bytes    = 0;
-            s->tcp_pkts       = 0;
-            s->tcp_bytes      = 0;
-            s->udp_pkts       = 0;
-            s->udp_bytes      = 0;
-            s->icmp_pkts      = 0;
-            s->icmp_echo_pkts = 0;
-            s->syn_pkts       = 0;
-            s->syn_ack_pkts   = 0;
-            s->fin_ack_pkts   = 0;
-            s->rst_pkts       = 0;
-            s->ack_data_pkts  = 0;
+            /* RELAXED atomic stores pair with the fetch_add() increments in
+             * ddos_collect_packet_stats(). A tiny window (<1us) may lose a
+             * handful of increments concurrent with the reset — acceptable
+             * at the 1Hz window boundary and avoids per-packet locking. */
+            __atomic_store_n(&s->total_pkts,     0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->total_bytes,    0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->tcp_pkts,       0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->tcp_bytes,      0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->udp_pkts,       0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->udp_bytes,      0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->icmp_pkts,      0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->icmp_echo_pkts, 0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->syn_pkts,       0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->syn_ack_pkts,   0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->fin_ack_pkts,   0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->rst_pkts,       0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->ack_data_pkts,  0, __ATOMIC_RELAXED);
 
+            /* HLL reset: hll_init() memsets register bytes back to zero.
+             * Concurrent hll_add() CAS updates on the same registers may
+             * race with this memset, but any lost updates are bounded to
+             * the reset window and fall well within HLL's intrinsic error
+             * (~0.8% for precision 14). No lock required. */
             hll_init(&s->unique_src_ips,  0x11111111 + s->dst_ip);
             hll_init(&s->unique_dst_ports,0x22222222 + s->dst_ip);
             hll_init(&s->udp_flows,       0x33333333 + s->dst_ip);

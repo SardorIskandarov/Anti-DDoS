@@ -8,7 +8,7 @@ modprobe vfio-pci
 
 # Bring interfaces down before binding (optional, but usually needed)
 ip link set ens34 down || true
-ip link set ens35 down || true
+ip link set ens37 down || true
 
 # Set path to DPDK devbind tool
 DPDK_BIND="dpdk-devbind.py"
@@ -18,7 +18,7 @@ echo 1 > /sys/module/vfio/parameters/enable_unsafe_noiommu_mode
 
 # Bind interfaces to vfio-pci with no-IOMMU mode
 $DPDK_BIND --bind=vfio-pci --noiommu-mode 0000:02:02.0
-$DPDK_BIND --bind=vfio-pci --noiommu-mode 0000:02:03.0
+$DPDK_BIND --bind=vfio-pci --noiommu-mode 0000:02:05.0
 
 # Setup hugepages
 mkdir -p /dev/hugepages
