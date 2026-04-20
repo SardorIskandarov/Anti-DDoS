@@ -897,6 +897,11 @@
                             <div class="meta-value" id="metaWarmup">0</div>
                             <div class="meta-note">Windows left in warmup</div>
                         </div>
+                        <div class="meta-tile">
+                            <div class="meta-label">Layer-2 Profile</div>
+                            <div class="meta-value text-mono" id="metaL2Profile">default/v1</div>
+                            <div class="meta-note">Active Layer-2 tunable profile</div>
+                        </div>
                     </div>
 
                     <div id="warmupPanel" class="warmup-panel">
@@ -1695,6 +1700,9 @@ function updateStatus(record, history) {
     setMetaTile('metaAttackType', String(attackType));
     setMetaTile('metaTier1Evaluated', record.tier1_evaluated ? 'Yes' : 'No');
     setMetaTile('metaWarmup', `${Number(record.warmup_remaining || 0)}`);
+    const profileName = record.profile_name || 'default';
+    const profileVersion = record.profile_version || 'v1';
+    setMetaTile('metaL2Profile', `${profileName}/${profileVersion}`);
 
     document.getElementById('livePPS').textContent = formatNumber(record.pps || 0);
     document.getElementById('liveBPS').textContent = formatNumber(record.bps || 0);
@@ -1862,12 +1870,13 @@ function updateTargetSummary(summaries) {
 
     list.innerHTML = summaries.map(item => {
         const activeClass = item.dst_ip === currentTarget ? 'active' : '';
+        const profileLabel = `${item.profile_name || 'default'}/${item.profile_version || 'v1'}`;
         return `
             <div class="target-item ${activeClass}">
                 <div>
                     <div class="target-ip text-mono">${item.dst_ip}</div>
                     <div class="target-meta">
-                        PPS ${formatNumber(item.pps || 0)} · BPS ${formatNumber(item.bps || 0)} · ${formatTimestamp(item.timestamp)}
+                        PPS ${formatNumber(item.pps || 0)} · BPS ${formatNumber(item.bps || 0)} · ${formatTimestamp(item.timestamp)} · L2 ${profileLabel}
                     </div>
                 </div>
                 ${renderStateChip(item.detection_state)}

@@ -115,6 +115,10 @@ def _is_target_ip(ip_str):
 #  HLL observability fields (2):
 #   58  unique_src_ips          (int, HyperLogLog-estimated count)
 #   59  unique_dst_ports        (int, HyperLogLog-estimated count)
+#
+#  Layer-2 profile identity (2, appended):
+#   60  profile_name            (string)
+#   61  profile_version         (string)
 
 # ----------------------------------------------------------------------------
 # Field schema — (name, type) pairs listed in the EXACT order emitted by the
@@ -207,10 +211,19 @@ CSV_FIELDS = [
     # ── HLL observability fields (2) ───────────────────────────────────
     ('unique_src_ips',         'int'),
     ('unique_dst_ports',       'int'),
+
+    # ── Layer-2 profile identity (2) ───────────────────────────────────
+    ('profile_name',           'str'),
+    ('profile_version',        'str'),
 ]
 
-EXPECTED_CSV_FIELDS = len(CSV_FIELDS)  # 60
-assert EXPECTED_CSV_FIELDS == 60, f"CSV schema drift: {EXPECTED_CSV_FIELDS} fields"
+EXPECTED_CSV_FIELDS = len(CSV_FIELDS)  # 62
+assert EXPECTED_CSV_FIELDS == 62, f"CSV schema drift: {EXPECTED_CSV_FIELDS} fields"
+
+# Accept legacy 60-column lines from a pre-profile C binary so a partial
+# upgrade doesn't drop telemetry. Missing profile fields are filled in
+# with the "default" identity, which matches the C-side fallback.
+LEGACY_CSV_FIELDS = 60
 
 
 def _coerce(raw, kind):
@@ -233,6 +246,11 @@ def parse_csv_line(line):
     column count is rejected up-front to prevent silent index shifting.
     """
     parts = line.strip().split(',')
+
+    if len(parts) == LEGACY_CSV_FIELDS:
+        # Legacy pre-profile line: synthesize the two profile-identity
+        # fields so downstream code can treat the record uniformly.
+        parts = parts + ['default', 'v1']
 
     if len(parts) != EXPECTED_CSV_FIELDS:
         print(f"[Collector] Bad CSV: expected {EXPECTED_CSV_FIELDS} "
@@ -306,10 +324,21 @@ def dpdk_collector_thread():
                         if not _is_target_ip(record['dst_ip']):
                             continue
 
+                        # Guarantee profile identity is present on every
+                        # record reaching RAM / DB, independent of which
+                        # CSV-version produced the line. The parser already
+                        # fills these in for 62-column and 60-column lines;
+                        # setdefault is a cheap insurance policy for any
+                        # future ingestion path that bypasses parse_csv_line.
+                        record.setdefault('profile_name', 'default')
+                        record.setdefault('profile_version', 'v1')
+
                         state = record['detection_state']
                         if state in ('SUSPICIOUS', 'ATTACK'):
                             t1_ev = record['tier1_evaluated']
                             print(f"[ALERT] {state} | IP={record['dst_ip']} "
+                                  f"profile={record['profile_name']}/"
+                                  f"{record['profile_version']} "
                                   f"t0_risk={record['tier0_global_risk']:.3f}",
                                   end="")
                             if t1_ev:

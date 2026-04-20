@@ -18,7 +18,7 @@ def get_db_client():
     print(f"[Database] Database '{config.CH_DB}' ready")
 
     # -------------------------------------------------------------------------
-    # Schema mirrors the 60-field CSV produced by l2fwd_ddos_collector.c:
+    # Schema mirrors the 62-field CSV produced by l2fwd_ddos_collector.c:
     #
     #   3  header fields
     #   6  Tier 0 raw features
@@ -33,6 +33,7 @@ def get_db_client():
     #   2  Tier 1.4 Distribution EWMA means
     #   15 Detection engine fields
     #   2  HLL observability fields
+    #   2  Layer-2 profile identity (profile_name, profile_version)
     # -------------------------------------------------------------------------
     create_table_query = f"""
     CREATE TABLE IF NOT EXISTS {config.CH_DB}.{config.CH_TABLE} (
@@ -128,7 +129,11 @@ def get_db_client():
 
         -- ── Raw HLL observability counts ────────────────────────────────
         unique_src_ips          UInt64,
-        unique_dst_ports        UInt64
+        unique_dst_ports        UInt64,
+
+        -- ── Layer-2 profile identity (per dst_ip) ───────────────────────
+        profile_name            String DEFAULT 'default',
+        profile_version         String DEFAULT 'v1'
 
     ) ENGINE = MergeTree()
     PARTITION BY toYYYYMMDD(timestamp)
@@ -179,6 +184,19 @@ def get_db_client():
     client.execute(
         f"ALTER TABLE {config.CH_DB}.{config.CH_TABLE} "
         "ADD COLUMN IF NOT EXISTS unique_dst_ports UInt64 AFTER unique_src_ips"
+    )
+
+    # Layer-2 profile identity — additive, backward-compatible for
+    # existing deployments. Defaults match the C-side default profile.
+    client.execute(
+        f"ALTER TABLE {config.CH_DB}.{config.CH_TABLE} "
+        "ADD COLUMN IF NOT EXISTS profile_name String DEFAULT 'default' "
+        "AFTER unique_dst_ports"
+    )
+    client.execute(
+        f"ALTER TABLE {config.CH_DB}.{config.CH_TABLE} "
+        "ADD COLUMN IF NOT EXISTS profile_version String DEFAULT 'v1' "
+        "AFTER profile_name"
     )
 
     print(f"[Database] Table '{config.CH_DB}.{config.CH_TABLE}' ready")

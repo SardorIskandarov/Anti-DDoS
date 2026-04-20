@@ -2,6 +2,7 @@
 #define __L2FWD_DDOS_COLLECTOR_H__
 #include <stdint.h>
 #include <rte_mbuf.h>
+#include "l2fwd_l2_profile.h"
 
 /* Forward declaration — avoids circular include with detection engine */
 struct detection_engine;
@@ -174,6 +175,11 @@ struct dst_ip_stats {
 
     /* Detection engine */
     struct detection_engine *detection;
+
+    /* Layer-2 profile (per-IP tunables). Points to l2_profile_default
+     * unless a later resolver assigns a non-default profile. Read-only
+     * at runtime; not consumed by the detector yet. */
+    const struct l2_profile *profile;
 
     uint8_t active;
 };

@@ -164,35 +164,40 @@ double burst_window_avg(const struct burst_window *bw) {
 // ALPHA INITIALISATION HELPERS
 // ============================================================================
 
-static void init_tier0_alpha(struct tier0_ewma *e) {
-    e->pps.alpha       = EWMA_ALPHA_TIER0;
-    e->bps.alpha       = EWMA_ALPHA_TIER0;
-    e->fps.alpha       = EWMA_ALPHA_TIER0;
-    e->burst_pps.alpha = EWMA_ALPHA_TIER0;
-    e->burst_bps.alpha = EWMA_ALPHA_TIER0;
-    e->burst_fps.alpha = EWMA_ALPHA_TIER0;
+static void init_tier0_alpha(struct tier0_ewma *e,
+                              const struct l2_profile *p) {
+    e->pps.alpha       = p->alpha_tier0;
+    e->bps.alpha       = p->alpha_tier0;
+    e->fps.alpha       = p->alpha_tier0;
+    e->burst_pps.alpha = p->alpha_tier0;
+    e->burst_bps.alpha = p->alpha_tier0;
+    e->burst_fps.alpha = p->alpha_tier0;
 }
-static void init_tier1_tcp_alpha(struct tier1_tcp_ewma *e) {
-    e->syn_ratio.alpha      = EWMA_ALPHA_TIER1_1;
-    e->synack_ratio.alpha   = EWMA_ALPHA_TIER1_1;
-    e->finack_ratio.alpha   = EWMA_ALPHA_TIER1_1;
-    e->rst_ratio.alpha      = EWMA_ALPHA_TIER1_1;
-    e->ack_data_ratio.alpha = EWMA_ALPHA_TIER1_1;
-    e->tcp_pps_ratio.alpha  = EWMA_ALPHA_TIER1_1;
-    e->tcp_bps_ratio.alpha  = EWMA_ALPHA_TIER1_1;
+static void init_tier1_tcp_alpha(struct tier1_tcp_ewma *e,
+                                  const struct l2_profile *p) {
+    e->syn_ratio.alpha      = p->alpha_tier1_tcp;
+    e->synack_ratio.alpha   = p->alpha_tier1_tcp;
+    e->finack_ratio.alpha   = p->alpha_tier1_tcp;
+    e->rst_ratio.alpha      = p->alpha_tier1_tcp;
+    e->ack_data_ratio.alpha = p->alpha_tier1_tcp;
+    e->tcp_pps_ratio.alpha  = p->alpha_tier1_tcp;
+    e->tcp_bps_ratio.alpha  = p->alpha_tier1_tcp;
 }
-static void init_tier1_udp_alpha(struct tier1_udp_ewma *e) {
-    e->udp_bps_ratio.alpha  = EWMA_ALPHA_TIER1_2;
-    e->udp_pps_ratio.alpha  = EWMA_ALPHA_TIER1_2;
-    e->udp_flow_ratio.alpha = EWMA_ALPHA_TIER1_2;
+static void init_tier1_udp_alpha(struct tier1_udp_ewma *e,
+                                  const struct l2_profile *p) {
+    e->udp_bps_ratio.alpha  = p->alpha_tier1_udp;
+    e->udp_pps_ratio.alpha  = p->alpha_tier1_udp;
+    e->udp_flow_ratio.alpha = p->alpha_tier1_udp;
 }
-static void init_tier1_icmp_alpha(struct tier1_icmp_ewma *e) {
-    e->icmp_echo_ratio.alpha = EWMA_ALPHA_TIER1_3;
-    e->icmp_pps_ratio.alpha  = EWMA_ALPHA_TIER1_3;
+static void init_tier1_icmp_alpha(struct tier1_icmp_ewma *e,
+                                   const struct l2_profile *p) {
+    e->icmp_echo_ratio.alpha = p->alpha_tier1_icmp;
+    e->icmp_pps_ratio.alpha  = p->alpha_tier1_icmp;
 }
-static void init_tier1_dist_alpha(struct tier1_dist_ewma *e) {
-    e->src_ip_ratio.alpha   = EWMA_ALPHA_TIER1_4;
-    e->dst_port_ratio.alpha = EWMA_ALPHA_TIER1_4;
+static void init_tier1_dist_alpha(struct tier1_dist_ewma *e,
+                                   const struct l2_profile *p) {
+    e->src_ip_ratio.alpha   = p->alpha_tier1_dist;
+    e->dst_port_ratio.alpha = p->alpha_tier1_dist;
 }
 
 // ============================================================================
@@ -220,24 +225,29 @@ struct dst_ip_stats *dst_ip_table_get_or_create(struct dst_ip_table *table,
             e->active      = 1;
             e->last_update = timestamp;
 
+            /* Resolve the Layer-2 profile for this destination IP.
+             * Returns the default profile unless an entry exists in
+             * the static assignment table in l2fwd_l2_profile.c. */
+            e->profile = l2_profile_for_ip(dst_ip);
+
             /* HLL seeds — use different constants per estimator */
             hll_init(&e->unique_src_ips,  0x11111111 + dst_ip);
             hll_init(&e->unique_dst_ports,0x22222222 + dst_ip);
             hll_init(&e->udp_flows,       0x33333333 + dst_ip);
             hll_init(&e->unique_flows,    0x44444444 + dst_ip);
 
-            /* Set per-tier EWMA alphas */
-            init_tier0_alpha    (&e->ewma_t0);
-            init_tier1_tcp_alpha(&e->ewma_t1_tcp);
-            init_tier1_udp_alpha(&e->ewma_t1_udp);
-            init_tier1_icmp_alpha(&e->ewma_t1_icmp);
-            init_tier1_dist_alpha(&e->ewma_t1_dist);
+            /* Set per-tier EWMA alphas from the attached profile */
+            init_tier0_alpha    (&e->ewma_t0,      e->profile);
+            init_tier1_tcp_alpha(&e->ewma_t1_tcp,  e->profile);
+            init_tier1_udp_alpha(&e->ewma_t1_udp,  e->profile);
+            init_tier1_icmp_alpha(&e->ewma_t1_icmp, e->profile);
+            init_tier1_dist_alpha(&e->ewma_t1_dist, e->profile);
 
             /* Allocate and initialise detection engine */
             e->detection = (struct detection_engine *)
                             malloc(sizeof(struct detection_engine));
             if (e->detection) {
-                detection_engine_init(e->detection, timestamp);
+                detection_engine_init(e->detection, timestamp, e->profile);
             } else {
                 printf("[Collector] ERROR: malloc failed for detection engine\n");
             }
@@ -647,6 +657,9 @@ static void log_raw_features_to_csv(long long timestamp_ms,
  *  HLL observability fields (2):
  *    unique_src_ips,
  *    unique_dst_ports
+ *
+ *  Layer-2 profile identity (2, appended):
+ *    profile_name, profile_version
  */
 void ddos_log_and_reset_stats(void) {
     struct timespec ts;
@@ -775,8 +788,8 @@ void ddos_log_and_reset_stats(void) {
             uint64_t unique_dst_ports = hll_count(&s->unique_dst_ports);
             if (s->detection && s->detection->state == DETECTION_STATE_WARMUP) {
                 uint32_t wc = s->detection->warmup_counter;
-                warmup_rem  = (wc < DETECTION_WARMUP_WINDOWS)
-                                ? (DETECTION_WARMUP_WINDOWS - wc) : 0;
+                uint32_t wmax = s->profile->warmup_windows;
+                warmup_rem   = (wc < wmax) ? (wmax - wc) : 0;
             }
 
             len = snprintf(buffer, sizeof(buffer),
@@ -805,7 +818,9 @@ void ddos_log_and_reset_stats(void) {
                 /* Detection (15) */
                 "%s,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d,%u,"
                 /* HLL observability (2) */
-                "%llu,%llu\n",
+                "%llu,%llu,"
+                /* Layer-2 profile identity (2) */
+                "%s,%s\n",
 
                 /* Header values */
                 timestamp_ms, (unsigned)port, dst_ip_str,
@@ -858,7 +873,14 @@ void ddos_log_and_reset_stats(void) {
 
                 /* HLL observability */
                 (unsigned long long)unique_src_ips,
-                (unsigned long long)unique_dst_ports);
+                (unsigned long long)unique_dst_ports,
+
+                /* Layer-2 profile identity (names are controlled in-code
+                 * and comma-free; no quoting required). Fall back to "-"
+                 * if a resolver somehow returned NULL so the CSV line
+                 * still has the expected column count. */
+                (s->profile && s->profile->name)    ? s->profile->name    : "-",
+                (s->profile && s->profile->version) ? s->profile->version : "-");
 
             if (sock_fd >= 0) {
                 if (send(sock_fd, buffer, len, MSG_NOSIGNAL) < 0) {

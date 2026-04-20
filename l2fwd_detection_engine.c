@@ -8,17 +8,19 @@
 // SIGMOID  (used only by Tier 1 — unchanged)
 // ============================================================================
 
-double sigmoid_score(double distance) {
-    return 1.0 / (1.0 + exp(-SIGMOID_K * (distance - SIGMOID_D0)));
+double sigmoid_score(double distance, double k, double d0) {
+    return 1.0 / (1.0 + exp(-k * (distance - d0)));
 }
 
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
 
-void detection_engine_init(struct detection_engine *engine, uint64_t timestamp) {
+void detection_engine_init(struct detection_engine *engine, uint64_t timestamp,
+                           const struct l2_profile *profile) {
     memset(engine, 0, sizeof(struct detection_engine));
     engine->state            = DETECTION_STATE_WARMUP;
+    engine->profile          = profile;
     engine->last_attack_time = timestamp;
 
     engine->consecutive_attack_counter = 0;
@@ -27,7 +29,7 @@ void detection_engine_init(struct detection_engine *engine, uint64_t timestamp) 
     for (int i = 0; i < TIER0_N; i++) {
         engine->cusum[i].S         = 0.0;
         engine->cusum[i].variance  = 0.0;
-        engine->cusum[i].alpha_std = EWMA_ALPHA_TIER0;
+        engine->cusum[i].alpha_std = profile->alpha_tier0;
     }
 }
 
@@ -152,12 +154,14 @@ static bool cusum_update_one(struct cusum_state *cs,
                               bool frozen,
                               double k_factor,
                               double h_factor,
+                              double variance_ceiling_factor,
+                              double burst_z_threshold,
                               double *out_S,
                               double *out_risk) {
-    
+
     bool is_burst_feature = (k_factor == 0.0 && h_factor == 0.0);
     double residual = x - ewma->mean;
-    
+
     if (in_warmup) {
         cs->variance += cs->alpha_std * (residual * residual - cs->variance);
         *out_S = 0.0;
@@ -171,7 +175,7 @@ static bool cusum_update_one(struct cusum_state *cs,
         current_std = MIN_STD_FLOOR;
 
     if (initial_std > 0.0) {
-        double variance_ceiling = VARIANCE_CEILING_FACTOR * initial_std;
+        double variance_ceiling = variance_ceiling_factor * initial_std;
         if (current_std > variance_ceiling) {
             current_std = variance_ceiling;
         }
@@ -183,10 +187,10 @@ static bool cusum_update_one(struct cusum_state *cs,
     }
 
     if (is_burst_feature) {
-        double z = residual / current_std; 
+        double z = residual / current_std;
         *out_S = 0.0;
-        *out_risk = (z > 0) ? clamp(z / BURST_Z_THRESHOLD, 0.0, 1.0) : 0.0;
-        return (z > BURST_Z_THRESHOLD);
+        *out_risk = (z > 0) ? clamp(z / burst_z_threshold, 0.0, 1.0) : 0.0;
+        return (z > burst_z_threshold);
     } else {
         double k_abs = k_factor * current_std;
         double H_abs = h_factor * current_std;
@@ -212,24 +216,29 @@ void cusum_update_tier0(struct detection_engine *engine,
                         struct detection_result *result,
                         bool frozen) {
     bool in_warmup = (engine->state == DETECTION_STATE_WARMUP);
+    const struct l2_profile *p = engine->profile;
+
     cusum_update_one(&engine->cusum[0], &stats->ewma_t0.pps,
                      engine->tier0_initial_std[0],
                      cur->pps, in_warmup, frozen,
-                     CUSUM_K_PPS, CUSUM_H_PPS,
+                     p->cusum_k_pps, p->cusum_h_pps,
+                     p->variance_ceiling_factor, p->burst_z_threshold,
                      &result->tier0_cusum_pps,
                      &result->tier0_risk_pps);
 
     cusum_update_one(&engine->cusum[1], &stats->ewma_t0.bps,
                      engine->tier0_initial_std[1],
                      cur->bps, in_warmup, frozen,
-                     CUSUM_K_BPS, CUSUM_H_BPS,
+                     p->cusum_k_bps, p->cusum_h_bps,
+                     p->variance_ceiling_factor, p->burst_z_threshold,
                      &result->tier0_cusum_bps,
                      &result->tier0_risk_bps);
 
     cusum_update_one(&engine->cusum[2], &stats->ewma_t0.fps,
                      engine->tier0_initial_std[2],
                      cur->fps, in_warmup, frozen,
-                     CUSUM_K_FPS, CUSUM_H_FPS,
+                     p->cusum_k_fps, p->cusum_h_fps,
+                     p->variance_ceiling_factor, p->burst_z_threshold,
                      &result->tier0_cusum_fps,
                      &result->tier0_risk_fps);
 
@@ -237,6 +246,7 @@ void cusum_update_tier0(struct detection_engine *engine,
                      engine->tier0_initial_std[3],
                      cur->burst_pps, in_warmup, frozen,
                      0.0, 0.0,
+                     p->variance_ceiling_factor, p->burst_z_threshold,
                      &result->tier0_cusum_burst_pps,
                      &result->tier0_risk_burst_pps);
 
@@ -244,6 +254,7 @@ void cusum_update_tier0(struct detection_engine *engine,
                      engine->tier0_initial_std[4],
                      cur->burst_bps, in_warmup, frozen,
                      0.0, 0.0,
+                     p->variance_ceiling_factor, p->burst_z_threshold,
                      &result->tier0_cusum_burst_bps,
                      &result->tier0_risk_burst_bps);
 
@@ -251,16 +262,17 @@ void cusum_update_tier0(struct detection_engine *engine,
                      engine->tier0_initial_std[5],
                      cur->burst_fps, in_warmup, frozen,
                      0.0, 0.0,
+                     p->variance_ceiling_factor, p->burst_z_threshold,
                      &result->tier0_cusum_burst_fps,
                      &result->tier0_risk_burst_fps);
 
-    result->tier0_global_risk = 
-        T0_W_PPS       * result->tier0_risk_pps +
-        T0_W_BPS       * result->tier0_risk_bps +
-        T0_W_FPS       * result->tier0_risk_fps +
-        T0_W_BURST_PPS * result->tier0_risk_burst_pps +
-        T0_W_BURST_BPS * result->tier0_risk_burst_bps +
-        T0_W_BURST_FPS * result->tier0_risk_burst_fps;
+    result->tier0_global_risk =
+        p->t0_w_pps       * result->tier0_risk_pps +
+        p->t0_w_bps       * result->tier0_risk_bps +
+        p->t0_w_fps       * result->tier0_risk_fps +
+        p->t0_w_burst_pps * result->tier0_risk_burst_pps +
+        p->t0_w_burst_bps * result->tier0_risk_burst_bps +
+        p->t0_w_burst_fps * result->tier0_risk_burst_fps;
 }
 
 // ============================================================================
@@ -278,7 +290,8 @@ static inline double norm_dist(const struct ewma_state *s, double current) {
 }
 
 double compute_tier1_tcp_score(const struct tier1_tcp_ewma *ewma,
-                                const struct tier1_tcp_features *cur) {
+                                const struct tier1_tcp_features *cur,
+                                const struct l2_profile *profile) {
     double d = 0.0;
     d += norm_dist(&ewma->syn_ratio,      cur->syn_ratio);
     d += norm_dist(&ewma->synack_ratio,   cur->synack_ratio);
@@ -287,33 +300,36 @@ double compute_tier1_tcp_score(const struct tier1_tcp_ewma *ewma,
     d += norm_dist(&ewma->ack_data_ratio, cur->ack_data_ratio);
     d += norm_dist(&ewma->tcp_pps_ratio,  cur->tcp_pps_ratio);
     d += norm_dist(&ewma->tcp_bps_ratio,  cur->tcp_bps_ratio);
-    return sigmoid_score(d);
+    return sigmoid_score(d, profile->sigmoid_k, profile->sigmoid_d0);
 }
 
 double compute_tier1_udp_score(const struct tier1_udp_ewma *ewma,
-                                const struct tier1_udp_features *cur) {
+                                const struct tier1_udp_features *cur,
+                                const struct l2_profile *profile) {
     double d = 0.0;
     // PRODUCTION BOOST: UDP volume gets heavier weight (flow_ratio less critical)
     d += norm_dist(&ewma->udp_bps_ratio,  cur->udp_bps_ratio) * 1.6;
     d += norm_dist(&ewma->udp_pps_ratio,  cur->udp_pps_ratio) * 1.5;
     d += norm_dist(&ewma->udp_flow_ratio, cur->udp_flow_ratio) * 0.6;
-    return sigmoid_score(d);
+    return sigmoid_score(d, profile->sigmoid_k, profile->sigmoid_d0);
 }
 
 double compute_tier1_icmp_score(const struct tier1_icmp_ewma *ewma,
-                                 const struct tier1_icmp_features *cur) {
+                                 const struct tier1_icmp_features *cur,
+                                 const struct l2_profile *profile) {
     double d = 0.0;
     d += norm_dist(&ewma->icmp_echo_ratio, cur->icmp_echo_ratio);
     d += norm_dist(&ewma->icmp_pps_ratio,  cur->icmp_pps_ratio);
-    return sigmoid_score(d);
+    return sigmoid_score(d, profile->sigmoid_k, profile->sigmoid_d0);
 }
 
 double compute_tier1_dist_score(const struct tier1_dist_ewma *ewma,
-                                 const struct tier1_dist_features *cur) {
+                                 const struct tier1_dist_features *cur,
+                                 const struct l2_profile *profile) {
     double d = 0.0;
     d += norm_dist(&ewma->src_ip_ratio,   cur->src_ip_ratio);
     d += norm_dist(&ewma->dst_port_ratio, cur->dst_port_ratio);
-    return sigmoid_score(d);
+    return sigmoid_score(d, profile->sigmoid_k, profile->sigmoid_d0);
 }
 
 // ============================================================================
@@ -375,10 +391,10 @@ static void update_tier1_dist_ewma(struct tier1_dist_ewma *e,
 // FREEZE / THAW HELPERS
 // ============================================================================
 
-static void freeze_tier(struct tier_state *ts) {
+static void freeze_tier(struct tier_state *ts, uint32_t freeze_windows) {
     if (!ts->frozen) {
         ts->frozen         = true;
-        ts->freeze_counter = BASELINE_FREEZE_WINDOWS;
+        ts->freeze_counter = freeze_windows;
     }
 }
 
@@ -398,19 +414,22 @@ static void reset_tier0_cusum(struct detection_engine *engine) {
 // CLASSIFY TIER 1 SCORE → STATE
 // ============================================================================
 
-static detection_state_t classify(double score) {
-    if (score < THRESHOLD_NORMAL)     return DETECTION_STATE_NORMAL;
-    if (score < THRESHOLD_SUSPICIOUS) return DETECTION_STATE_SUSPICIOUS;
+static detection_state_t classify(double score,
+                                   double normal_threshold,
+                                   double suspicious_threshold) {
+    if (score < normal_threshold)     return DETECTION_STATE_NORMAL;
+    if (score < suspicious_threshold) return DETECTION_STATE_SUSPICIOUS;
     return DETECTION_STATE_ATTACK;
 }
 
 static tier0_detection_state_t classify_tier0_state(double global_risk,
                                                     bool absolute_override,
-                                                    bool tier0_triggered) {
+                                                    bool tier0_triggered,
+                                                    double suspicious_threshold) {
     if (absolute_override || tier0_triggered) {
         return TIER0_STATE_ATTACK;
     }
-    if (global_risk >= T0_SUSPICIOUS_RISK_THRESHOLD) {
+    if (global_risk >= suspicious_threshold) {
         return TIER0_STATE_SUSPICIOUS;
     }
     return TIER0_STATE_NORMAL;
@@ -431,6 +450,7 @@ struct detection_result detection_engine_process(
     result.timestamp = timestamp;
     result.state     = engine->state;
 
+    const struct l2_profile *p = engine->profile;
     double time_sec = (double)STATS_PERIOD_US / 1000000.0;
 
     struct tier0_features       t0;
@@ -446,9 +466,9 @@ struct detection_result detection_engine_process(
     extract_tier1_dist_features(stats, &t1_dist, time_sec);
 
     bool absolute_override =
-        (t0.pps > ABSOLUTE_PPS_THRESHOLD ||
-         t0.bps > ABSOLUTE_BPS_THRESHOLD ||
-         t0.fps > ABSOLUTE_FPS_THRESHOLD);
+        (t0.pps > p->absolute_pps_threshold ||
+         t0.bps > p->absolute_bps_threshold ||
+         t0.fps > p->absolute_fps_threshold);
 
     if (engine->state == DETECTION_STATE_WARMUP) {
         update_tier0_ewma     (&stats->ewma_t0,      &t0,     &engine->tier0_state);
@@ -460,10 +480,11 @@ struct detection_result detection_engine_process(
         cusum_update_tier0(engine, stats, &t0, &result, false);
         result.tier0_state = classify_tier0_state(result.tier0_global_risk,
                                                   absolute_override,
-                                                  false);
+                                                  false,
+                                                  p->t0_suspicious_risk_threshold);
 
         engine->warmup_counter++;
-        if (engine->warmup_counter >= DETECTION_WARMUP_WINDOWS) {
+        if (engine->warmup_counter >= p->warmup_windows) {
             for (int i = 0; i < TIER0_N; i++) {
                 engine->tier0_initial_std[i] = sqrt(engine->cusum[i].variance);
             }
@@ -491,23 +512,24 @@ struct detection_result detection_engine_process(
 
     if (absolute_override) {
         // Force trigger + set counter high so thaw requires full cooldown
-        engine->consecutive_attack_counter = CONSECUTIVE_ATTACK_WINDOWS;
+        engine->consecutive_attack_counter = p->consecutive_attack_windows;
         result.tier0_global_risk = 9.9;
         tier0_triggered = true;
     } else {
         // Normal risk-based persistence (only runs if no absolute override)
-        if (result.tier0_global_risk >= T0_RISK_THRESHOLD) {
+        if (result.tier0_global_risk >= p->t0_risk_threshold) {
             engine->consecutive_attack_counter++;
         } else {
             engine->consecutive_attack_counter = 0;
         }
 
-        tier0_triggered = (engine->consecutive_attack_counter >= CONSECUTIVE_ATTACK_WINDOWS);
+        tier0_triggered = (engine->consecutive_attack_counter >= p->consecutive_attack_windows);
     }
 
     result.tier0_state = classify_tier0_state(result.tier0_global_risk,
                                               absolute_override,
-                                              tier0_triggered);
+                                              tier0_triggered,
+                                              p->t0_suspicious_risk_threshold);
 
     if (dst_ip == DEBUG_IP) {
         printf("[Detection] Tier-0=%s global=%.2f trigger=%s counter=%u/%u override=%s\n",
@@ -515,7 +537,7 @@ struct detection_result detection_engine_process(
                result.tier0_global_risk,
                tier0_triggered ? "yes" : "no",
                engine->consecutive_attack_counter,
-               CONSECUTIVE_ATTACK_WINDOWS,
+               p->consecutive_attack_windows,
                absolute_override ? "yes" : "no");
         print_risk_bar("PPS risk",   result.tier0_risk_pps);
         print_risk_bar("BPS risk",   result.tier0_risk_bps);
@@ -526,12 +548,12 @@ struct detection_result detection_engine_process(
     }
 
     if (tier0_triggered) {
-        freeze_tier(&engine->tier0_state);
-        freeze_tier(&engine->tier1_tcp_state);
-        freeze_tier(&engine->tier1_udp_state);
-        freeze_tier(&engine->tier1_icmp_state);
-        freeze_tier(&engine->tier1_dist_state);
-        
+        freeze_tier(&engine->tier0_state,     p->baseline_freeze_windows);
+        freeze_tier(&engine->tier1_tcp_state, p->baseline_freeze_windows);
+        freeze_tier(&engine->tier1_udp_state, p->baseline_freeze_windows);
+        freeze_tier(&engine->tier1_icmp_state,p->baseline_freeze_windows);
+        freeze_tier(&engine->tier1_dist_state,p->baseline_freeze_windows);
+
         engine->thaw_cooldown_counter = 0;
     }
 
@@ -542,16 +564,16 @@ struct detection_result detection_engine_process(
     } else {
         result.tier1_evaluated = true;
 
-        result.tier1_tcp_score  = compute_tier1_tcp_score (&stats->ewma_t1_tcp,  &t1_tcp);
-        result.tier1_udp_score  = compute_tier1_udp_score (&stats->ewma_t1_udp,  &t1_udp);
-        result.tier1_icmp_score = compute_tier1_icmp_score(&stats->ewma_t1_icmp, &t1_icmp);
-        result.tier1_dist_score = compute_tier1_dist_score(&stats->ewma_t1_dist, &t1_dist);
+        result.tier1_tcp_score  = compute_tier1_tcp_score (&stats->ewma_t1_tcp,  &t1_tcp,  p);
+        result.tier1_udp_score  = compute_tier1_udp_score (&stats->ewma_t1_udp,  &t1_udp,  p);
+        result.tier1_icmp_score = compute_tier1_icmp_score(&stats->ewma_t1_icmp, &t1_icmp, p);
+        result.tier1_dist_score = compute_tier1_dist_score(&stats->ewma_t1_dist, &t1_dist, p);
 
         // IMPROVEMENT 3: Hybrid fusion (weighted avg + dominant protocol boost)
-        double weighted_score = W_TCP  * result.tier1_tcp_score +
-                                W_UDP  * result.tier1_udp_score +
-                                W_ICMP * result.tier1_icmp_score +
-                                W_DIST * result.tier1_dist_score;
+        double weighted_score = p->w_tcp  * result.tier1_tcp_score +
+                                p->w_udp  * result.tier1_udp_score +
+                                p->w_icmp * result.tier1_icmp_score +
+                                p->w_dist * result.tier1_dist_score;
 
         // Find highest individual score (for single-protocol attacks like UDP/SYN floods)
         double max_individual = result.tier1_tcp_score;
@@ -563,7 +585,9 @@ struct detection_result detection_engine_process(
         result.tier1_final_score = (weighted_score > max_individual) ? weighted_score : max_individual;
 
         // Classify based on weighted final score
-        final_state = classify(result.tier1_final_score);
+        final_state = classify(result.tier1_final_score,
+                               p->threshold_normal,
+                               p->threshold_suspicious);
 
         // Improved attack classification - more flexible for test tools and real attacks
                result.attack_type = ATTACK_TYPE_NONE;
@@ -633,27 +657,27 @@ struct detection_result detection_engine_process(
 
         if (final_state == DETECTION_STATE_ATTACK ||
             final_state == DETECTION_STATE_SUSPICIOUS) {
-            freeze_tier(&engine->tier0_state);
-            freeze_tier(&engine->tier1_tcp_state);
-            freeze_tier(&engine->tier1_udp_state);
-            freeze_tier(&engine->tier1_icmp_state);
-            freeze_tier(&engine->tier1_dist_state);
+            freeze_tier(&engine->tier0_state,     p->baseline_freeze_windows);
+            freeze_tier(&engine->tier1_tcp_state, p->baseline_freeze_windows);
+            freeze_tier(&engine->tier1_udp_state, p->baseline_freeze_windows);
+            freeze_tier(&engine->tier1_icmp_state,p->baseline_freeze_windows);
+            freeze_tier(&engine->tier1_dist_state,p->baseline_freeze_windows);
 
             if (engine->state != final_state) {
                 engine->attack_count++;
                 engine->last_attack_time = timestamp;
             }
         } else {
-            reset_tier0_cusum(engine);          
+            reset_tier0_cusum(engine);
             engine->consecutive_attack_counter = 0;
-            engine->thaw_cooldown_counter = THAW_COOLDOWN_WINDOWS;
+            engine->thaw_cooldown_counter = p->thaw_cooldown_windows;
         }
     }
 
-    if (final_state == DETECTION_STATE_NORMAL && result.tier0_global_risk < T0_RISK_THRESHOLD) {
+    if (final_state == DETECTION_STATE_NORMAL && result.tier0_global_risk < p->t0_risk_threshold) {
         engine->thaw_cooldown_counter++;
 
-        if (engine->thaw_cooldown_counter >= THAW_COOLDOWN_WINDOWS) {
+        if (engine->thaw_cooldown_counter >= p->thaw_cooldown_windows) {
             reset_tier0_cusum(engine);
             engine->consecutive_attack_counter = 0;
 

@@ -30,7 +30,7 @@
  *   z = (x - ewma_mean) / (std + epsilon)
  *   risk = clamp(z / BURST_Z_THRESHOLD, 0, 1)
  */
-#define BURST_Z_THRESHOLD 8
+#define BURST_Z_THRESHOLD 7
 
 /**
  * CHANGE 2: Per-feature CUSUM parameters (PPS, BPS, FPS only)
@@ -264,6 +264,11 @@ struct detection_result {
 struct detection_engine {
     detection_state_t state;
 
+    /* Layer-2 profile driving all Tier-0 / Tier-1 tunables for this IP.
+     * Pointed at l2_profile_default by default; a resolver may later
+     * assign a per-IP profile at engine init time. */
+    const struct l2_profile *profile;
+
     /* Tier baseline freeze tracking */
     struct tier_state tier0_state;
     struct tier_state tier1_tcp_state;
@@ -295,7 +300,8 @@ struct detection_engine {
 // PUBLIC API
 // ============================================================================
 
-void detection_engine_init(struct detection_engine *engine, uint64_t timestamp);
+void detection_engine_init(struct detection_engine *engine, uint64_t timestamp,
+                           const struct l2_profile *profile);
 
 void extract_tier0_features    (const struct dst_ip_stats *stats,
                                  struct tier0_features *out,
@@ -325,15 +331,19 @@ void cusum_update_tier0(struct detection_engine *engine,
                         bool frozen);
 
 double compute_tier1_tcp_score (const struct tier1_tcp_ewma  *ewma,
-                                 const struct tier1_tcp_features *cur);
+                                 const struct tier1_tcp_features *cur,
+                                 const struct l2_profile *profile);
 double compute_tier1_udp_score (const struct tier1_udp_ewma  *ewma,
-                                 const struct tier1_udp_features *cur);
+                                 const struct tier1_udp_features *cur,
+                                 const struct l2_profile *profile);
 double compute_tier1_icmp_score(const struct tier1_icmp_ewma *ewma,
-                                 const struct tier1_icmp_features *cur);
+                                 const struct tier1_icmp_features *cur,
+                                 const struct l2_profile *profile);
 double compute_tier1_dist_score(const struct tier1_dist_ewma *ewma,
-                                 const struct tier1_dist_features *cur);
+                                 const struct tier1_dist_features *cur,
+                                 const struct l2_profile *profile);
 
-double sigmoid_score(double distance);
+double sigmoid_score(double distance, double k, double d0);
 
 struct detection_result detection_engine_process(
     struct detection_engine *engine,

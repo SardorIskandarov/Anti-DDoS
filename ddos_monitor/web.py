@@ -88,6 +88,8 @@ def get_targets_summary():
                 'bps': record.get('bps', 0),
                 'timestamp': _serialize_timestamp(record.get('timestamp')),
                 'attack_type': record.get('attack_type'),
+                'profile_name': record.get('profile_name', 'default'),
+                'profile_version': record.get('profile_version', 'v1'),
             })
 
         summaries.sort(
@@ -132,6 +134,8 @@ def get_recent_alerts():
                     'tier1_final_score': record.get('tier1_final_score', 0),
                     'pps': record.get('pps', 0),
                     'bps': record.get('bps', 0),
+                    'profile_name': record.get('profile_name', 'default'),
+                    'profile_version': record.get('profile_version', 'v1'),
                 })
         
         return jsonify(alerts)
@@ -147,13 +151,15 @@ def get_target_alerts(target_ip):
         if not ip_data:
             return jsonify({
                 'state': 'NORMAL',
-                'has_alert': False
+                'has_alert': False,
+                'profile_name': 'default',
+                'profile_version': 'v1',
             })
-        
+
         # Get the most recent record
         latest = ip_data[0]
         state = latest.get('detection_state', 'NORMAL')
-        
+
         return jsonify({
             'state': state,
             'has_alert': state in ['SUSPICIOUS', 'ATTACK'],
@@ -162,6 +168,8 @@ def get_target_alerts(target_ip):
             'tier1_final_score': latest.get('tier1_final_score', 0),
             'pps': latest.get('pps', 0),
             'bps': latest.get('bps', 0),
+            'profile_name': latest.get('profile_name', 'default'),
+            'profile_version': latest.get('profile_version', 'v1'),
         })
 
 
@@ -195,6 +203,8 @@ def get_target_events(target_ip):
                     'tier1_final_score': record.get('tier1_final_score', 0),
                     'pps': record.get('pps', 0),
                     'bps': record.get('bps', 0),
+                    'profile_name': record.get('profile_name', 'default'),
+                    'profile_version': record.get('profile_version', 'v1'),
                 })
 
             prev_state = state

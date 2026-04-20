@@ -16,6 +16,7 @@ src = [
   'main.c',
   'l2fwd_ddos_collector.c',
   'l2fwd_detection_engine.c',
+  'l2fwd_l2_profile.c',
   'l2fwd_policy.c',
   'l2fwd_l3_bridge.c',
   ]
