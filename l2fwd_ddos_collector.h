@@ -44,11 +44,11 @@ struct hll_counter {
  * Tier 0: alpha = 0.10 (slower, more stable baseline)
  * Tier 1: alpha = 0.20 (behavioral patterns)
  */
-#define EWMA_ALPHA_TIER0   0.01   /* even slower on volumetric */
+#define EWMA_ALPHA_TIER0   0.02   /* even slower on volumetric */
 #define EWMA_ALPHA_TIER1_1 0.04
-#define EWMA_ALPHA_TIER1_2 0.05
+#define EWMA_ALPHA_TIER1_2 0.07
 #define EWMA_ALPHA_TIER1_3 0.03
-#define EWMA_ALPHA_TIER1_4 0.05
+#define EWMA_ALPHA_TIER1_4 0.06
 
 /** Minimum observations before EWMA mean is stable */
 #define EWMA_WARMUP_PERIODS 12
@@ -132,6 +132,14 @@ struct burst_window {
     uint8_t  filled;
 };
 
+/* Multi-timescale temporal observability state. Included here (after
+ * struct ewma_state and the per-tier EWMA collections, before
+ * struct dst_ip_stats) so the field embedding below is well-formed.
+ * Standard include guards break the resulting mutual include with
+ * l2fwd_temporal.h cleanly — see the include-cycle note in
+ * l2fwd_temporal.h for the full chain. */
+#include "l2fwd_temporal.h"
+
 // ============================================================================
 // PER-DESTINATION-IP STATISTICS
 // ============================================================================
@@ -182,6 +190,14 @@ struct dst_ip_stats {
     const struct l2_profile *profile;
 
     uint8_t active;
+
+    /* Multi-timescale temporal observability state (shadow / read-only
+     * outside l2fwd_temporal.c). Appended after every pre-existing field
+     * so the offsets of fields above are preserved, minimising the diff
+     * surface for any tooling that walks struct dst_ip_stats by offset.
+     * Updated once per active dst_ip per 1s window in a later commit;
+     * not yet read or written by any module. */
+    struct l2_temporal_state temporal;
 };
 
 // ============================================================================

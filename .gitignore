@@ -1,3 +1,7 @@
 build/
 ddos_stats.csv
 logs/
+*.csv
+*.csv
+build/
+out/

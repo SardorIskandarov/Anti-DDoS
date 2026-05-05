@@ -74,66 +74,392 @@ const struct l2_profile l2_profile_default = {
  * thresholds. All other fields match the default so behavior elsewhere
  * stays comparable. Not assigned to any IP by default.
  */
-const struct l2_profile l2_profile_sensitive = {
-    .name    = "sensitive",
-    .version = "v1",
 
-    /* EWMA alphas — unchanged from default */
-    .alpha_tier0      = 0.25,
-    .alpha_tier1_tcp  = 0.12,
-    .alpha_tier1_udp  = 0.12,
-    .alpha_tier1_icmp = 0.12,
-    .alpha_tier1_dist = 0.12,
 
-    /* Warm-up — unchanged */
-    .warmup_windows = 200,
+// ========================
+// IP : 45.150.25.116
+// ========================
+const struct l2_profile l2_profile_45_150_25_116_manual_v1 = {
+    .name    = "45.150.25.116",
+    .version = "manual_v1",
 
-    /* Tier-0 CUSUM: same K, tighter H; lower burst Z */
-    .cusum_k_pps             = 0.04,
-    .cusum_h_pps             = 4.5,
-    .cusum_k_bps             = 0.04,
-    .cusum_h_bps             = 4.5,
-    .cusum_k_fps             = 0.05,
-    .cusum_h_fps             = 4.0,
-    .burst_z_threshold       = 4.0,
-    .variance_ceiling_factor = 3.0,
+    /* EWMA alphas */
+    .alpha_tier0      = 0.03,
+    .alpha_tier1_tcp  = 0.04,
+    .alpha_tier1_udp  = 0.07,
+    .alpha_tier1_icmp = 0.03,
+    .alpha_tier1_dist = 0.06,
 
-    /* Tier-0 fusion weights — unchanged */
-    .t0_w_pps       = 3,
-    .t0_w_bps       = 3,
-    .t0_w_fps       = 2,
-    .t0_w_burst_pps = 1.5,
-    .t0_w_burst_bps = 1.5,
-    .t0_w_burst_fps = 1,
+    /* Warm-up */
+    .warmup_windows = 450,
 
-    /* Tier-0 risk thresholds — lower so SUSPICIOUS/ATTACK fire earlier */
-    .t0_suspicious_risk_threshold = 4.5,
+    /* Tier-0 CUSUM / Z-score */
+    .cusum_k_pps             = 0.12,
+    .cusum_h_pps             = 7.5,
+    .cusum_k_bps             = 0.12,
+    .cusum_h_bps             = 7.5,
+    .cusum_k_fps             = 0.90,
+    .cusum_h_fps             = 7.0,
+    .burst_z_threshold       = 10.0,
+    .variance_ceiling_factor = 2.5,
+
+    /* Tier-0 risk fusion */
+    .t0_w_pps       = 2.7,
+    .t0_w_bps       = 1.7,
+    .t0_w_fps       = 0.6,
+    .t0_w_burst_pps = 1.0,
+    .t0_w_burst_bps = 0.7,
+    .t0_w_burst_fps = 0.3,
+
+    .t0_suspicious_risk_threshold = 5.2,
     .t0_risk_threshold            = 6.5,
 
-    /* Tier-0 absolute overrides — unchanged */
-    .absolute_pps_threshold = 30000.0,
-    .absolute_bps_threshold = 200000000.0,
-    .absolute_fps_threshold = 190,
+    /* Absolute volumetric overrides */
+    .absolute_pps_threshold = 35000.0,
+    .absolute_bps_threshold = 500000000.0,
+    .absolute_fps_threshold = 150.0,
 
-    /* Persistence: shorter commit; freeze/thaw unchanged */
-    .consecutive_attack_windows = 3,
-    .baseline_freeze_windows    = BASELINE_FREEZE_WINDOWS,
-    .thaw_cooldown_windows      = THAW_COOLDOWN_WINDOWS,
+    /* Persistence / freeze / thaw */
+    .consecutive_attack_windows = 2,
+    .baseline_freeze_windows    = 12,
+    .thaw_cooldown_windows      = 20,
 
-    /* Tier-1 sigmoid — unchanged */
-    .sigmoid_k  = 0.9,
-    .sigmoid_d0 = 1.2,
+    /* Tier-1 sigmoid */
+    .sigmoid_k  = 1.0,
+    .sigmoid_d0 = 1.1,
 
-    /* Tier-1 decision thresholds — tighter */
-    .threshold_normal     = 0.40,
-    .threshold_suspicious = 0.65,
+    /* Tier-1 decision thresholds */
+    .threshold_normal     = 0.45,
+    .threshold_suspicious = 0.68,
 
-    /* Tier-1 fusion weights — unchanged */
-    .w_tcp  = 0.65,
-    .w_udp  = 0.10,
+    /* Tier-1 weighted fusion */
+    .w_tcp  = 0.05,
+    .w_udp  = 0.65,
     .w_icmp = 0.05,
-    .w_dist = 0.20,
+    .w_dist = 0.25,
 };
+
+
+// ========================
+// IP : 89.249.62.131
+// ========================
+const struct l2_profile l2_profile_89_249_62_131_manual_v1 = {
+    .name    = "89.249.62.131",
+    .version = "manual_v1",
+
+    /* EWMA alphas */
+    .alpha_tier0      = 0.03,
+    .alpha_tier1_tcp  = 0.04,
+    .alpha_tier1_udp  = 0.05,
+    .alpha_tier1_icmp = 0.03,
+    .alpha_tier1_dist = 0.05,
+
+    /* Warm-up */
+    .warmup_windows = 400,
+
+    /* Tier-0 CUSUM / Z-score */
+    .cusum_k_pps             = 0.14,
+    .cusum_h_pps             = 8.0,
+    .cusum_k_bps             = 0.14,
+    .cusum_h_bps             = 8.0,
+    .cusum_k_fps             = 1.00,
+    .cusum_h_fps             = 8.0,
+    .burst_z_threshold       = 10.0,
+    .variance_ceiling_factor = 3.0,
+
+    /* Tier-0 risk fusion */
+    .t0_w_pps       = 2.8,
+    .t0_w_bps       = 2.2,
+    .t0_w_fps       = 0.7,
+    .t0_w_burst_pps = 0.9,
+    .t0_w_burst_bps = 0.7,
+    .t0_w_burst_fps = 0.3,
+
+    .t0_suspicious_risk_threshold = 5.8,
+    .t0_risk_threshold            = 7.2,
+
+    /* Absolute volumetric overrides */
+    .absolute_pps_threshold = 20000.0,
+    .absolute_bps_threshold = 220000000.0,
+    .absolute_fps_threshold = 150.0,
+
+    /* Persistence / freeze / thaw */
+    .consecutive_attack_windows = 3,
+    .baseline_freeze_windows    = 12,
+    .thaw_cooldown_windows      = 20,
+
+    /* Tier-1 sigmoid */
+    .sigmoid_k  = 0.90,
+    .sigmoid_d0 = 1.30,
+
+    /* Tier-1 decision thresholds */
+    .threshold_normal     = 0.55,
+    .threshold_suspicious = 0.82,
+
+    /* Tier-1 weighted fusion */
+    .w_tcp  = 0.55,
+    .w_udp  = 0.05,
+    .w_icmp = 0.05,
+    .w_dist = 0.35,
+};
+
+
+
+// ========================
+// IP : 94.141.85.150
+// ========================
+const struct l2_profile l2_profile_94_141_85_150_manual_v1 = {
+    .name    = "94.141.85.150",
+    .version = "manual_v1",
+
+    /* EWMA alphas */
+    .alpha_tier0      = 0.03,
+    .alpha_tier1_tcp  = 0.06,
+    .alpha_tier1_udp  = 0.08,
+    .alpha_tier1_icmp = 0.03,
+    .alpha_tier1_dist = 0.06,
+
+    /* Warm-up */
+    .warmup_windows = 400,
+
+    /* Tier-0 CUSUM / Z-score */
+    .cusum_k_pps             = 0.14,
+    .cusum_h_pps             = 8.0,
+    .cusum_k_bps             = 0.14,
+    .cusum_h_bps             = 8.0,
+    .cusum_k_fps             = 0.95,
+    .cusum_h_fps             = 8.0,
+    .burst_z_threshold       = 10.0,
+    .variance_ceiling_factor = 3.0,
+
+    /* Tier-0 risk fusion */
+    .t0_w_pps       = 2.8,
+    .t0_w_bps       = 1.8,
+    .t0_w_fps       = 0.6,
+    .t0_w_burst_pps = 0.8,
+    .t0_w_burst_bps = 0.6,
+    .t0_w_burst_fps = 0.2,
+
+    .t0_suspicious_risk_threshold = 5.6,
+    .t0_risk_threshold            = 6.4,
+
+    /* Absolute volumetric overrides */
+    .absolute_pps_threshold = 20000.0,
+    .absolute_bps_threshold = 220000000.0,
+    .absolute_fps_threshold = 360.0,
+
+    /* Persistence / freeze / thaw */
+    .consecutive_attack_windows = 4,
+    .baseline_freeze_windows    = 12,
+    .thaw_cooldown_windows      = 20,
+
+    /* Tier-1 sigmoid */
+    .sigmoid_k  = 0.90,
+    .sigmoid_d0 = 1.30,
+
+    /* Tier-1 decision thresholds */
+    .threshold_normal     = 0.55,
+    .threshold_suspicious = 0.85,
+
+    /* Tier-1 weighted fusion */
+    .w_tcp  = 0.35,
+    .w_udp  = 0.30,
+    .w_icmp = 0.10,
+    .w_dist = 0.25,
+};
+
+
+// ========================
+// IP : 213.230.125.170
+// ========================
+const struct l2_profile l2_profile_213_230_125_170_manual_v1 = {
+    .name    = "213.230.125.170",
+    .version = "manual_v1",
+
+    /* EWMA alphas */
+    .alpha_tier0      = 0.035,
+    .alpha_tier1_tcp  = 0.07,
+    .alpha_tier1_udp  = 0.07,
+    .alpha_tier1_icmp = 0.03,
+    .alpha_tier1_dist = 0.07,
+
+    /* Warm-up */
+    .warmup_windows = 700,
+
+    /* Tier-0 CUSUM / Z-score */
+    .cusum_k_pps             = 0.15,
+    .cusum_h_pps             = 8.5,
+    .cusum_k_bps             = 0.15,
+    .cusum_h_bps             = 8.5,
+    .cusum_k_fps             = 1.00,
+    .cusum_h_fps             = 9.0,
+    .burst_z_threshold       = 10.0,
+    .variance_ceiling_factor = 3.0,
+
+    /* Tier-0 risk fusion */
+    .t0_w_pps       = 2.2,
+    .t0_w_bps       = 1.4,
+    .t0_w_fps       = 0.35,
+    .t0_w_burst_pps = 0.6,
+    .t0_w_burst_bps = 0.5,
+    .t0_w_burst_fps = 0.15,
+
+    .t0_suspicious_risk_threshold = 4.8,
+    .t0_risk_threshold            = 5.6,
+
+    /* Absolute volumetric overrides */
+    .absolute_pps_threshold = 1300000.0,
+    .absolute_bps_threshold = 12000000000.0,
+    .absolute_fps_threshold = 25000.0,
+
+    /* Persistence / freeze / thaw */
+    .consecutive_attack_windows = 5,
+    .baseline_freeze_windows    = 12,
+    .thaw_cooldown_windows      = 25,
+
+    /* Tier-1 sigmoid */
+    .sigmoid_k  = 0.80,
+    .sigmoid_d0 = 1.50,
+
+    /* Tier-1 decision thresholds */
+    .threshold_normal     = 0.70,
+    .threshold_suspicious = 0.92,
+
+    /* Tier-1 weighted fusion */
+    .w_tcp  = 0.40,
+    .w_udp  = 0.25,
+    .w_icmp = 0.05,
+    .w_dist = 0.30,
+};
+
+
+// ========================
+// IP : 213.230.125.66
+// ========================
+const struct l2_profile l2_profile_213_230_125_66_manual_v1 = {
+    .name    = "213.230.125.66",
+    .version = "manual_v1",
+
+    /* EWMA alphas */
+    .alpha_tier0      = 0.035,
+    .alpha_tier1_tcp  = 0.07,
+    .alpha_tier1_udp  = 0.07,
+    .alpha_tier1_icmp = 0.03,
+    .alpha_tier1_dist = 0.07,
+
+    /* Warm-up */
+    .warmup_windows = 700,
+
+    /* Tier-0 CUSUM / Z-score */
+    .cusum_k_pps             = 0.15,
+    .cusum_h_pps             = 8.5,
+    .cusum_k_bps             = 0.15,
+    .cusum_h_bps             = 8.5,
+    .cusum_k_fps             = 1.00,
+    .cusum_h_fps             = 9.0,
+    .burst_z_threshold       = 10.0,
+    .variance_ceiling_factor = 3.0,
+
+    /* Tier-0 risk fusion */
+    .t0_w_pps       = 2.2,
+    .t0_w_bps       = 1.5,
+    .t0_w_fps       = 0.35,
+    .t0_w_burst_pps = 0.7,
+    .t0_w_burst_bps = 0.55,
+    .t0_w_burst_fps = 0.15,
+
+    .t0_suspicious_risk_threshold = 4.7,
+    .t0_risk_threshold            = 5.25,
+
+    /* Absolute volumetric overrides */
+    .absolute_pps_threshold = 500000.0,
+    .absolute_bps_threshold = 4500000000.0,
+    .absolute_fps_threshold = 8000.0,
+
+    /* Persistence / freeze / thaw */
+    .consecutive_attack_windows = 5,
+    .baseline_freeze_windows    = 12,
+    .thaw_cooldown_windows      = 25,
+
+    /* Tier-1 sigmoid */
+    .sigmoid_k  = 0.80,
+    .sigmoid_d0 = 1.50,
+
+    /* Tier-1 decision thresholds */
+    .threshold_normal     = 0.75,
+    .threshold_suspicious = 0.95,
+
+    /* Tier-1 weighted fusion */
+    .w_tcp  = 0.40,
+    .w_udp  = 0.25,
+    .w_icmp = 0.05,
+    .w_dist = 0.30,
+};
+
+
+// ========================
+// IP : 45.150.25.70
+// ========================
+const struct l2_profile l2_profile_45_150_25_70_manual_v1 = {
+    .name    = "45.150.25.70",
+    .version = "manual_v1",
+
+    /* EWMA alphas */
+    .alpha_tier0      = 0.035,
+    .alpha_tier1_tcp  = 0.07,
+    .alpha_tier1_udp  = 0.07,
+    .alpha_tier1_icmp = 0.03,
+    .alpha_tier1_dist = 0.07,
+
+    /* Warm-up */
+    .warmup_windows = 700,
+
+    /* Tier-0 CUSUM / Z-score */
+    .cusum_k_pps             = 0.15,
+    .cusum_h_pps             = 8.5,
+    .cusum_k_bps             = 0.15,
+    .cusum_h_bps             = 8.5,
+    .cusum_k_fps             = 1.00,
+    .cusum_h_fps             = 9.0,
+    .burst_z_threshold       = 10.0,
+    .variance_ceiling_factor = 3.0,
+
+    /* Tier-0 risk fusion */
+    .t0_w_pps       = 2.2,
+    .t0_w_bps       = 1.5,
+    .t0_w_fps       = 0.35,
+    .t0_w_burst_pps = 0.7,
+    .t0_w_burst_bps = 0.55,
+    .t0_w_burst_fps = 0.15,
+
+    .t0_suspicious_risk_threshold = 4.7,
+    .t0_risk_threshold            = 5.25,
+
+    /* Absolute volumetric overrides */
+    .absolute_pps_threshold = 500000.0,
+    .absolute_bps_threshold = 4000000000.0,
+    .absolute_fps_threshold = 7500.0,
+
+    /* Persistence / freeze / thaw */
+    .consecutive_attack_windows = 5,
+    .baseline_freeze_windows    = 12,
+    .thaw_cooldown_windows      = 25,
+
+    /* Tier-1 sigmoid */
+    .sigmoid_k  = 0.80,
+    .sigmoid_d0 = 1.50,
+
+    /* Tier-1 decision thresholds */
+    .threshold_normal     = 0.75,
+    .threshold_suspicious = 0.95,
+
+    /* Tier-1 weighted fusion */
+    .w_tcp  = 0.30,
+    .w_udp  = 0.35,
+    .w_icmp = 0.05,
+    .w_dist = 0.30,
+};
+
 
 /* ------------------------------------------------------------------------- */
 /* Static IP → profile assignment table.
@@ -156,8 +482,12 @@ struct l2_profile_assignment {
 
 static const struct l2_profile_assignment l2_profile_assignments[] = {
     /* Insert per-IP overrides here. */
-    { RTE_IPV4(89, 249, 62, 130), &l2_profile_sensitive },
-    { RTE_IPV4(89, 249, 62, 131), &l2_profile_sensitive },
+    { RTE_IPV4(45, 150, 25, 70), &l2_profile_45_150_25_70_manual_v1 },
+    { RTE_IPV4(213, 230, 125, 66), &l2_profile_213_230_125_66_manual_v1 },
+    { RTE_IPV4(213, 230, 125, 170), &l2_profile_213_230_125_170_manual_v1 },
+    { RTE_IPV4(89, 249, 62, 131), &l2_profile_89_249_62_131_manual_v1 },
+    { RTE_IPV4(45, 150, 25, 116), &l2_profile_45_150_25_116_manual_v1 },
+    { RTE_IPV4(94, 141, 85, 150), &l2_profile_94_141_85_150_manual_v1 },
     { 0, NULL },   /* sentinel — do not remove */
 };
 

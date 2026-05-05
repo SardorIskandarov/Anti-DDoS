@@ -567,86 +567,6 @@
             margin-top: 22px;
         }
 
-        .l3-mode-chip,
-        .l3-action-chip,
-        .l3-event-chip {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 999px;
-            padding: 5px 10px;
-            font-size: 0.68rem;
-            font-weight: 700;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-        }
-
-        .l3-mode-shadow {
-            background: rgba(246, 196, 83, 0.14);
-            color: #fff7dc;
-            border: 1px solid rgba(246, 196, 83, 0.28);
-        }
-
-        .l3-mode-enforce {
-            background: rgba(239, 83, 80, 0.16);
-            color: #ffe4e3;
-            border: 1px solid rgba(239, 83, 80, 0.30);
-        }
-
-        .l3-action-allow {
-            background: rgba(51, 194, 127, 0.14);
-            color: #dffbef;
-        }
-
-        .l3-action-rate-limit-soft {
-            background: rgba(77, 163, 255, 0.14);
-            color: #d6ebff;
-        }
-
-        .l3-action-rate-limit-hard {
-            background: rgba(246, 196, 83, 0.14);
-            color: #fff7dc;
-        }
-
-        .l3-action-block {
-            background: rgba(239, 83, 80, 0.16);
-            color: #ffe4e3;
-        }
-
-        .l3-grid {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 16px;
-            margin-bottom: 18px;
-        }
-
-        .l3-summary-grid {
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 12px;
-        }
-
-        .l3-summary-card {
-            padding: 14px;
-            border-radius: 14px;
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(145, 160, 189, 0.10);
-        }
-
-        .l3-summary-label {
-            color: var(--muted);
-            font-size: 0.68rem;
-            text-transform: uppercase;
-            letter-spacing: 0.12em;
-            margin-bottom: 6px;
-        }
-
-        .l3-summary-value {
-            font-size: 0.92rem;
-            font-weight: 600;
-            word-break: break-word;
-        }
-
         .section-header {
             margin-bottom: 14px;
         }
@@ -770,6 +690,119 @@
             box-shadow: none;
         }
 
+        /* Target IP searchable combobox */
+        .target-search {
+            position: relative;
+            width: 240px;
+        }
+
+        .target-search input {
+            width: 100%;
+            background-color: rgba(19, 26, 43, 0.92);
+            color: var(--text);
+            border: 1px solid rgba(145, 160, 189, 0.16);
+            border-radius: 6px;
+            padding: 6px 28px 6px 10px;
+            font-size: 0.875rem;
+            font-variant-numeric: tabular-nums;
+            outline: none;
+            box-shadow: none;
+        }
+
+        .target-search input::placeholder {
+            color: var(--muted-soft);
+        }
+
+        .target-search input:focus {
+            border-color: rgba(77, 163, 255, 0.55);
+            box-shadow: 0 0 0 2px rgba(77, 163, 255, 0.15);
+        }
+
+        .target-search-clear {
+            position: absolute;
+            top: 50%;
+            right: 6px;
+            transform: translateY(-50%);
+            background: transparent;
+            border: 0;
+            color: var(--muted-soft);
+            font-size: 1rem;
+            line-height: 1;
+            padding: 2px 6px;
+            cursor: pointer;
+            display: none;
+        }
+
+        .target-search-clear:hover {
+            color: var(--text);
+        }
+
+        .target-search.has-value .target-search-clear {
+            display: block;
+        }
+
+        .target-search-list {
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0;
+            right: 0;
+            z-index: 1050;
+            max-height: 280px;
+            overflow-y: auto;
+            background: var(--panel);
+            border: 1px solid var(--panel-border);
+            border-radius: 6px;
+            box-shadow: var(--shadow);
+            display: none;
+        }
+
+        .target-search-list.open {
+            display: block;
+        }
+
+        .target-search-item {
+            padding: 8px 12px;
+            font-size: 0.85rem;
+            font-variant-numeric: tabular-nums;
+            color: var(--text);
+            cursor: pointer;
+            border-top: 1px solid rgba(145, 160, 189, 0.08);
+        }
+
+        .target-search-item:first-child {
+            border-top: 0;
+        }
+
+        .target-search-item.exact {
+            color: var(--warmup);
+            font-weight: 600;
+        }
+
+        .target-search-item.current {
+            background: rgba(77, 163, 255, 0.08);
+        }
+
+        .target-search-item.highlight {
+            background: rgba(77, 163, 255, 0.18);
+        }
+
+        .target-search-empty {
+            padding: 10px 12px;
+            font-size: 0.78rem;
+            color: var(--muted);
+            font-style: italic;
+        }
+
+        .no-traffic-notice {
+            margin-top: 10px;
+            padding: 8px 12px;
+            border: 1px solid rgba(246, 196, 83, 0.30);
+            background: rgba(246, 196, 83, 0.08);
+            color: var(--suspicious);
+            border-radius: 6px;
+            font-size: 0.82rem;
+        }
+
         @media (max-width: 1399px) {
             .hero-meta-grid {
                 grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -792,11 +825,6 @@
 
             .diagnostics-body {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
-            }
-
-            .l3-grid,
-            .l3-summary-grid {
-                grid-template-columns: 1fr;
             }
         }
 
@@ -837,8 +865,16 @@
             <div class="brand-subtitle">Behavioral monitoring and detector validation</div>
         </div>
         <div class="d-flex align-items-center gap-3">
-            <label for="targetSelect" class="small text-secondary text-uppercase" style="letter-spacing:0.10em;">Target IP</label>
-            <select id="targetSelect" class="form-select form-select-sm" style="width:220px;">
+            <label for="targetSearchInput" class="small text-secondary text-uppercase" style="letter-spacing:0.10em;">Target IP</label>
+            <div id="targetSearch" class="target-search">
+                <input id="targetSearchInput" type="text" autocomplete="off" spellcheck="false"
+                       placeholder="Search target IP..." aria-label="Search target IP"
+                       aria-autocomplete="list" aria-controls="targetSearchList" aria-expanded="false">
+                <button type="button" id="targetSearchClear" class="target-search-clear" aria-label="Clear search">&times;</button>
+                <div id="targetSearchList" class="target-search-list" role="listbox"></div>
+            </div>
+            <!-- Hidden legacy select kept so any code still reading targetSelect.value continues to work. -->
+            <select id="targetSelect" class="form-select form-select-sm" style="display:none;" aria-hidden="true" tabindex="-1">
                 <option>Loading…</option>
             </select>
         </div>
@@ -863,6 +899,9 @@
                             <div class="hero-state-wrap">
                                 <span id="detectionBadge" class="status-badge st-warmup">Waiting</span>
                                 <span class="hero-summary" id="heroSummary">Polling for live detector output.</span>
+                            </div>
+                            <div id="noRecentTrafficNotice" class="no-traffic-notice" style="display:none;">
+                                No recent traffic for this target IP.
                             </div>
                         </div>
                         <div class="hero-updated">
@@ -1155,117 +1194,397 @@
         </div>
     </div>
 
+
+    <!-- ====================================================================
+         TEMPORAL VIEW (multi-timescale, shadow mode)
+         New full-width row inserted ABOVE the diagnostics block. Does
+         not modify any pre-existing panel; reads from the new
+         /api/temporal/* endpoints exclusively.
+         ==================================================================== -->
+    <style>
+        .temporal-shadow-banner {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            font-size: 0.78rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: #ffe6b8;
+            background: rgba(246, 196, 83, 0.10);
+            border: 1px solid rgba(246, 196, 83, 0.35);
+        }
+        .temporal-cards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 16px;
+        }
+        .temporal-card {
+            border: 1px solid rgba(145, 160, 189, 0.18);
+            border-radius: 12px;
+            padding: 14px 16px;
+            background: rgba(11, 16, 32, 0.55);
+        }
+        .temporal-card.is-empty .temporal-card-grid .v {
+            color: var(--muted-soft);
+        }
+        .temporal-card-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .temporal-card-scale {
+            font-weight: 700;
+            font-size: 1.05rem;
+            letter-spacing: 0.04em;
+            color: var(--muted);
+        }
+        .temporal-state-pill {
+            display: inline-flex;
+            align-items: center;
+            min-width: 96px;
+            justify-content: center;
+            padding: 4px 12px;
+            border-radius: 999px;
+            font-size: 0.74rem;
+            font-weight: 700;
+            letter-spacing: 0.10em;
+            text-transform: uppercase;
+            border: 1px solid transparent;
+            color: var(--muted-soft);
+            background: rgba(145, 160, 189, 0.10);
+            border-color: rgba(145, 160, 189, 0.25);
+        }
+        /* Reuse existing st-* palette where possible; add the two
+         * extra phases the temporal classifier introduces. */
+        .temporal-state-pill.st-warmup     { color:#d9ecff; background:rgba(77,163,255,0.16);  border-color:rgba(77,163,255,0.45); }
+        .temporal-state-pill.st-normal     { color:#ddfff0; background:rgba(51,194,127,0.15);  border-color:rgba(51,194,127,0.42); }
+        .temporal-state-pill.st-watch      { color:#ffe6b8; background:rgba(246,196,83,0.10);  border-color:rgba(246,196,83,0.40); }
+        .temporal-state-pill.st-suspicious { color:#fff6d8; background:rgba(246,196,83,0.20);  border-color:rgba(246,196,83,0.55); }
+        .temporal-state-pill.st-strong     { color:#ffe0de; background:rgba(239,83,80,0.20);   border-color:rgba(239,83,80,0.60); }
+        .temporal-card-section {
+            margin-top: 10px;
+        }
+        .temporal-card-section .ts-label {
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted-soft);
+            margin-bottom: 4px;
+        }
+        .temporal-card-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 4px 14px;
+            font-size: 0.85rem;
+        }
+        .temporal-card-grid .kv {
+            display: flex;
+            justify-content: space-between;
+            gap: 6px;
+            padding: 2px 0;
+        }
+        .temporal-card-grid .k {
+            color: var(--muted-soft);
+        }
+        .temporal-card-grid .v {
+            color: var(--muted);
+            font-variant-numeric: tabular-nums;
+        }
+        .temporal-tabs {
+            display: inline-flex;
+            gap: 6px;
+            padding: 4px;
+            border-radius: 10px;
+            background: rgba(145, 160, 189, 0.06);
+            border: 1px solid rgba(145, 160, 189, 0.18);
+        }
+        .temporal-tab {
+            background: transparent;
+            border: 0;
+            color: var(--muted-soft);
+            padding: 6px 14px;
+            border-radius: 8px;
+            font-size: 0.82rem;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            cursor: pointer;
+        }
+        .temporal-tab.is-active {
+            background: rgba(77, 163, 255, 0.18);
+            color: #d9ecff;
+        }
+        .temporal-charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 16px;
+            margin-top: 14px;
+        }
+        .temporal-chart-wrap {
+            border: 1px solid rgba(145, 160, 189, 0.16);
+            border-radius: 12px;
+            padding: 12px 14px 8px;
+            background: rgba(11, 16, 32, 0.5);
+        }
+        .temporal-chart-wrap .chart-title {
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted-soft);
+            margin-bottom: 6px;
+        }
+        .temporal-chart-canvas-wrap {
+            position: relative;
+            height: 180px;
+        }
+        .temporal-chart-canvas-wrap canvas {
+            position: absolute;
+            inset: 0;
+            width: 100% !important;
+            height: 100% !important;
+        }
+    </style>
+
     <div class="row g-4 mt-1">
         <div class="col-12">
             <section class="panel">
                 <div class="panel-head">
                     <div>
-                        <div class="panel-title">Layer 3 Runtime</div>
-                        <p class="panel-subtitle">Selected target Layer 3 mode, session, top sources, active policies, and recent policy events.</p>
+                        <div class="panel-title">Temporal View (Multi-timescale)</div>
+                        <p class="panel-subtitle">Shadow-mode evidence for the selected target across 10s / 60s / 300s windows. Reads the new <code>dst_ip_temporal_stats</code> stream; never feeds enforcement.</p>
                     </div>
-                    <div id="layer3ModeBadge" class="l3-mode-chip l3-mode-shadow">Shadow</div>
+                    <div class="temporal-shadow-banner">
+                        Shadow mode &mdash; does not currently change the 1-second detector decision
+                    </div>
                 </div>
                 <div class="panel-body">
-                    <div class="l3-grid">
-                        <div>
-                            <div class="section-title">Attack Session</div>
-                            <p class="section-copy">Current Layer 3 session state for the selected target.</p>
-                            <div class="l3-summary-grid mt-3">
-                                <div class="l3-summary-card">
-                                    <div class="l3-summary-label">Active</div>
-                                    <div id="l3SessionActive" class="l3-summary-value">No</div>
+                    <div class="temporal-cards-grid" id="temporalCardsGrid">
+
+                        <!-- 10-second card -->
+                        <div class="temporal-card is-empty" id="temporalCard10">
+                            <div class="temporal-card-head">
+                                <div class="temporal-card-scale">10s window</div>
+                                <span class="temporal-state-pill st-warmup" data-key="temporal_state">—</span>
+                            </div>
+                            <div class="temporal-card-section">
+                                <div class="ts-label">Status</div>
+                                <div class="temporal-card-grid">
+                                    <div class="kv"><span class="k">Score</span><span class="v" data-key="temporal_score">—</span></div>
+                                    <div class="kv"><span class="k">Baseline ready</span><span class="v" data-key="baseline_ready">—</span></div>
+                                    <div class="kv"><span class="k">Valid sec.</span><span class="v" data-key="valid_seconds">—</span></div>
+                                    <div class="kv"><span class="k">Suspicious sec.</span><span class="v" data-key="suspicious_seconds">—</span></div>
+                                    <div class="kv"><span class="k">Attack sec.</span><span class="v" data-key="attack_seconds">—</span></div>
                                 </div>
-                                <div class="l3-summary-card">
-                                    <div class="l3-summary-label">Detection State</div>
-                                    <div id="l3SessionState" class="l3-summary-value">No active session</div>
+                            </div>
+                            <div class="temporal-card-section">
+                                <div class="ts-label">Volume (avg / max)</div>
+                                <div class="temporal-card-grid">
+                                    <div class="kv"><span class="k">pps</span><span class="v"><span data-key="avg_pps">—</span> / <span data-key="max_pps">—</span></span></div>
+                                    <div class="kv"><span class="k">bps</span><span class="v"><span data-key="avg_bps">—</span> / <span data-key="max_bps">—</span></span></div>
+                                    <div class="kv"><span class="k">fps</span><span class="v"><span data-key="avg_fps">—</span> / <span data-key="max_fps">—</span></span></div>
                                 </div>
-                                <div class="l3-summary-card">
-                                    <div class="l3-summary-label">Attack Type</div>
-                                    <div id="l3SessionType" class="l3-summary-value">Unavailable</div>
+                            </div>
+                            <div class="temporal-card-section">
+                                <div class="ts-label">Protocol shares</div>
+                                <div class="temporal-card-grid">
+                                    <div class="kv"><span class="k">tcp_pps</span><span class="v" data-key="tcp_pps_ratio">—</span></div>
+                                    <div class="kv"><span class="k">udp_pps</span><span class="v" data-key="udp_pps_ratio">—</span></div>
+                                    <div class="kv"><span class="k">icmp_pps</span><span class="v" data-key="icmp_pps_ratio">—</span></div>
                                 </div>
-                                <div class="l3-summary-card">
-                                    <div class="l3-summary-label">Windows Seen</div>
-                                    <div id="l3SessionWindows" class="l3-summary-value text-mono">0</div>
+                            </div>
+                            <div class="temporal-card-section">
+                                <div class="ts-label">TCP flag ratios</div>
+                                <div class="temporal-card-grid">
+                                    <div class="kv"><span class="k">syn</span><span class="v" data-key="tcp_syn_ratio">—</span></div>
+                                    <div class="kv"><span class="k">syn-ack</span><span class="v" data-key="tcp_synack_ratio">—</span></div>
+                                    <div class="kv"><span class="k">fin-ack</span><span class="v" data-key="tcp_finack_ratio">—</span></div>
+                                    <div class="kv"><span class="k">rst</span><span class="v" data-key="tcp_rst_ratio">—</span></div>
+                                    <div class="kv"><span class="k">ack-data</span><span class="v" data-key="tcp_ack_data_ratio">—</span></div>
                                 </div>
-                                <div class="l3-summary-card">
-                                    <div class="l3-summary-label">Started</div>
-                                    <div id="l3SessionStarted" class="l3-summary-value">Unavailable</div>
+                            </div>
+                            <div class="temporal-card-section">
+                                <div class="ts-label">Ratio to baseline</div>
+                                <div class="temporal-card-grid">
+                                    <div class="kv"><span class="k">pps</span><span class="v" data-key="ratio_pps">—</span></div>
+                                    <div class="kv"><span class="k">bps</span><span class="v" data-key="ratio_bps">—</span></div>
+                                    <div class="kv"><span class="k">fps</span><span class="v" data-key="ratio_fps">—</span></div>
                                 </div>
-                                <div class="l3-summary-card">
-                                    <div class="l3-summary-label">Last Seen</div>
-                                    <div id="l3SessionLastSeen" class="l3-summary-value">Unavailable</div>
-                                </div>
-                                <div class="l3-summary-card">
-                                    <div class="l3-summary-label">Active Policies</div>
-                                    <div id="l3PolicyCount" class="l3-summary-value text-mono">0</div>
-                                </div>
-                                <div class="l3-summary-card">
-                                    <div class="l3-summary-label">Tracked Sources</div>
-                                    <div id="l3TopSourceCount" class="l3-summary-value text-mono">0</div>
+                            </div>
+                            <div class="temporal-card-section">
+                                <div class="ts-label">Sub-scores</div>
+                                <div class="temporal-card-grid">
+                                    <div class="kv"><span class="k">volume</span><span class="v" data-key="volume_score">—</span></div>
+                                    <div class="kv"><span class="k">protocol_shift</span><span class="v" data-key="protocol_shift_score">—</span></div>
+                                    <div class="kv"><span class="k">persistence</span><span class="v" data-key="persistence_score">—</span></div>
+                                    <div class="kv"><span class="k">ramp</span><span class="v" data-key="ramp_score">—</span></div>
                                 </div>
                             </div>
                         </div>
-                        <div>
-                            <div class="section-title">Recent Layer 3 Events</div>
-                            <p class="section-copy">Latest target-specific state transitions and policy activity.</p>
-                            <div class="table-wrap mt-3">
-                                <table class="table table-dark table-sm align-middle">
-                                    <thead>
-                                        <tr>
-                                            <th>Time</th>
-                                            <th>Event</th>
-                                            <th>Source</th>
-                                            <th>Action</th>
-                                            <th>Score</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="layer3EventsTableBody">
-                                        <tr><td colspan="5" class="empty-state">No Layer 3 events for this target.</td></tr>
-                                    </tbody>
-                                </table>
+
+                        <!-- 60-second card -->
+                        <div class="temporal-card is-empty" id="temporalCard60">
+                            <div class="temporal-card-head">
+                                <div class="temporal-card-scale">60s window</div>
+                                <span class="temporal-state-pill st-warmup" data-key="temporal_state">—</span>
+                            </div>
+                            <div class="temporal-card-section">
+                                <div class="ts-label">Status</div>
+                                <div class="temporal-card-grid">
+                                    <div class="kv"><span class="k">Score</span><span class="v" data-key="temporal_score">—</span></div>
+                                    <div class="kv"><span class="k">Baseline ready</span><span class="v" data-key="baseline_ready">—</span></div>
+                                    <div class="kv"><span class="k">Valid sec.</span><span class="v" data-key="valid_seconds">—</span></div>
+                                    <div class="kv"><span class="k">Suspicious sec.</span><span class="v" data-key="suspicious_seconds">—</span></div>
+                                    <div class="kv"><span class="k">Attack sec.</span><span class="v" data-key="attack_seconds">—</span></div>
+                                </div>
+                            </div>
+                            <div class="temporal-card-section">
+                                <div class="ts-label">Volume (avg / max)</div>
+                                <div class="temporal-card-grid">
+                                    <div class="kv"><span class="k">pps</span><span class="v"><span data-key="avg_pps">—</span> / <span data-key="max_pps">—</span></span></div>
+                                    <div class="kv"><span class="k">bps</span><span class="v"><span data-key="avg_bps">—</span> / <span data-key="max_bps">—</span></span></div>
+                                    <div class="kv"><span class="k">fps</span><span class="v"><span data-key="avg_fps">—</span> / <span data-key="max_fps">—</span></span></div>
+                                </div>
+                            </div>
+                            <div class="temporal-card-section">
+                                <div class="ts-label">Protocol shares</div>
+                                <div class="temporal-card-grid">
+                                    <div class="kv"><span class="k">tcp_pps</span><span class="v" data-key="tcp_pps_ratio">—</span></div>
+                                    <div class="kv"><span class="k">udp_pps</span><span class="v" data-key="udp_pps_ratio">—</span></div>
+                                    <div class="kv"><span class="k">icmp_pps</span><span class="v" data-key="icmp_pps_ratio">—</span></div>
+                                </div>
+                            </div>
+                            <div class="temporal-card-section">
+                                <div class="ts-label">TCP flag ratios</div>
+                                <div class="temporal-card-grid">
+                                    <div class="kv"><span class="k">syn</span><span class="v" data-key="tcp_syn_ratio">—</span></div>
+                                    <div class="kv"><span class="k">syn-ack</span><span class="v" data-key="tcp_synack_ratio">—</span></div>
+                                    <div class="kv"><span class="k">fin-ack</span><span class="v" data-key="tcp_finack_ratio">—</span></div>
+                                    <div class="kv"><span class="k">rst</span><span class="v" data-key="tcp_rst_ratio">—</span></div>
+                                    <div class="kv"><span class="k">ack-data</span><span class="v" data-key="tcp_ack_data_ratio">—</span></div>
+                                </div>
+                            </div>
+                            <div class="temporal-card-section">
+                                <div class="ts-label">Ratio to baseline</div>
+                                <div class="temporal-card-grid">
+                                    <div class="kv"><span class="k">pps</span><span class="v" data-key="ratio_pps">—</span></div>
+                                    <div class="kv"><span class="k">bps</span><span class="v" data-key="ratio_bps">—</span></div>
+                                    <div class="kv"><span class="k">fps</span><span class="v" data-key="ratio_fps">—</span></div>
+                                </div>
+                            </div>
+                            <div class="temporal-card-section">
+                                <div class="ts-label">Sub-scores</div>
+                                <div class="temporal-card-grid">
+                                    <div class="kv"><span class="k">volume</span><span class="v" data-key="volume_score">—</span></div>
+                                    <div class="kv"><span class="k">protocol_shift</span><span class="v" data-key="protocol_shift_score">—</span></div>
+                                    <div class="kv"><span class="k">persistence</span><span class="v" data-key="persistence_score">—</span></div>
+                                    <div class="kv"><span class="k">ramp</span><span class="v" data-key="ramp_score">—</span></div>
+                                </div>
                             </div>
                         </div>
+
+                        <!-- 300-second card -->
+                        <div class="temporal-card is-empty" id="temporalCard300">
+                            <div class="temporal-card-head">
+                                <div class="temporal-card-scale">300s window</div>
+                                <span class="temporal-state-pill st-warmup" data-key="temporal_state">—</span>
+                            </div>
+                            <div class="temporal-card-section">
+                                <div class="ts-label">Status</div>
+                                <div class="temporal-card-grid">
+                                    <div class="kv"><span class="k">Score</span><span class="v" data-key="temporal_score">—</span></div>
+                                    <div class="kv"><span class="k">Baseline ready</span><span class="v" data-key="baseline_ready">—</span></div>
+                                    <div class="kv"><span class="k">Valid sec.</span><span class="v" data-key="valid_seconds">—</span></div>
+                                    <div class="kv"><span class="k">Suspicious sec.</span><span class="v" data-key="suspicious_seconds">—</span></div>
+                                    <div class="kv"><span class="k">Attack sec.</span><span class="v" data-key="attack_seconds">—</span></div>
+                                </div>
+                            </div>
+                            <div class="temporal-card-section">
+                                <div class="ts-label">Volume (avg / max)</div>
+                                <div class="temporal-card-grid">
+                                    <div class="kv"><span class="k">pps</span><span class="v"><span data-key="avg_pps">—</span> / <span data-key="max_pps">—</span></span></div>
+                                    <div class="kv"><span class="k">bps</span><span class="v"><span data-key="avg_bps">—</span> / <span data-key="max_bps">—</span></span></div>
+                                    <div class="kv"><span class="k">fps</span><span class="v"><span data-key="avg_fps">—</span> / <span data-key="max_fps">—</span></span></div>
+                                </div>
+                            </div>
+                            <div class="temporal-card-section">
+                                <div class="ts-label">Protocol shares</div>
+                                <div class="temporal-card-grid">
+                                    <div class="kv"><span class="k">tcp_pps</span><span class="v" data-key="tcp_pps_ratio">—</span></div>
+                                    <div class="kv"><span class="k">udp_pps</span><span class="v" data-key="udp_pps_ratio">—</span></div>
+                                    <div class="kv"><span class="k">icmp_pps</span><span class="v" data-key="icmp_pps_ratio">—</span></div>
+                                </div>
+                            </div>
+                            <div class="temporal-card-section">
+                                <div class="ts-label">TCP flag ratios</div>
+                                <div class="temporal-card-grid">
+                                    <div class="kv"><span class="k">syn</span><span class="v" data-key="tcp_syn_ratio">—</span></div>
+                                    <div class="kv"><span class="k">syn-ack</span><span class="v" data-key="tcp_synack_ratio">—</span></div>
+                                    <div class="kv"><span class="k">fin-ack</span><span class="v" data-key="tcp_finack_ratio">—</span></div>
+                                    <div class="kv"><span class="k">rst</span><span class="v" data-key="tcp_rst_ratio">—</span></div>
+                                    <div class="kv"><span class="k">ack-data</span><span class="v" data-key="tcp_ack_data_ratio">—</span></div>
+                                </div>
+                            </div>
+                            <div class="temporal-card-section">
+                                <div class="ts-label">Ratio to baseline</div>
+                                <div class="temporal-card-grid">
+                                    <div class="kv"><span class="k">pps</span><span class="v" data-key="ratio_pps">—</span></div>
+                                    <div class="kv"><span class="k">bps</span><span class="v" data-key="ratio_bps">—</span></div>
+                                    <div class="kv"><span class="k">fps</span><span class="v" data-key="ratio_fps">—</span></div>
+                                </div>
+                            </div>
+                            <div class="temporal-card-section">
+                                <div class="ts-label">Sub-scores</div>
+                                <div class="temporal-card-grid">
+                                    <div class="kv"><span class="k">volume</span><span class="v" data-key="volume_score">—</span></div>
+                                    <div class="kv"><span class="k">protocol_shift</span><span class="v" data-key="protocol_shift_score">—</span></div>
+                                    <div class="kv"><span class="k">persistence</span><span class="v" data-key="persistence_score">—</span></div>
+                                    <div class="kv"><span class="k">ramp</span><span class="v" data-key="ramp_score">—</span></div>
+                                </div>
+                            </div>
+                        </div>
+
                     </div>
 
-                    <div class="row g-4">
-                        <div class="col-12 col-xl-6">
-                            <div class="section-title">Top Suspicious Sources</div>
-                            <p class="section-copy">Highest Layer 3 suspicious scores for the selected target.</p>
-                            <div class="table-wrap mt-3">
-                                <table class="table table-dark table-sm align-middle">
-                                    <thead>
-                                        <tr>
-                                            <th>Source IP</th>
-                                            <th>Context</th>
-                                            <th>Score</th>
-                                            <th>Window</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="layer3SourcesTableBody">
-                                        <tr><td colspan="4" class="empty-state">No Layer 3 source scores for this target.</td></tr>
-                                    </tbody>
-                                </table>
-                            </div>
+                    <div class="d-flex flex-wrap align-items-center gap-3 mt-4">
+                        <div class="temporal-tabs" role="tablist" aria-label="Temporal window selector">
+                            <button type="button" class="temporal-tab is-active" data-window-sec="10"  role="tab">10s</button>
+                            <button type="button" class="temporal-tab"           data-window-sec="60"  role="tab">60s</button>
+                            <button type="button" class="temporal-tab"           data-window-sec="300" role="tab">300s</button>
                         </div>
-                        <div class="col-12 col-xl-6">
-                            <div class="section-title">Active Layer 3 Policies</div>
-                            <p class="section-copy">Current enforced or shadow-generated policies for the selected target.</p>
-                            <div class="table-wrap mt-3">
-                                <table class="table table-dark table-sm align-middle">
-                                    <thead>
-                                        <tr>
-                                            <th>Source IP</th>
-                                            <th>Action</th>
-                                            <th>TTL</th>
-                                            <th>Rate PPS</th>
-                                            <th>Score</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="layer3PoliciesTableBody">
-                                        <tr><td colspan="5" class="empty-state">No active Layer 3 policies for this target.</td></tr>
-                                    </tbody>
-                                </table>
-                            </div>
+                        <div id="temporalChartsHelp" class="text-secondary small">Charts use scale-adaptive history: 10s ≈ 12 min, 60s ≈ 72 min, 300s ≈ 6 h. Solid line = current window value; dashed line = EWMA baseline.</div>
+                    </div>
+
+                    <div class="temporal-charts-grid">
+                        <div class="temporal-chart-wrap">
+                            <div class="chart-title">avg_pps vs EWMA</div>
+                            <div class="temporal-chart-canvas-wrap"><canvas id="temporalChartPps"></canvas></div>
+                        </div>
+                        <div class="temporal-chart-wrap">
+                            <div class="chart-title">avg_bps vs EWMA</div>
+                            <div class="temporal-chart-canvas-wrap"><canvas id="temporalChartBps"></canvas></div>
+                        </div>
+                        <div class="temporal-chart-wrap">
+                            <div class="chart-title">avg_fps vs EWMA</div>
+                            <div class="temporal-chart-canvas-wrap"><canvas id="temporalChartFps"></canvas></div>
+                        </div>
+                        <div class="temporal-chart-wrap">
+                            <div class="chart-title">udp_pps_ratio vs EWMA</div>
+                            <div class="temporal-chart-canvas-wrap"><canvas id="temporalChartUdpPps"></canvas></div>
+                        </div>
+                        <div class="temporal-chart-wrap">
+                            <div class="chart-title">tcp_syn_ratio vs EWMA</div>
+                            <div class="temporal-chart-canvas-wrap"><canvas id="temporalChartTcpSyn"></canvas></div>
+                        </div>
+                        <div class="temporal-chart-wrap">
+                            <div class="chart-title">temporal_score</div>
+                            <div class="temporal-chart-canvas-wrap"><canvas id="temporalChartScore"></canvas></div>
+                        </div>
+                        <div class="temporal-chart-wrap">
+                            <div class="chart-title">suspicious / attack seconds</div>
+                            <div class="temporal-chart-canvas-wrap"><canvas id="temporalChartPersistence"></canvas></div>
                         </div>
                     </div>
                 </div>
@@ -1396,6 +1715,11 @@ const TIER0_RISK_BREAKDOWN = [
 let currentTarget = null;
 let knownIPs = [];
 let charts = {};
+// Searchable target IP combobox state.
+let allTargets = [];
+let filteredTargets = [];
+let highlightIndex = -1;
+const TARGET_SEARCH_MAX = 25;
 
 function getCssVar(name) {
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -1769,96 +2093,6 @@ function renderBranchChip(branchKey, text) {
     return `<span class="branch-chip ${meta.chipClass}">${text}</span>`;
 }
 
-function renderLayer3ModeChip(mode) {
-    const normalized = String(mode || 'shadow').toLowerCase();
-    const cls = normalized === 'enforce' ? 'l3-mode-enforce' : 'l3-mode-shadow';
-    return `<span id="layer3ModeBadge" class="l3-mode-chip ${cls}">${normalized}</span>`;
-}
-
-function renderLayer3ActionChip(action) {
-    const normalized = String(action || 'ALLOW').toUpperCase();
-    const clsMap = {
-        ALLOW: 'l3-action-allow',
-        RATE_LIMIT_SOFT: 'l3-action-rate-limit-soft',
-        RATE_LIMIT_HARD: 'l3-action-rate-limit-hard',
-        BLOCK: 'l3-action-block',
-    };
-    const cls = clsMap[normalized] || 'l3-action-allow';
-    return `<span class="l3-action-chip ${cls}">${normalized.replaceAll('_', ' ')}</span>`;
-}
-
-function renderLayer3EventRows(events) {
-    const body = document.getElementById('layer3EventsTableBody');
-    if (!Array.isArray(events) || !events.length) {
-        body.innerHTML = '<tr><td colspan="5" class="empty-state">No Layer 3 events for this target.</td></tr>';
-        return;
-    }
-
-    body.innerHTML = events.map(event => `
-        <tr>
-            <td class="text-mono">${formatUnixTimestamp(event.timestamp)}</td>
-            <td><span class="l3-event-chip branch-none">${event.event_type || 'UNKNOWN'}</span></td>
-            <td class="text-mono">${event.src_ip || '—'}</td>
-            <td>${event.action ? renderLayer3ActionChip(event.action) : '<span class="text-secondary">—</span>'}</td>
-            <td class="text-mono">${formatScore(event.score || 0, Number(event.score || 0) > 0)}</td>
-        </tr>
-    `).join('');
-}
-
-function renderLayer3SourceRows(sources) {
-    const body = document.getElementById('layer3SourcesTableBody');
-    if (!Array.isArray(sources) || !sources.length) {
-        body.innerHTML = '<tr><td colspan="4" class="empty-state">No Layer 3 source scores for this target.</td></tr>';
-        return;
-    }
-
-    body.innerHTML = sources.map(source => `
-        <tr>
-            <td class="text-mono">${source.src_ip || '—'}</td>
-            <td>${source.context || '—'}</td>
-            <td class="text-mono">${formatScore(source.score || 0, true)}</td>
-            <td class="text-mono">${source.window_ms || '—'}</td>
-        </tr>
-    `).join('');
-}
-
-function renderLayer3PolicyRows(policies) {
-    const body = document.getElementById('layer3PoliciesTableBody');
-    if (!Array.isArray(policies) || !policies.length) {
-        body.innerHTML = '<tr><td colspan="5" class="empty-state">No active Layer 3 policies for this target.</td></tr>';
-        return;
-    }
-
-    body.innerHTML = policies.map(policy => `
-        <tr>
-            <td class="text-mono">${policy.src_ip || '—'}</td>
-            <td>${renderLayer3ActionChip(policy.action)}</td>
-            <td class="text-mono">${policy.ttl_sec ?? '—'}</td>
-            <td class="text-mono">${policy.rate_pps ?? '—'}</td>
-            <td class="text-mono">${formatScore(policy.score || 0, true)}</td>
-        </tr>
-    `).join('');
-}
-
-function updateLayer3Panel(modePayload, statusPayload, topSources, policies, events) {
-    const mode = modePayload?.mode || statusPayload?.mode || 'shadow';
-    const session = statusPayload?.session || null;
-
-    document.getElementById('layer3ModeBadge').outerHTML = renderLayer3ModeChip(mode);
-    document.getElementById('l3SessionActive').textContent = statusPayload?.active ? 'Yes' : 'No';
-    document.getElementById('l3SessionState').textContent = session?.det_state || 'No active session';
-    document.getElementById('l3SessionType').textContent = session?.attack_type || 'Unavailable';
-    document.getElementById('l3SessionWindows').textContent = String(session?.window_count || 0);
-    document.getElementById('l3SessionStarted').textContent = formatUnixTimestamp(session?.started_at);
-    document.getElementById('l3SessionLastSeen').textContent = formatUnixTimestamp(session?.last_seen_at);
-    document.getElementById('l3PolicyCount').textContent = String(statusPayload?.policy_count || (Array.isArray(policies) ? policies.length : 0));
-    document.getElementById('l3TopSourceCount').textContent = String(statusPayload?.top_source_count || (Array.isArray(topSources) ? topSources.length : 0));
-
-    renderLayer3EventRows(events);
-    renderLayer3SourceRows(topSources);
-    renderLayer3PolicyRows(policies);
-}
-
 function updateTargetSummary(summaries) {
     const list = document.getElementById('targetSituationalList');
     document.getElementById('diagTargetCount').textContent = String(Array.isArray(summaries) ? summaries.length : 0);
@@ -1950,7 +2184,11 @@ function updateCharts(history) {
 
 async function fetchTargets() {
     try {
-        const response = await fetch(`${API_BASE}/targets`);
+        // The search dropdown lists every configured target IP from
+        // config.TARGET_PREFIXES (expanded server-side), not just IPs with
+        // recent traffic. /api/targets is still used elsewhere for
+        // active/recent targets and the situational awareness panel.
+        const response = await fetch(`${API_BASE}/targets/configured`);
         const ips = await response.json();
         if (!Array.isArray(ips) || !ips.length) return;
 
@@ -1959,6 +2197,9 @@ async function fetchTargets() {
         if (newKey === oldKey) return;
 
         knownIPs = ips.slice();
+        // Sorted copy used for the searchable combobox.
+        allTargets = ips.slice().sort();
+
         const select = document.getElementById('targetSelect');
         const previous = currentTarget || select.value;
 
@@ -1974,9 +2215,189 @@ async function fetchTargets() {
         select.value = nextTarget;
         currentTarget = nextTarget;
         document.getElementById('selectedTargetLabel').textContent = currentTarget;
+
+        // Reflect current selection in the search input without disturbing the user
+        // if they are actively typing a query.
+        const searchInput = document.getElementById('targetSearchInput');
+        if (searchInput && document.activeElement !== searchInput) {
+            searchInput.value = currentTarget;
+            updateClearButtonVisibility();
+        }
     } catch (error) {
         document.getElementById('diagPollStatus').textContent = `Target refresh failed: ${error.message}`;
     }
+}
+
+// Centralized target-switch entry point. Reuses the same flow as the legacy
+// dropdown change handler: update currentTarget, hidden select, hero label, then refresh().
+function selectTarget(ip) {
+    if (!ip) return;
+    currentTarget = ip;
+    const select = document.getElementById('targetSelect');
+    if (select) select.value = ip;
+    document.getElementById('selectedTargetLabel').textContent = ip;
+
+    const searchInput = document.getElementById('targetSearchInput');
+    if (searchInput) {
+        searchInput.value = ip;
+        updateClearButtonVisibility();
+    }
+    // Hide the no-traffic notice on switch; refresh() will re-show it if the new IP has no data.
+    const notice = document.getElementById('noRecentTrafficNotice');
+    if (notice) notice.style.display = 'none';
+    closeTargetSearch();
+    refresh();
+}
+
+function updateClearButtonVisibility() {
+    const wrap = document.getElementById('targetSearch');
+    const input = document.getElementById('targetSearchInput');
+    if (!wrap || !input) return;
+    wrap.classList.toggle('has-value', input.value.length > 0);
+}
+
+function closeTargetSearch() {
+    const list = document.getElementById('targetSearchList');
+    const input = document.getElementById('targetSearchInput');
+    if (list) list.classList.remove('open');
+    if (input) input.setAttribute('aria-expanded', 'false');
+    highlightIndex = -1;
+}
+
+function openTargetSearch() {
+    const list = document.getElementById('targetSearchList');
+    const input = document.getElementById('targetSearchInput');
+    if (list) list.classList.add('open');
+    if (input) input.setAttribute('aria-expanded', 'true');
+}
+
+// Compute filteredTargets for a query: substring match, exact match floated to top, capped.
+function computeFilteredTargets(query) {
+    const q = (query || '').trim();
+    if (!allTargets.length) return [];
+    if (!q) return allTargets.slice(0, TARGET_SEARCH_MAX);
+
+    const matches = allTargets.filter(ip => ip.includes(q));
+    const exactIdx = matches.indexOf(q);
+    if (exactIdx > 0) {
+        matches.splice(exactIdx, 1);
+        matches.unshift(q);
+    }
+    return matches.slice(0, TARGET_SEARCH_MAX);
+}
+
+function renderTargetSearch(query) {
+    const list = document.getElementById('targetSearchList');
+    if (!list) return;
+
+    filteredTargets = computeFilteredTargets(query);
+    const q = (query || '').trim();
+
+    if (!allTargets.length) {
+        list.innerHTML = '<div class="target-search-empty">No targets loaded yet.</div>';
+        openTargetSearch();
+        return;
+    }
+
+    if (!filteredTargets.length) {
+        list.innerHTML = '<div class="target-search-empty">No matching IP</div>';
+        openTargetSearch();
+        return;
+    }
+
+    // Clamp highlight index into range; default to first item.
+    if (highlightIndex < 0 || highlightIndex >= filteredTargets.length) {
+        highlightIndex = 0;
+    }
+
+    const html = filteredTargets.map((ip, idx) => {
+        const classes = ['target-search-item'];
+        if (q && ip === q) classes.push('exact');
+        if (ip === currentTarget) classes.push('current');
+        if (idx === highlightIndex) classes.push('highlight');
+        return `<div class="${classes.join(' ')}" role="option" data-ip="${ip}" data-idx="${idx}">${ip}</div>`;
+    }).join('');
+
+    list.innerHTML = html;
+    openTargetSearch();
+}
+
+function moveTargetHighlight(delta) {
+    if (!filteredTargets.length) return;
+    const next = highlightIndex < 0 ? 0 : highlightIndex + delta;
+    highlightIndex = Math.max(0, Math.min(filteredTargets.length - 1, next));
+    const list = document.getElementById('targetSearchList');
+    if (!list) return;
+    Array.from(list.children).forEach((el, idx) => {
+        el.classList.toggle('highlight', idx === highlightIndex);
+        if (idx === highlightIndex) el.scrollIntoView({ block: 'nearest' });
+    });
+}
+
+function setupTargetSearch() {
+    const input = document.getElementById('targetSearchInput');
+    const list = document.getElementById('targetSearchList');
+    const wrap = document.getElementById('targetSearch');
+    const clearBtn = document.getElementById('targetSearchClear');
+    if (!input || !list || !wrap) return;
+
+    input.addEventListener('input', () => {
+        highlightIndex = 0;
+        updateClearButtonVisibility();
+        renderTargetSearch(input.value);
+    });
+
+    input.addEventListener('focus', () => {
+        renderTargetSearch(input.value);
+    });
+
+    input.addEventListener('keydown', event => {
+        if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            if (!list.classList.contains('open')) renderTargetSearch(input.value);
+            else moveTargetHighlight(1);
+        } else if (event.key === 'ArrowUp') {
+            event.preventDefault();
+            moveTargetHighlight(-1);
+        } else if (event.key === 'Enter') {
+            event.preventDefault();
+            const q = input.value.trim();
+            // Exact match wins, otherwise highlighted item, otherwise first filtered.
+            let pick = null;
+            if (q && filteredTargets.includes(q)) pick = q;
+            else if (highlightIndex >= 0 && filteredTargets[highlightIndex]) pick = filteredTargets[highlightIndex];
+            else if (filteredTargets.length) pick = filteredTargets[0];
+            if (pick) selectTarget(pick);
+        } else if (event.key === 'Escape') {
+            event.preventDefault();
+            closeTargetSearch();
+            input.blur();
+        }
+    });
+
+    list.addEventListener('mousedown', event => {
+        // mousedown so the input's blur doesn't fire and close the list before the click.
+        const item = event.target.closest('.target-search-item');
+        if (!item) return;
+        event.preventDefault();
+        const ip = item.getAttribute('data-ip');
+        if (ip) selectTarget(ip);
+    });
+
+    if (clearBtn) {
+        clearBtn.addEventListener('mousedown', event => {
+            event.preventDefault();
+            input.value = '';
+            updateClearButtonVisibility();
+            highlightIndex = 0;
+            renderTargetSearch('');
+            input.focus();
+        });
+    }
+
+    document.addEventListener('mousedown', event => {
+        if (!wrap.contains(event.target)) closeTargetSearch();
+    });
 }
 
 async function refresh() {
@@ -1989,56 +2410,35 @@ async function refresh() {
             historyResponse,
             eventsResponse,
             summaryResponse,
-            layer3StatusResponse,
-            layer3PoliciesResponse,
-            layer3SourcesResponse,
-            layer3EventsResponse,
-            layer3ModeResponse,
         ] = await Promise.all([
             fetch(`${API_BASE}/stats/${currentTarget}`),
             fetch(`${API_BASE}/events/${currentTarget}`),
             fetch(`${API_BASE}/targets/summary`),
-            fetch(`${API_BASE}/layer3/status/${currentTarget}`),
-            fetch(`${API_BASE}/layer3/policies/${currentTarget}`),
-            fetch(`${API_BASE}/layer3/top_sources/${currentTarget}`),
-            fetch(`${API_BASE}/layer3/events/${currentTarget}`),
-            fetch(`${API_BASE}/layer3/mode`),
         ]);
 
         const [
             history,
             events,
             summaries,
-            layer3Status,
-            layer3Policies,
-            layer3Sources,
-            layer3Events,
-            layer3Mode,
         ] = await Promise.all([
             historyResponse.json(),
             eventsResponse.json(),
             summaryResponse.json(),
-            layer3StatusResponse.json(),
-            layer3PoliciesResponse.json(),
-            layer3SourcesResponse.json(),
-            layer3EventsResponse.json(),
-            layer3ModeResponse.json(),
         ]);
 
-        updateLayer3Panel(
-            layer3Mode,
-            layer3Status,
-            Array.isArray(layer3Sources) ? layer3Sources : [],
-            Array.isArray(layer3Policies) ? layer3Policies : [],
-            Array.isArray(layer3Events) ? layer3Events : [],
-        );
+        const noTrafficNotice = document.getElementById('noRecentTrafficNotice');
 
         if (!Array.isArray(history) || !history.length) {
+            // Configured target with no recent samples: keep charts/data alone,
+            // surface a friendly notice so the user knows the IP is valid but quiet.
             document.getElementById('diagPollStatus').textContent = `No RAM history for ${currentTarget}`;
+            if (noTrafficNotice) noTrafficNotice.style.display = 'block';
             updateEvents([]);
             updateTargetSummary(Array.isArray(summaries) ? summaries : []);
             return;
         }
+
+        if (noTrafficNotice) noTrafficNotice.style.display = 'none';
 
         const latest = history[history.length - 1];
         updateStatus(latest, history);
@@ -2053,16 +2453,441 @@ async function refresh() {
     }
 }
 
+// Legacy hidden select still emits change in case any external code drives it.
 document.getElementById('targetSelect').addEventListener('change', event => {
-    currentTarget = event.target.value;
-    document.getElementById('selectedTargetLabel').textContent = currentTarget;
-    refresh();
+    selectTarget(event.target.value);
 });
 
+// ============================================================================
+// TEMPORAL VIEW (multi-timescale, shadow-mode)
+// ============================================================================
+//
+// Reads the new /api/temporal/* endpoints and paints (a) three per-scale
+// cards and (b) six line charts for the currently-selected window.
+// Polls every 5 s — TEMP records arrive at most every 10 s on the C side,
+// so a 1 Hz poll like the IP refresh would just burn cycles. None of this
+// touches the existing IP path.
+const TEMPORAL_SCALES = [10, 60, 300];
+const TEMPORAL_STATE_CLASS = {
+    WARMUP:     'st-warmup',
+    NORMAL:     'st-normal',
+    WATCH:      'st-watch',
+    SUSPICIOUS: 'st-suspicious',
+    STRONG:     'st-strong',
+};
+let temporalCharts = {};
+let currentTemporalWindow = 10;
+
+function fmtTemporalNumber(value, digits) {
+    if (value === null || value === undefined || value === '') return '—';
+    const n = Number(value);
+    if (!isFinite(n)) return '—';
+    const d = (digits === undefined) ? 2 : digits;
+    if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(d) + 'G';
+    if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(d) + 'M';
+    if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(d) + 'k';
+    return n.toFixed(d);
+}
+
+function fmtTemporalRatio(value) {
+    if (value === null || value === undefined || value === '') return '—';
+    const n = Number(value);
+    return isFinite(n) ? n.toFixed(3) : '—';
+}
+
+function fmtTemporalInt(value) {
+    if (value === null || value === undefined || value === '') return '—';
+    const n = Number(value);
+    return isFinite(n) ? String(Math.round(n)) : '—';
+}
+
+function fmtTemporalBool(value) {
+    if (value === null || value === undefined) return '—';
+    return Number(value) ? 'Yes' : 'No';
+}
+
+function paintTemporalCard(scale, record) {
+    const card = document.getElementById('temporalCard' + scale);
+    if (!card) return;
+
+    const stateEl = card.querySelector('[data-key="temporal_state"]');
+
+    if (!record) {
+        card.classList.add('is-empty');
+        card.querySelectorAll('[data-key]').forEach(el => {
+            if (el !== stateEl) el.textContent = '—';
+        });
+        if (stateEl) {
+            stateEl.textContent = '—';
+            stateEl.className = 'temporal-state-pill st-warmup';
+        }
+        return;
+    }
+    card.classList.remove('is-empty');
+
+    const state = String(record.temporal_state || 'WARMUP').toUpperCase();
+    if (stateEl) {
+        stateEl.textContent = state;
+        const cls = TEMPORAL_STATE_CLASS[state] || 'st-warmup';
+        stateEl.className = 'temporal-state-pill ' + cls;
+    }
+
+    const setKV = (key, value) => {
+        const els = card.querySelectorAll('[data-key="' + key + '"]');
+        els.forEach(el => { if (el !== stateEl) el.textContent = value; });
+    };
+
+    setKV('temporal_score',    fmtTemporalRatio(record.temporal_score));
+    setKV('baseline_ready',    fmtTemporalBool(record.baseline_ready));
+    setKV('valid_seconds',     fmtTemporalInt(record.valid_seconds));
+    setKV('suspicious_seconds',fmtTemporalInt(record.suspicious_seconds));
+    setKV('attack_seconds',    fmtTemporalInt(record.attack_seconds));
+
+    setKV('avg_pps',           fmtTemporalNumber(record.avg_pps, 1));
+    setKV('max_pps',           fmtTemporalNumber(record.max_pps, 1));
+    setKV('avg_bps',           fmtTemporalNumber(record.avg_bps, 1));
+    setKV('max_bps',           fmtTemporalNumber(record.max_bps, 1));
+    setKV('avg_fps',           fmtTemporalNumber(record.avg_fps, 1));
+    setKV('max_fps',           fmtTemporalNumber(record.max_fps, 1));
+
+    setKV('tcp_pps_ratio',     fmtTemporalRatio(record.tcp_pps_ratio));
+    setKV('udp_pps_ratio',     fmtTemporalRatio(record.udp_pps_ratio));
+    setKV('icmp_pps_ratio',    fmtTemporalRatio(record.icmp_pps_ratio));
+
+    setKV('tcp_syn_ratio',     fmtTemporalRatio(record.tcp_syn_ratio));
+    setKV('tcp_synack_ratio',  fmtTemporalRatio(record.tcp_synack_ratio));
+    setKV('tcp_finack_ratio',  fmtTemporalRatio(record.tcp_finack_ratio));
+    setKV('tcp_rst_ratio',     fmtTemporalRatio(record.tcp_rst_ratio));
+    setKV('tcp_ack_data_ratio',fmtTemporalRatio(record.tcp_ack_data_ratio));
+
+    setKV('ratio_pps',         fmtTemporalRatio(record.ratio_pps));
+    setKV('ratio_bps',         fmtTemporalRatio(record.ratio_bps));
+    setKV('ratio_fps',         fmtTemporalRatio(record.ratio_fps));
+
+    setKV('volume_score',         fmtTemporalRatio(record.volume_score));
+    setKV('protocol_shift_score', fmtTemporalRatio(record.protocol_shift_score));
+    setKV('persistence_score',    fmtTemporalRatio(record.persistence_score));
+    setKV('ramp_score',           fmtTemporalRatio(record.ramp_score));
+}
+
+// ----------------------------------------------------------------------------
+// Adaptive lookback per scale.  Each entry yields ≈ 72 closed windows so the
+// chart point density is roughly constant across 10s / 60s / 300s, instead of
+// jamming 360 buckets into a 10s view (cluttered) or showing only 12 buckets
+// for 300s (under-populated).  Used by refreshTemporal() and surfaced in the
+// help text below the temporal tabs.
+const TEMPORAL_HISTORY_MINUTES = {
+    10:  12,   // ≈ 72 ten-second buckets   = 12 minutes
+    60:  72,   // ≈ 72 one-minute windows   = 72 minutes
+    300: 360,  // ≈ 72 five-minute windows  = 6 hours
+};
+
+// Hard cap on how many points each temporal chart will draw, regardless of
+// API row count.  Keeps Chart.js fast on weak browsers and prevents pathology
+// if a future override widens the lookback range.
+const TEMPORAL_CHART_MAX_POINTS = 240;
+
+// Declarative spec for each temporal chart.  cur is the current/raw column on
+// the dst_ip_temporal_stats row; em is the matching EWMA-mean column (null
+// for charts that have no baseline, e.g. the score and the persistence chart).
+// secondary is used by the persistence chart to overlay attack_seconds on top
+// of suspicious_seconds — both are solid lines (not dashed), since they are
+// counts and not a current-vs-baseline pair.
+const TEMPORAL_CHART_SPECS = [
+    { id: 'pps',         cur: 'avg_pps',             em: 'em_pps',             color: 'tcp'  },
+    { id: 'bps',         cur: 'avg_bps',             em: 'em_bps',             color: 'udp'  },
+    { id: 'fps',         cur: 'avg_fps',             em: 'em_fps',             color: 'icmp' },
+    { id: 'udpPps',      cur: 'udp_pps_ratio',       em: 'em_udp_pps_ratio',   color: 'udp'  },
+    { id: 'tcpSyn',      cur: 'tcp_syn_ratio',       em: 'em_tcp_syn_ratio',   color: 'tcp'  },
+    { id: 'score',       cur: 'temporal_score',      em: null,                 color: 'score' },
+    { id: 'persistence', cur: 'suspicious_seconds',  em: null,                 color: 'suspicious',
+                         secondary: { key: 'attack_seconds', color: 'attack' } },
+];
+
+// Resolve a logical colour name to the same palette the 1-second IP charts
+// use, so the temporal panel inherits the same look-and-feel as the rest of
+// the dashboard.  Falls back gracefully if a CSS variable is missing.
+function temporalChartColor(name) {
+    switch (name) {
+        case 'tcp':        return getCssVar('--tcp')  || '#ef5350';
+        case 'udp':        return getCssVar('--udp')  || '#f6c453';
+        case 'icmp':       return getCssVar('--icmp') || '#b0bec5';
+        case 'score':      return '#ff9f0a';
+        case 'suspicious': return '#ffd60a';
+        case 'attack':     return getCssVar('--attack') || '#ef5350';
+        default:           return getCssVar('--muted-soft') || '#91a0bd';
+    }
+}
+
+// Order-preserving down-sampler.  Always keeps the newest (last) row so the
+// chart's right edge stays current, and steps backward in roughly equal
+// strides through the rest.  No-op when the row count is already at or below
+// the cap.
+function downsampleTemporalRows(rows, maxPoints) {
+    if (!Array.isArray(rows) || rows.length <= maxPoints) return rows || [];
+    const n = rows.length;
+    const step = (n - 1) / (maxPoints - 1);
+    const out = new Array(maxPoints);
+    for (let i = 0; i < maxPoints; i++) {
+        out[i] = rows[Math.round(i * step)];
+    }
+    out[maxPoints - 1] = rows[n - 1];
+    return out;
+}
+
+// Build a single temporal chart whose visual grammar matches the existing
+// 1-second detector charts: solid Raw line + dashed EWMA baseline (or, for
+// the persistence chart, two solid lines).  Centralising the construction
+// keeps every temporal canvas pixel-identical in styling.
+function buildTemporalChart(canvasId, label, color, opts) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return null;
+
+    const datasets = [{
+        label: label,
+        data: [],
+        borderColor: color,
+        backgroundColor: color,
+        borderWidth: 1.8,
+        tension: 0.25,
+        pointRadius: 0,
+        pointHoverRadius: 3,
+        pointBackgroundColor: color,
+        fill: false,
+        spanGaps: true,
+    }];
+
+    // EWMA baseline — exact same construction as the 1-second IP charts:
+    // dashed, --ewma colour, narrower stroke, no fill.
+    if (opts && opts.em) {
+        datasets.push({
+            label: 'EWMA',
+            data: [],
+            borderColor: getCssVar('--ewma') || '#91a0bd',
+            borderWidth: 1.7,
+            borderDash: [6, 4],
+            tension: 0.25,
+            pointRadius: 0,
+            fill: false,
+            spanGaps: true,
+        });
+    }
+
+    // Persistence-chart secondary series (attack_seconds): solid, distinct
+    // colour, NOT dashed — it isn't an EWMA baseline.
+    if (opts && opts.secondaryColor) {
+        datasets.push({
+            label: opts.secondaryLabel || 'series 2',
+            data: [],
+            borderColor: opts.secondaryColor,
+            backgroundColor: opts.secondaryColor,
+            borderWidth: 1.6,
+            tension: 0.25,
+            pointRadius: 0,
+            fill: false,
+            spanGaps: true,
+        });
+    }
+
+    return new Chart(canvas, {
+        type: 'line',
+        data: { labels: [], datasets: datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: {
+                    display: datasets.length > 1,
+                    labels: { color: getCssVar('--muted-soft'), font: { size: 11 } },
+                },
+                tooltip: {
+                    callbacks: {
+                        label: (ctx) => {
+                            const v = ctx.raw;
+                            if (v === null || v === undefined) return `${ctx.dataset.label}: —`;
+                            return `${ctx.dataset.label}: ${Number(v).toFixed(3)}`;
+                        },
+                    },
+                },
+            },
+            scales: {
+                x: {
+                    type: 'time',
+                    time: {
+                        unit: 'minute',
+                        displayFormats: { minute: 'HH:mm', second: 'HH:mm:ss' },
+                    },
+                    ticks: { color: getCssVar('--muted-soft'), maxRotation: 0, autoSkip: true },
+                    grid: { color: 'rgba(145, 160, 189, 0.10)' },
+                },
+                y: {
+                    beginAtZero: true,
+                    ticks: { color: getCssVar('--muted-soft') },
+                    grid: { color: 'rgba(145, 160, 189, 0.10)' },
+                },
+            },
+        },
+    });
+}
+
+// Convert a row's value for `key` to a number suitable for plotting.  Returns
+// null when the field is null / undefined / non-finite, so dashed EWMA lines
+// drop a gap rather than collapse to zero — important during temporal warm-up
+// when em_* is genuinely absent.
+function temporalRowValue(row, key) {
+    if (!row || !key) return null;
+    const v = row[key];
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+}
+
+function setTemporalChartData(chart, history, curKey, emKey, secondaryKey) {
+    if (!chart) return;
+    const xs = history.map(r => new Date(r.timestamp));
+    chart.data.labels = xs;
+    chart.data.datasets[0].data = history.map(r => temporalRowValue(r, curKey));
+    let dsIdx = 1;
+    if (emKey && chart.data.datasets[dsIdx]) {
+        chart.data.datasets[dsIdx].data = history.map(r => temporalRowValue(r, emKey));
+        dsIdx++;
+    }
+    if (secondaryKey && chart.data.datasets[dsIdx]) {
+        chart.data.datasets[dsIdx].data = history.map(r => temporalRowValue(r, secondaryKey));
+    }
+    chart.update('none');
+}
+
+function updateTemporalCharts(history) {
+    const rows = downsampleTemporalRows(history, TEMPORAL_CHART_MAX_POINTS);
+    TEMPORAL_CHART_SPECS.forEach(spec => {
+        const chart = temporalCharts[spec.id];
+        if (!chart) return;
+        setTemporalChartData(
+            chart, rows, spec.cur, spec.em,
+            spec.secondary ? spec.secondary.key : null,
+        );
+    });
+}
+
+function clearTemporalCharts() {
+    Object.values(temporalCharts).forEach(chart => {
+        if (!chart) return;
+        chart.data.labels = [];
+        chart.data.datasets.forEach(ds => { ds.data = []; });
+        chart.update('none');
+    });
+}
+
+// Update the help text below the tabs to reflect the lookback that will
+// actually be used for the currently-selected scale.
+function updateTemporalChartsHelp() {
+    const help = document.getElementById('temporalChartsHelp');
+    if (!help) return;
+    const minutes = TEMPORAL_HISTORY_MINUTES[currentTemporalWindow] || 60;
+    const human = (minutes >= 60 && minutes % 60 === 0)
+        ? `${minutes / 60} h`
+        : `${minutes} min`;
+    help.textContent =
+        `Showing the last ${human} for the selected ${currentTemporalWindow}s ` +
+        `temporal scale (≈ 72 windows). Solid line = current value; ` +
+        `dashed line = EWMA baseline.`;
+}
+
+async function refreshTemporal() {
+    if (!currentTarget) {
+        TEMPORAL_SCALES.forEach(s => paintTemporalCard(s, null));
+        clearTemporalCharts();
+        updateTemporalChartsHelp();
+        return;
+    }
+
+    let latest = null;
+    let history = [];
+    try {
+        const latestRes = await fetch(`${API_BASE}/temporal/latest/${currentTarget}`);
+        if (latestRes.ok) latest = await latestRes.json();
+    } catch (err) { /* swallow — latest path is RAM-only and best-effort */ }
+
+    const lookbackMin = TEMPORAL_HISTORY_MINUTES[currentTemporalWindow] || 60;
+    try {
+        const historyRes = await fetch(
+            `${API_BASE}/temporal/history/${currentTarget}` +
+            `?window_sec=${currentTemporalWindow}&minutes=${lookbackMin}`);
+        if (historyRes.ok) {
+            const j = await historyRes.json();
+            if (Array.isArray(j)) history = j;
+        }
+    } catch (err) { /* swallow — empty history is the empty-state */ }
+
+    const windows = (latest && latest.windows) || {};
+    paintTemporalCard(10,  windows['10']  || null);
+    paintTemporalCard(60,  windows['60']  || null);
+    paintTemporalCard(300, windows['300'] || null);
+
+    updateTemporalCharts(history);
+    updateTemporalChartsHelp();
+}
+
+function setupTemporalTabs() {
+    document.querySelectorAll('.temporal-tab').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const ws = parseInt(btn.dataset.windowSec, 10);
+            if (!ws || !TEMPORAL_SCALES.includes(ws)) return;
+            currentTemporalWindow = ws;
+            document.querySelectorAll('.temporal-tab')
+                .forEach(b => b.classList.toggle('is-active', b === btn));
+            refreshTemporal();
+        });
+    });
+}
+
+// Map from spec.id to canvas DOM id. Keeps spec definitions readable and
+// lets the HTML / CSS lookup remain explicit.
+const TEMPORAL_CHART_CANVAS_IDS = {
+    pps:         'temporalChartPps',
+    bps:         'temporalChartBps',
+    fps:         'temporalChartFps',
+    udpPps:      'temporalChartUdpPps',
+    tcpSyn:      'temporalChartTcpSyn',
+    score:       'temporalChartScore',
+    persistence: 'temporalChartPersistence',
+};
+
+function initTemporalView() {
+    TEMPORAL_CHART_SPECS.forEach(spec => {
+        const canvasId = TEMPORAL_CHART_CANVAS_IDS[spec.id];
+        if (!canvasId) return;
+        const opts = {};
+        if (spec.em) {
+            // Triggers the dashed --ewma baseline dataset in buildTemporalChart.
+            opts.em = spec.em;
+        }
+        if (spec.secondary) {
+            opts.secondaryColor = temporalChartColor(spec.secondary.color);
+            opts.secondaryLabel = spec.secondary.key;
+        }
+        temporalCharts[spec.id] = buildTemporalChart(
+            canvasId, spec.cur, temporalChartColor(spec.color), opts,
+        );
+    });
+    setupTemporalTabs();
+    updateTemporalChartsHelp();
+}
+
+setupTargetSearch();
 buildChartSections();
+initTemporalView();
 fetchTargets().then(refresh);
 setInterval(fetchTargets, 5000);
 setInterval(refresh, 1000);
+// Independent temporal poll — slower than the 1 Hz IP refresh because
+// TEMP records only arrive every 10 s on the C side. Not chained off
+// `refresh()` so a slow IP refresh can never starve the temporal view.
+refreshTemporal();
+setInterval(refreshTemporal, 5000);
 </script>
 </body>
 </html>

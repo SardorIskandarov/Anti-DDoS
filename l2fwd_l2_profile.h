@@ -92,7 +92,12 @@ extern const struct l2_profile l2_profile_default;
  * Example non-default profile. Demonstrates that alternate profiles
  * compile and can be pointed at; not assigned to any IP by default.
  */
-extern const struct l2_profile l2_profile_sensitive;
+extern const struct l2_profile l2_profile_45_150_25_70_manual_v1;
+extern const struct l2_profile l2_profile_213_230_125_66_manual_v1;
+extern const struct l2_profile l2_profile_213_230_125_170_manual_v1;
+extern const struct l2_profile l2_profile_45_150_25_116_manual_v1;
+extern const struct l2_profile l2_profile_89_249_62_131_manual_v1;
+extern const struct l2_profile l2_profile_94_141_85_150_manual_v1;
 
 /*
  * Resolve the Layer-2 profile for a given destination IP.

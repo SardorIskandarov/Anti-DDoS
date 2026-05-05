@@ -238,6 +238,172 @@ def _coerce(raw, kind):
     return raw  # 'str'
 
 
+# ============================================================================
+# TEMP RECORD PARSER (multi-timescale temporal observability)
+# ============================================================================
+#
+# Locked 79-field comma-separated line emitted by C l2_temporal_update_1s().
+# Field 0 is the literal "TEMP" record-type token; fields 1..78 are the
+# data columns persisted 1:1 to dst_ip_temporal_stats. Any change to the
+# C formatter MUST bump L2_TEMP_SCHEMA_VERSION on the C side AND update
+# this parser, _TEMPORAL_INSERT_COLUMNS in database.py, and the CREATE
+# TABLE statement in the same commit.
+#
+# Field index reference (0-based parts[]; matches database.py
+# _TEMPORAL_INSERT_COLUMNS in lockstep):
+#   parts[0]    "TEMP"
+#   parts[1]    schema_ver        (must equal a value in
+#                                   config.TEMPORAL_SUPPORTED_SCHEMA_VERS)
+#   parts[2]    rollup_ver
+#   parts[3]    timestamp_ms      → DB column `timestamp` (DateTime64)
+#   parts[4]    port
+#   parts[5]    dst_ip
+#   parts[6]    window_sec
+#   parts[7]    bucket_epoch_ms
+#   parts[8]    valid_seconds
+#   parts[9]    baseline_ready
+#   parts[10]   temporal_state
+#   parts[11..28]  volume          (3 metrics × 6: avg, em, ratio, z,
+#                                   min, max — ordering pps → bps → fps)
+#   parts[29..42]  protocol-share pairs  (7 × 2: cur, baseline)
+#   parts[43..52]  TCP-flag pairs        (5 × 2: cur, baseline)
+#   parts[53..56]  distribution pairs    (2 × 2: cur, baseline)
+#   parts[57..69]  raw counters          (13)
+#   parts[70..73]  per-state seconds     (normal, warmup, suspicious,
+#                                          attack)
+#   parts[74..78]  scores                (volume, protocol_shift,
+#                                          persistence, ramp,
+#                                          temporal_score)
+
+
+def parse_temporal_line(line):
+    """Parse one TEMP record line.
+
+    Returns a dict whose keys exactly match `database._TEMPORAL_INSERT_COLUMNS`
+    on success, or None on any structural / type / version mismatch.
+    Errors are logged but never raised — the caller MUST be able to
+    drop a malformed TEMP line without breaking either collector thread.
+    """
+    parts = line.strip().split(',')
+
+    if len(parts) != config.TEMPORAL_EXPECTED_FIELDS:
+        print(f"[Collector] Bad TEMP: expected "
+              f"{config.TEMPORAL_EXPECTED_FIELDS} fields, got {len(parts)}")
+        return None
+
+    if parts[0] != 'TEMP':
+        return None
+
+    try:
+        schema_ver = int(parts[1])
+        if schema_ver not in config.TEMPORAL_SUPPORTED_SCHEMA_VERS:
+            print(f"[Collector] TEMP unsupported schema_ver={schema_ver}, "
+                  f"dropping")
+            return None
+
+        # The dict below is the SOLE source of truth for the row written
+        # to dst_ip_temporal_stats. Its keys match _TEMPORAL_INSERT_COLUMNS
+        # 1:1 in name and order; no placeholder fields, no fields dropped.
+        return {
+            # Header (10) — TEMP fields 1..10
+            'schema_ver':       schema_ver,
+            'rollup_ver':       int(parts[2]),
+            'timestamp':        datetime.fromtimestamp(int(parts[3]) / 1000.0),
+            'port':             int(parts[4]),
+            'dst_ip':           parts[5],
+            'window_sec':       int(parts[6]),
+            'bucket_epoch_ms':  int(parts[7]),
+            'valid_seconds':    int(parts[8]),
+            'baseline_ready':   int(parts[9]),
+            'temporal_state':   parts[10],
+
+            # Volume (18) — TEMP fields 11..28
+            'avg_pps':   float(parts[11]),
+            'em_pps':    float(parts[12]),
+            'ratio_pps': float(parts[13]),
+            'z_pps':     float(parts[14]),
+            'min_pps':   float(parts[15]),
+            'max_pps':   float(parts[16]),
+            'avg_bps':   float(parts[17]),
+            'em_bps':    float(parts[18]),
+            'ratio_bps': float(parts[19]),
+            'z_bps':     float(parts[20]),
+            'min_bps':   float(parts[21]),
+            'max_bps':   float(parts[22]),
+            'avg_fps':   float(parts[23]),
+            'em_fps':    float(parts[24]),
+            'ratio_fps': float(parts[25]),
+            'z_fps':     float(parts[26]),
+            'min_fps':   float(parts[27]),
+            'max_fps':   float(parts[28]),
+
+            # Protocol-share pairs (14) — TEMP fields 29..42
+            'tcp_pps_ratio':      float(parts[29]),
+            'em_tcp_pps_ratio':   float(parts[30]),
+            'tcp_bps_ratio':      float(parts[31]),
+            'em_tcp_bps_ratio':   float(parts[32]),
+            'udp_pps_ratio':      float(parts[33]),
+            'em_udp_pps_ratio':   float(parts[34]),
+            'udp_bps_ratio':      float(parts[35]),
+            'em_udp_bps_ratio':   float(parts[36]),
+            'udp_flow_ratio':     float(parts[37]),
+            'em_udp_flow_ratio':  float(parts[38]),
+            'icmp_pps_ratio':     float(parts[39]),
+            'em_icmp_pps_ratio':  float(parts[40]),
+            'icmp_echo_ratio':    float(parts[41]),
+            'em_icmp_echo_ratio': float(parts[42]),
+
+            # TCP-flag pairs (10) — TEMP fields 43..52
+            'tcp_syn_ratio':         float(parts[43]),
+            'em_tcp_syn_ratio':      float(parts[44]),
+            'tcp_synack_ratio':      float(parts[45]),
+            'em_tcp_synack_ratio':   float(parts[46]),
+            'tcp_finack_ratio':      float(parts[47]),
+            'em_tcp_finack_ratio':   float(parts[48]),
+            'tcp_rst_ratio':         float(parts[49]),
+            'em_tcp_rst_ratio':      float(parts[50]),
+            'tcp_ack_data_ratio':    float(parts[51]),
+            'em_tcp_ack_data_ratio': float(parts[52]),
+
+            # Distribution pairs (4) — TEMP fields 53..56
+            'src_ip_ratio':      float(parts[53]),
+            'em_src_ip_ratio':   float(parts[54]),
+            'dst_port_ratio':    float(parts[55]),
+            'em_dst_port_ratio': float(parts[56]),
+
+            # Raw counters (13) — TEMP fields 57..69
+            'total_pkts':     int(parts[57]),
+            'total_bytes':    int(parts[58]),
+            'tcp_pkts':       int(parts[59]),
+            'tcp_bytes':      int(parts[60]),
+            'udp_pkts':       int(parts[61]),
+            'udp_bytes':      int(parts[62]),
+            'icmp_pkts':      int(parts[63]),
+            'icmp_echo_pkts': int(parts[64]),
+            'syn_pkts':       int(parts[65]),
+            'synack_pkts':    int(parts[66]),
+            'finack_pkts':    int(parts[67]),
+            'rst_pkts':       int(parts[68]),
+            'ack_data_pkts':  int(parts[69]),
+
+            # Per-state seconds (4) — TEMP fields 70..73
+            'normal_seconds':     int(parts[70]),
+            'warmup_seconds':     int(parts[71]),
+            'suspicious_seconds': int(parts[72]),
+            'attack_seconds':     int(parts[73]),
+
+            # Scores (5) — TEMP fields 74..78
+            'volume_score':         float(parts[74]),
+            'protocol_shift_score': float(parts[75]),
+            'persistence_score':    float(parts[76]),
+            'ramp_score':           float(parts[77]),
+            'temporal_score':       float(parts[78]),
+        }
+    except Exception as e:
+        print(f"[Collector] TEMP parse error: {e}")
+        return None
+
+
 def parse_csv_line(line):
     """Parse one CSV line emitted by ddos_log_and_reset_stats().
 
@@ -316,6 +482,13 @@ def dpdk_collector_thread():
                     line, buf = buf.split('\n', 1)
                     if not line.strip():
                         continue
+                    # This collector is for the 62-field IP CSV stream
+                    # ONLY. TEMP records arrive on the separate
+                    # TEMPORAL_SOCK_PATH and are handled by
+                    # dpdk_temporal_collector_thread(); the C side never
+                    # emits TEMP on SOCK_PATH, so any line that reaches
+                    # us here is fed straight to the strict 62-field
+                    # parse_csv_line() unchanged.
                     try:
                         record = parse_csv_line(line)
                         if not record:
@@ -371,4 +544,104 @@ def dpdk_collector_thread():
 
         except Exception as e:
             print(f"[Collector] Error: {e}")
+            time.sleep(1)
+
+
+# ============================================================================
+# TEMPORAL COLLECTOR THREAD
+# ============================================================================
+#
+# Listens on the dedicated TEMPORAL_SOCK_PATH for TEMP records produced
+# by C l2_temporal_update_1s(). Mirrors dpdk_collector_thread's
+# accept-then-loop structure but only handles the 79-field TEMP schema:
+# any non-TEMP line is logged and dropped. Failures here are local —
+# the IP path on SOCK_PATH is on a separate thread and a separate fd,
+# so a temporal hiccup cannot affect existing 1-second IP records.
+def dpdk_temporal_collector_thread():
+    """Background thread — receives TEMP records on the dedicated
+    temporal Unix socket and persists them to dst_ip_temporal_stats."""
+
+    try:
+        client = database.get_db_client()
+        print("[Collector/Temporal] Database connection established")
+    except Exception as e:
+        print(f"[Collector/Temporal] Database connection failed: {e}")
+        return
+
+    if os.path.exists(config.TEMPORAL_SOCK_PATH):
+        os.unlink(config.TEMPORAL_SOCK_PATH)
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(config.TEMPORAL_SOCK_PATH)
+    server.listen(1)
+    print(f"[Collector/Temporal] Listening on {config.TEMPORAL_SOCK_PATH} …")
+
+    while True:
+        try:
+            conn, _ = server.accept()
+            print("[Collector/Temporal] DPDK temporal stream connected")
+
+            buf               = ""
+            temporal_db_batch = []
+            records_received  = 0
+
+            while True:
+                data = conn.recv(config.BUFFER_SIZE)
+                if not data:
+                    print("[Collector/Temporal] DPDK temporal stream disconnected")
+                    if temporal_db_batch:
+                        database.batch_insert_temporal(client, temporal_db_batch)
+                        temporal_db_batch = []
+                    break
+
+                buf += data.decode('utf-8', errors='ignore')
+
+                while '\n' in buf:
+                    line, buf = buf.split('\n', 1)
+                    if not line.strip():
+                        continue
+
+                    # Defensive: anything that does not start with the
+                    # locked record-type token is dropped. The temporal
+                    # socket should NEVER carry IP CSV lines, so we do
+                    # not attempt parse_csv_line() here.
+                    if not line.startswith('TEMP,'):
+                        print(f"[Collector/Temporal] non-TEMP line dropped "
+                              f"(prefix={line[:8]!r})")
+                        continue
+
+                    try:
+                        record = parse_temporal_line(line)
+                        if not record:
+                            continue
+
+                        if not _is_target_ip(record['dst_ip']):
+                            continue
+
+                        with shared_state.temporal_data_lock:
+                            shared_state.latest_temporal_data.insert(0, record)
+                            shared_state.latest_temporal_data = \
+                                shared_state.latest_temporal_data[:config.TEMPORAL_RAM_BUFFER_SIZE]
+
+                        temporal_db_batch.append(record)
+                        records_received += 1
+
+                        if len(temporal_db_batch) >= config.BATCH_SIZE:
+                            if not database.batch_insert_temporal(client, temporal_db_batch):
+                                # Insert failure: log and drop the batch
+                                # rather than retain it indefinitely. IP
+                                # path is unaffected — different thread,
+                                # different fd, different table.
+                                print("[Collector/Temporal] batch insert failed; "
+                                      "dropping batch")
+                            temporal_db_batch = []
+
+                    except Exception as e:
+                        print(f"[Collector/Temporal] Record error: {e}")
+
+            conn.close()
+            print("[Collector/Temporal] Waiting for next connection …")
+
+        except Exception as e:
+            print(f"[Collector/Temporal] Error: {e}")
             time.sleep(1)

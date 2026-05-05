@@ -21,7 +21,7 @@
 /**
  * Warm-up: Learn baselines silently before making decisions.
  */
-#define DETECTION_WARMUP_WINDOWS 900
+#define DETECTION_WARMUP_WINDOWS 400
 
 /**
  * CHANGE 1: Z-score threshold for burst features (burst_pps, burst_bps, burst_fps)
@@ -30,7 +30,7 @@
  *   z = (x - ewma_mean) / (std + epsilon)
  *   risk = clamp(z / BURST_Z_THRESHOLD, 0, 1)
  */
-#define BURST_Z_THRESHOLD 7
+#define BURST_Z_THRESHOLD 8.5
 
 /**
  * CHANGE 2: Per-feature CUSUM parameters (PPS, BPS, FPS only)
@@ -39,16 +39,16 @@
  *   S_t = max(0, S_{t-1} + (x_t - ewma_mean - k * ewma_std))
  *   Alarm when S_t > H (H = h * ewma_std)
  */
-#define CUSUM_K_PPS  0.08
-#define CUSUM_H_PPS  6.0
+#define CUSUM_K_PPS  0.10
+#define CUSUM_H_PPS  6.5
 
-#define CUSUM_K_BPS  0.08
-#define CUSUM_H_BPS  6.0
+#define CUSUM_K_BPS  0.10
+#define CUSUM_H_BPS  6.5
 
-#define CUSUM_K_FPS  0.70
-#define CUSUM_H_FPS  5.5
+#define CUSUM_K_FPS  0.85
+#define CUSUM_H_FPS  6.0
 
-#define VARIANCE_CEILING_FACTOR 2.5
+#define VARIANCE_CEILING_FACTOR 2.0
 
 /**
  * CHANGE 3: Tier-0 continuous risk scoring weights
@@ -57,54 +57,71 @@
  * 
  * Trigger when: global_risk >= T0_RISK_THRESHOLD
  */
-#define T0_W_PPS         3.0
-#define T0_W_BPS         3.5
+#define T0_W_PPS         3.5
+#define T0_W_BPS         2
 #define T0_W_FPS         1.2
 #define T0_W_BURST_PPS   1.5
-#define T0_W_BURST_BPS   2
+#define T0_W_BURST_BPS   1
 #define T0_W_BURST_FPS   0.5
 
-#define T0_SUSPICIOUS_RISK_THRESHOLD 5.0
-#define T0_RISK_THRESHOLD 7.5
+
+
+#define T0_SUSPICIOUS_RISK_THRESHOLD 4.5
+#define T0_RISK_THRESHOLD 6.5
 
 /**
  * ABSOLUTE VOLUMETRIC OVERRIDE THRESHOLDS (PRODUCTION SAFETY NET)
  */
 
-#define ABSOLUTE_PPS_THRESHOLD  25000.0
-#define ABSOLUTE_BPS_THRESHOLD   240000000.0
-#define ABSOLUTE_FPS_THRESHOLD   200.0
+#define ABSOLUTE_PPS_THRESHOLD  30000.0
+#define ABSOLUTE_BPS_THRESHOLD  310000000.0
+#define ABSOLUTE_FPS_THRESHOLD  300.0
 
 
-#define CONSECUTIVE_ATTACK_WINDOWS 3
+#define CONSECUTIVE_ATTACK_WINDOWS 2
 
 /** Tier-1 sigmoid parameters (unchanged) */
-#define SIGMOID_K   0.75
-#define SIGMOID_D0  1.5
+#define SIGMOID_K   1.0
+#define SIGMOID_D0  1.1
 
 /** Tier-1 decision thresholds */
-#define THRESHOLD_NORMAL     0.5
-#define THRESHOLD_SUSPICIOUS 0.75
+#define THRESHOLD_NORMAL     0.42
+#define THRESHOLD_SUSPICIOUS 0.62
 
 /**
  * IMPROVEMENT 3: Tier-1 weighted fusion weights
  * Replaces "worst wins" with weighted average for balanced decision making
  */
-#define W_TCP   0.25    // TCP is king in your traffic
-#define W_UDP   0.50   // UDP influence cut dramatically
-#define W_DIST  0.25    // DIST is very clean → deserves more weight
+#define W_TCP   0.10
+#define W_UDP   0.60
+#define W_DIST  0.25
 #define W_ICMP  0.05
+
+/**
+ * Protocol-presence gating thresholds for Tier-1 fusion.
+ *
+ * A protocol category contributes to Tier-1 fusion only if its share
+ * of the current-window packet mix meets the threshold below. This
+ * prevents a low-volume background protocol (e.g. stray TCP during a
+ * UDP flood) from driving a large category score that would otherwise
+ * distort the weighted fusion and attack typing.
+ *
+ * DIST has no protocol family and is always active.
+ */
+#define MIN_TCP_RATIO_FOR_TCP_SCORING   0.05
+#define MIN_UDP_RATIO_FOR_UDP_SCORING   0.20
+#define MIN_ICMP_RATIO_FOR_ICMP_SCORING 0.02
 
 /**
  * EARLY FREEZE: Freeze as soon as Tier-0 risk exceeds threshold.
  */
-#define BASELINE_FREEZE_WINDOWS 20
+#define BASELINE_FREEZE_WINDOWS 12
 
 /**
  * THAW COOLDOWN: Number of consecutive NORMAL windows required before
  * unfreezing baselines after an attack ends.
  */
-#define THAW_COOLDOWN_WINDOWS 20
+#define THAW_COOLDOWN_WINDOWS 15
 
 // ============================================================================
 // DETECTION STATES

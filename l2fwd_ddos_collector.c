@@ -1,6 +1,5 @@
 #include "l2fwd_ddos_collector.h"
 #include "l2fwd_detection_engine.h"
-#include "l2fwd_l3_bridge.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,7 +10,6 @@
 #include <errno.h>
 #include <math.h>
 #include <arpa/inet.h>
-
 #include <rte_ethdev.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
@@ -24,7 +22,6 @@
 
 /*
  * port_stats — allocated on the heap at startup via rte_zmalloc.
- *
  * A static array of struct port_stats is ~2.1 GB (RTE_MAX_ETHPORTS=32 ×
  * 1024 dst_ip entries × ~66 KB each), which exceeds the ±2 GB signed
  * 32-bit PC-relative addressing range and causes R_X86_64_PC32 relocation
@@ -33,10 +30,21 @@
  */
 struct port_stats *port_stats = NULL;
 
-/* Socket */
+/* Socket — existing 1-second 62-column IP record stream. Only the IP
+ * line emitted in ddos_log_and_reset_stats() may be sent on this fd. */
 #define SOCK_PATH "/tmp/ddos_stats_socket"
 static int sock_fd = -1;
 static struct sockaddr_un server_addr;
+
+/* Temporal socket — separate Unix-domain stream dedicated to the 79-field
+ * TEMP records produced by l2fwd_temporal.c. This fd is plumbed into
+ * l2_temporal_update_1s() and used by send_temporal_record() exclusively;
+ * the existing 62-column IP path never touches it. Drop / reconnect /
+ * send-failure handling mirrors the IP path 1:1 but is independent so a
+ * temporal hiccup cannot cascade into IP-record loss. */
+#define TEMPORAL_SOCK_PATH "/tmp/ddos_temporal_socket"
+static int temporal_sock_fd = -1;
+static struct sockaddr_un temporal_server_addr;
 
 /* CSV file for raw features logging */
 static FILE *csv_file = NULL;
@@ -230,6 +238,12 @@ struct dst_ip_stats *dst_ip_table_get_or_create(struct dst_ip_table *table,
              * the static assignment table in l2fwd_l2_profile.c. */
             e->profile = l2_profile_for_ip(dst_ip);
 
+            /* Multi-timescale temporal observability state. memset above
+             * already zeroed every byte; l2_temporal_init re-seeds the
+             * per-bucket min sentinels and sets the result phase to
+             * L2_TEMPORAL_WARMUP. No reader yet — wired in a later commit. */
+            l2_temporal_init(&e->temporal);
+
             /* HLL seeds — use different constants per estimator */
             hll_init(&e->unique_src_ips,  0x11111111 + dst_ip);
             hll_init(&e->unique_dst_ports,0x22222222 + dst_ip);
@@ -283,7 +297,16 @@ void ddos_collector_init(void) {
     server_addr.sun_family = AF_UNIX;
     strncpy(server_addr.sun_path, SOCK_PATH,
             sizeof(server_addr.sun_path) - 1);
-    
+
+    /* Independent socket address for TEMP records. Mirrors the IP
+     * server_addr setup above but targets TEMPORAL_SOCK_PATH so the
+     * temporal stream can connect / disconnect without disturbing the
+     * existing 62-column IP path. */
+    memset(&temporal_server_addr, 0, sizeof(temporal_server_addr));
+    temporal_server_addr.sun_family = AF_UNIX;
+    strncpy(temporal_server_addr.sun_path, TEMPORAL_SOCK_PATH,
+            sizeof(temporal_server_addr.sun_path) - 1);
+
     /* Remove old CSV file if exists */
     remove(CSV_PATH);
     
@@ -308,6 +331,29 @@ static void check_and_connect_socket(void) {
         sock_fd = -1;
     } else {
         printf("[Collector] Connected to Python receiver at %s\n", SOCK_PATH);
+    }
+}
+
+/* Mirrors check_and_connect_socket() but for the dedicated temporal
+ * stream. Independent state (`temporal_sock_fd` / `temporal_server_addr`)
+ * means a temporal connect-failure can never affect the IP path's
+ * `sock_fd`, and vice versa. send() failures inside the temporal module
+ * are swallowed; the next 1Hz tick reopens the socket here. */
+static void check_and_connect_temporal_socket(void) {
+    if (temporal_sock_fd >= 0) return;
+    temporal_sock_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (temporal_sock_fd < 0) {
+        perror("[Collector] temporal socket()");
+        return;
+    }
+    if (connect(temporal_sock_fd,
+                (struct sockaddr *)&temporal_server_addr,
+                sizeof(temporal_server_addr)) < 0) {
+        close(temporal_sock_fd);
+        temporal_sock_fd = -1;
+    } else {
+        printf("[Collector] Connected to temporal receiver at %s\n",
+               TEMPORAL_SOCK_PATH);
     }
 }
 
@@ -346,11 +392,6 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
     uint32_t dst_ip   = rte_be_to_cpu_32(ipv4_hdr->dst_addr);
     uint8_t  protocol = ipv4_hdr->next_proto_id;
     uint16_t ip_hl    = ipv4_hdr->ihl * 4;
-
-    /* Layer 3 bridge: packet-type flags and ports, filled in per-protocol below */
-    uint32_t bridge_pkt_flags = 0;
-    uint16_t bridge_src_port  = 0;
-    uint16_t bridge_dst_port  = 0;
 
     struct dst_ip_stats *s = dst_ip_table_get_or_create(
         &port_stats[portid].dst_table, dst_ip, timestamp, portid);
@@ -397,14 +438,6 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
         if (ack && !syn && !fin && !rst)
             __atomic_fetch_add(&s->ack_data_pkts, 1, __ATOMIC_RELAXED);
 
-        /* Layer 3 bridge: record TCP flags and ports for bridge collection */
-        bridge_src_port  = src_port;
-        bridge_dst_port  = dst_port;
-        bridge_pkt_flags = L3_BRIDGE_PKT_TCP;
-        if (syn && !ack)                 bridge_pkt_flags |= L3_BRIDGE_PKT_SYN;
-        if (rst)                         bridge_pkt_flags |= L3_BRIDGE_PKT_RST;
-        if (ack && !syn && !fin && !rst) bridge_pkt_flags |= L3_BRIDGE_PKT_ACK_ONLY;
-
         break;
     }
 
@@ -427,10 +460,6 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
             flow_key = { src_ip, src_port, dst_port, IPPROTO_UDP };
         hll_add(&s->unique_flows, &flow_key, sizeof(flow_key));
 
-        /* Layer 3 bridge: record ports for bridge collection (no flags for UDP) */
-        bridge_src_port = src_port;
-        bridge_dst_port = dst_port;
-
         break;
     }
 
@@ -451,15 +480,6 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
     default:
         break;
     }
-
-    /* Layer 3 bridge: collect per-source stats only when victim is under attack.
-     * l3_bridge_collect_src_packet() checks under_attack internally, but the
-     * outer is_under_attack() guard avoids flag-computation overhead on the
-     * common (non-attacked) case. */
-    if (l3_bridge_is_under_attack(dst_ip))
-        l3_bridge_collect_src_packet(dst_ip, src_ip,
-                                     bridge_dst_port, bridge_src_port,
-                                     m->pkt_len, bridge_pkt_flags);
 }
 
 // ============================================================================
@@ -672,6 +692,10 @@ void ddos_log_and_reset_stats(void) {
     int  len;
 
     check_and_connect_socket();
+    /* Connect / reconnect the temporal stream every tick on the same
+     * cadence as the IP stream. Independent fd: a temporal connect
+     * failure must not perturb sock_fd. */
+    check_and_connect_temporal_socket();
 
     if (unlikely(port_stats == NULL)) return;
 
@@ -729,22 +753,6 @@ void ddos_log_and_reset_stats(void) {
             memset(&det, 0, sizeof(det));
             if (s->detection) {
                 det = detection_engine_process(s->detection, s, now, s->dst_ip);
-            }
-
-            /* --- Layer 3 bridge: inform bridge of this victim's attack state.
-             *     Must run after detection (det.state known) and before STEP 6
-             *     reset (s->total_pkts / total_bytes still reflect this window). */
-            {
-                bool under_attack = (det.state == DETECTION_STATE_SUSPICIOUS ||
-                                     det.state == DETECTION_STATE_ATTACK);
-                l3_bridge_set_attack_state(
-                    s->dst_ip,
-                    under_attack,
-                    detection_state_str(det.state),
-                    attack_type_str(det.attack_type),
-                    (uint64_t)timestamp_ms,
-                    s->total_pkts,
-                    s->total_bytes);
             }
 
             /* ----------------------------------------------------------------
@@ -891,6 +899,28 @@ void ddos_log_and_reset_stats(void) {
             }
 
             /* ----------------------------------------------------------------
+             * STEP 5b: Multi-timescale temporal observability (shadow only).
+             *         Folds the just-finished 1-second values into the per-IP
+             *         temporal state, rotates the 10s ring when full,
+             *         derives 10s / 60s / 300s window_stats locally, runs
+             *         shadow scoring + (gated) baseline updates, and best-
+             *         effort emits one "TEMP,..." line per finalised scale
+             *         on the existing IP socket. Existing 62-column IP CSV
+             *         lines are unchanged. Must run AFTER
+             *         detection_engine_process() so det carries this
+             *         second's verdict, and BEFORE STEP 6 zeroes the
+             *         per-window counters this fold reads from. TEMP send
+             *         failures are swallowed inside the temporal module
+             *         and never affect the IP path.
+             * -------------------------------------------------------------- */
+            (void)l2_temporal_update_1s(&s->temporal, s,
+                                        port, dst_ip_str,
+                                        &t0, &t1_tcp, &t1_udp,
+                                        &t1_icmp, &t1_dist,
+                                        &det, (uint64_t)timestamp_ms,
+                                        temporal_sock_fd);
+
+            /* ----------------------------------------------------------------
              * STEP 6: Reset per-window counters and HLL sketches.
              *         EWMA states and burst window buffers are NOT reset.
              * -------------------------------------------------------------- */
@@ -923,10 +953,4 @@ void ddos_log_and_reset_stats(void) {
             hll_init(&s->unique_flows,    0x44444444 + s->dst_ip);
         }
     }
-
-    /* --- Layer 3 bridge: export this window's collected data to Python.
-     *     Called once after all victims have been processed so Python sees
-     *     a complete set of src_snapshots followed by window_end for each
-     *     victim before it starts scoring. */
-    l3_bridge_export_and_reset();
 }

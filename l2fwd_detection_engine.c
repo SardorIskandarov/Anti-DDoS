@@ -569,20 +569,72 @@ struct detection_result detection_engine_process(
         result.tier1_icmp_score = compute_tier1_icmp_score(&stats->ewma_t1_icmp, &t1_icmp, p);
         result.tier1_dist_score = compute_tier1_dist_score(&stats->ewma_t1_dist, &t1_dist, p);
 
-        // IMPROVEMENT 3: Hybrid fusion (weighted avg + dominant protocol boost)
-        double weighted_score = p->w_tcp  * result.tier1_tcp_score +
-                                p->w_udp  * result.tier1_udp_score +
-                                p->w_icmp * result.tier1_icmp_score +
-                                p->w_dist * result.tier1_dist_score;
+        /* Protocol-presence gating.
+         *
+         * A protocol category must carry a non-trivial share of the current
+         * window before it is allowed to influence fusion. Otherwise e.g. a
+         * handful of TCP packets mixed into a UDP flood can produce a large
+         * tcp_score whose deviation is real (vs. baseline) but protocol-
+         * irrelevant, skewing the weighted average and attack typing.
+         *
+         * DIST has no protocol family (it measures src-IP / dst-port spread
+         * across all packets) and remains always active. Category scores
+         * themselves are left untouched for observability — only fusion is
+         * gated.
+         */
+        bool tcp_active  = (t1_tcp.tcp_pps_ratio   >= MIN_TCP_RATIO_FOR_TCP_SCORING);
+        bool udp_active  = (t1_udp.udp_pps_ratio   >= MIN_UDP_RATIO_FOR_UDP_SCORING);
+        bool icmp_active = (t1_icmp.icmp_pps_ratio >= MIN_ICMP_RATIO_FOR_ICMP_SCORING);
 
-        // Find highest individual score (for single-protocol attacks like UDP/SYN floods)
-        double max_individual = result.tier1_tcp_score;
-        if (result.tier1_udp_score  > max_individual) max_individual = result.tier1_udp_score;
-        if (result.tier1_icmp_score > max_individual) max_individual = result.tier1_icmp_score;
-        if (result.tier1_dist_score > max_individual) max_individual = result.tier1_dist_score;
+        /* Protocol-aware weighted fusion. DIST is always included so the
+         * weight_sum starts non-zero. Inactive categories contribute
+         * neither to the numerator nor the denominator (true exclusion,
+         * not just zero-weighted). */
+        double score_sum  = p->w_dist * result.tier1_dist_score;
+        double weight_sum = p->w_dist;
+
+        if (tcp_active) {
+            score_sum  += p->w_tcp * result.tier1_tcp_score;
+            weight_sum += p->w_tcp;
+        }
+        if (udp_active) {
+            score_sum  += p->w_udp * result.tier1_udp_score;
+            weight_sum += p->w_udp;
+        }
+        if (icmp_active) {
+            score_sum  += p->w_icmp * result.tier1_icmp_score;
+            weight_sum += p->w_icmp;
+        }
+
+        /* Defensive epsilon fallback — DIST is always active so this
+         * branch should never fire in practice, but guard against a
+         * pathological zero/negative w_dist profile misconfiguration. */
+        double weighted_score;
+        if (weight_sum <= 1e-12) {
+            weighted_score = result.tier1_dist_score;
+        } else {
+            weighted_score = score_sum / weight_sum;
+        }
+
+        /* max_individual must also respect active categories: a large
+         * score on an inactive protocol is not attributable to current
+         * traffic, so it must not be allowed to drive final_score via
+         * the max() branch either. DIST always participates. */
+        double max_individual = result.tier1_dist_score;
+        if (tcp_active  && result.tier1_tcp_score  > max_individual) max_individual = result.tier1_tcp_score;
+        if (udp_active  && result.tier1_udp_score  > max_individual) max_individual = result.tier1_udp_score;
+        if (icmp_active && result.tier1_icmp_score > max_individual) max_individual = result.tier1_icmp_score;
 
         // Use whichever is higher: weighted fusion (balanced attacks) or max individual (single-protocol)
         result.tier1_final_score = (weighted_score > max_individual) ? weighted_score : max_individual;
+
+        if (dst_ip == DEBUG_IP) {
+            printf("[Detection] Tier-1 gating tcp=%.2f(%s) udp=%.2f(%s) icmp=%.2f(%s) weighted=%.3f max=%.3f final=%.3f\n",
+                   t1_tcp.tcp_pps_ratio,   tcp_active  ? "on" : "off",
+                   t1_udp.udp_pps_ratio,   udp_active  ? "on" : "off",
+                   t1_icmp.icmp_pps_ratio, icmp_active ? "on" : "off",
+                   weighted_score, max_individual, result.tier1_final_score);
+        }
 
         // Classify based on weighted final score
         final_state = classify(result.tier1_final_score,
