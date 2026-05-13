@@ -44,6 +44,7 @@ src = [
   'l2fwd_service_hotpath.c',       # P7: per-service packet hot path
   'l2fwd_service_features.c',      # P8: feature extraction (HLL/CM/EWMA)
   'l2fwd_service_scoring.c',       # P9: detection scoring + phase machine
+  'l2fwd_service_wire.c',          # P10: binary wire protocol v1
   ]
 
 executable('l2fwd',
@@ -226,5 +227,33 @@ test_scoring = executable('test_service_scoring',
 
 test('service_scoring',
   test_scoring,
+  timeout: 30,
+)
+
+# P10: standalone test harness for the wire protocol. Exercises CRC32,
+# big-endian round-trips, full slot serialize+verify+parse, malformed
+# message rejection, and serializes every active slot from the real
+# services.json registry.
+#   Build: ninja -C build test_service_wire
+#   Run:   ./build/test_service_wire
+test_wire = executable('test_service_wire',
+  sources: [
+    'tests/test_service_wire.c',
+    'l2fwd_service_wire.c',
+    'l2fwd_service_features.c',
+    'l2fwd_service_scoring.c',
+    'l2fwd_service_stats.c',
+    'l2fwd_service_detection.c',
+    'l2fwd_service_temporal_state.c',
+    'l2fwd_service_registry.c',
+  ],
+  include_directories: inc_dirs,
+  link_with: cjson_lib,
+  link_args: ['-lm'],   # features + scoring use math; wire uses ldexp through features
+  install: false,
+)
+
+test('service_wire',
+  test_wire,
   timeout: 30,
 )

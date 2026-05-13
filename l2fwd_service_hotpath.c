@@ -15,6 +15,7 @@
 #include "l2fwd_service_stats.h"
 #include "l2fwd_service_features.h"      /* P8: HLL/CM/EWMA primitives + compute_all */
 #include "l2fwd_service_scoring.h"       /* P9: detection scoring + phase machine */
+#include "l2fwd_service_wire.h"          /* P10: binary wire protocol v1 */
 #include "l2fwd_service_detection.h"     /* P8: phase enum used in temporal push */
 #include "l2fwd_service_temporal_state.h"/* P8: per-slot temporal ring buffer  */
 
@@ -79,6 +80,11 @@ static _Atomic uint64_t g_off_proto_counts            = 0;
  * ------------------------------------------------------------------------- */
 static int g_stats_sock_fd = -1;
 #define STATS_SOCKET_PATH "/tmp/ddos_stats_socket"
+
+/* P10: monotonic sequence number stamped into every wire message.
+ * Atomic only because the wire emit happens on a single lcore (main),
+ * but keeping it atomic costs nothing and documents the intent. */
+static _Atomic uint64_t g_wire_sequence = 0;
 
 /* -------------------------------------------------------------------------
  * Lifecycle
@@ -567,31 +573,41 @@ void service_hotpath_tick(void)
             phase);
     }
 
-    /* P8 step 3: best-effort text emit (unchanged from P7). Python
-     * collector will not parse this; P10 will replace with the binary
-     * protocol. */
+    /* P10 step 3 (revised P10.5): binary wire-protocol emit.
+     *
+     * One 416-byte message per active slot per tick, framed with
+     * magic + version + length + CRC32. Emit unconditionally — every
+     * active slot reports its state every second, including WARMUP
+     * slots with zero traffic. The dashboard relies on this cadence
+     * to confirm slot liveness.
+     *
+     * The Python collector (P12) consumes this exact format. */
     if (g_stats_sock_fd >= 0) {
-        char buf[512];
+        uint8_t buf[L2FWD_WIRE_MSG_SIZE];
         for (size_t i = 0; i < g_arr->capacity; i++) {
             struct service_stats *s = &g_arr->slots[i];
             if (!s->active) continue;
-            if (s->common.inbound_pkts == 0 && s->outbound.out_pkts == 0)
-                continue;
 
-            int n = snprintf(buf, sizeof(buf),
-                             "slot=%zu ip=%u port=%u kind=%u "
-                             "in_pkts=%llu in_bytes=%llu out_pkts=%llu\n",
-                             i,
-                             (unsigned)s->key.target_ip,
-                             (unsigned)s->key.port,
-                             (unsigned)s->proto_kind,
-                             (unsigned long long)s->common.inbound_pkts,
-                             (unsigned long long)s->common.inbound_bytes,
-                             (unsigned long long)s->outbound.out_pkts);
-            if (n > 0 && n < (int)sizeof(buf)) {
-                ssize_t sent = write(g_stats_sock_fd, buf, (size_t)n);
-                (void)sent;  /* best-effort; EAGAIN / EPIPE swallowed */
-            }
+            /* P10.5: emit heartbeat for every active slot regardless of
+             * phase or traffic. The dashboard relies on per-slot tick
+             * cadence to confirm liveness. The previous "skip if WARMUP
+             * AND idle" filter suppressed emission for the entire
+             * warmup window (default 400s), blocking early operator
+             * visibility. At 44 slots × 416 B × 1 Hz the bandwidth cost
+             * is ~18 KB/sec — negligible. The Python collector (P12)
+             * can apply downstream filters if persistence cost
+             * matters. */
+
+            uint64_t seq = atomic_fetch_add_explicit(
+                &g_wire_sequence, 1, memory_order_relaxed);
+
+            int rc = service_wire_serialize_slot(s, (uint16_t)i,
+                                                  now_ns, seq, buf);
+            if (rc != 0) continue;
+
+            ssize_t sent = write(g_stats_sock_fd, buf,
+                                  L2FWD_WIRE_MSG_SIZE);
+            (void)sent;   /* best-effort; EAGAIN / EPIPE swallowed */
         }
     }
 
