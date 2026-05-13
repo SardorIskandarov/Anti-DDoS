@@ -13,6 +13,9 @@
 #include "l2fwd_service_hotpath.h"
 #include "l2fwd_service_registry.h"
 #include "l2fwd_service_stats.h"
+#include "l2fwd_service_features.h"      /* P8: HLL/CM/EWMA primitives + compute_all */
+#include "l2fwd_service_detection.h"     /* P8: phase enum used in temporal push */
+#include "l2fwd_service_temporal_state.h"/* P8: per-slot temporal ring buffer  */
 
 #include <rte_mbuf.h>
 #include <rte_ether.h>
@@ -31,7 +34,27 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>                /* P8: per-tick timestamp */
 #include <stdatomic.h>
+
+/* -------------------------------------------------------------------------
+ * P8: fast per-packet hash for sketch updates
+ *
+ * Multiplicative finalizer (Murmur3-style). Cheap (a few mul + xor +
+ * shift), good enough decorrelation for HLL / CM sketches. NOT
+ * cryptographic. Inline so the compiler folds it into the call site. */
+static inline uint32_t hp_hash32(uint32_t k) {
+    k ^= k >> 16;
+    k *= 0x85ebca6bu;
+    k ^= k >> 13;
+    k *= 0xc2b2ae35u;
+    k ^= k >> 16;
+    return k;
+}
+
+static inline uint32_t hp_hash_flow(uint32_t sip, uint16_t sp, uint16_t dp) {
+    return hp_hash32(sip ^ ((uint32_t)sp << 16) ^ (uint32_t)dp);
+}
 
 /* -------------------------------------------------------------------------
  * Cached state, set once at init()
@@ -367,6 +390,14 @@ int service_hotpath_process_packet(struct rte_mbuf *m, unsigned int port_id)
         struct service_stats *s = r.slot;
         account_inbound_common(s, total_len, ttl, is_frag, r.off_proto);
 
+        /* P8: per-packet sketch updates that feed P9 detection.
+         * Always-on for every inbound: src-IP HLL + flow HLL + /24 CM.
+         * Proto-specific sketches added inside the switch below. */
+        service_hll_insert(&s->common.unique_src_ips, hp_hash32(src_ip));
+        service_hll_insert(&s->common.unique_flows,
+                           hp_hash_flow(src_ip, src_port, dst_port));
+        service_cm_src_24_insert(&s->common.cm_src_24, src_ip);
+
         switch (s->proto_kind) {
         case SERVICE_PROTO_TCP:
         case SERVICE_PROTO_CATCHALL_TCP:
@@ -375,12 +406,22 @@ int service_hotpath_process_packet(struct rte_mbuf *m, unsigned int port_id)
                                      tcp_syn, tcp_syn_ack, tcp_fin_ack,
                                      tcp_rst, tcp_ack,
                                      tcp_empty_ack, tcp_zero_window);
+                /* P8: TCP flow HLL + source-port CM. */
+                service_hll_insert(&s->proto.tcp.stats.unique_new_flows,
+                                   hp_hash_flow(src_ip, src_port, dst_port));
+                service_cm_src_port_insert(&s->proto.tcp.stats.cm_src_port,
+                                            src_port);
             }
             break;
         case SERVICE_PROTO_UDP:
         case SERVICE_PROTO_CATCHALL_UDP:
             if (l4_proto == IPPROTO_UDP) {
                 account_inbound_udp(&s->proto.udp.stats, total_len);
+                /* P8: UDP flow HLL + source-port CM. */
+                service_hll_insert(&s->proto.udp.stats.udp_flows,
+                                   hp_hash_flow(src_ip, src_port, dst_port));
+                service_cm_src_port_insert(&s->proto.udp.stats.cm_src_port,
+                                            src_port);
             }
             break;
         case SERVICE_PROTO_ICMP:
@@ -388,6 +429,7 @@ int service_hotpath_process_packet(struct rte_mbuf *m, unsigned int port_id)
             if (l4_proto == IPPROTO_ICMP) {
                 account_inbound_icmp(&s->proto.icmp.stats, total_len,
                                       icmp_type);
+                /* ICMP has no proto-specific HLL/CM in the data model. */
             }
             break;
         case SERVICE_PROTO_CATCHALL_OTHER:
@@ -398,9 +440,21 @@ int service_hotpath_process_packet(struct rte_mbuf *m, unsigned int port_id)
                                      tcp_syn, tcp_syn_ack, tcp_fin_ack,
                                      tcp_rst, tcp_ack,
                                      tcp_empty_ack, tcp_zero_window);
+                service_hll_insert(
+                    &s->proto.other_catchall.tcp_stats.unique_new_flows,
+                    hp_hash_flow(src_ip, src_port, dst_port));
+                service_cm_src_port_insert(
+                    &s->proto.other_catchall.tcp_stats.cm_src_port,
+                    src_port);
             } else if (l4_proto == IPPROTO_UDP) {
                 account_inbound_udp(&s->proto.other_catchall.udp_stats,
                                      total_len);
+                service_hll_insert(
+                    &s->proto.other_catchall.udp_stats.udp_flows,
+                    hp_hash_flow(src_ip, src_port, dst_port));
+                service_cm_src_port_insert(
+                    &s->proto.other_catchall.udp_stats.cm_src_port,
+                    src_port);
             } else if (l4_proto == IPPROTO_ICMP) {
                 account_inbound_icmp(&s->proto.other_catchall.icmp_stats,
                                       total_len, icmp_type);
@@ -412,6 +466,10 @@ int service_hotpath_process_packet(struct rte_mbuf *m, unsigned int port_id)
                 o->other_bytes += total_len;
                 o->proto_counts[l4_proto]++;
             }
+            /* OTHER catchall always tracks dst-port distribution
+             * (separately from the per-arm src-port CM above). */
+            service_hll_insert(&s->proto.other_catchall.unique_dst_ports,
+                               hp_hash32((uint32_t)dst_port));
             break;
         default:
             break;
@@ -436,6 +494,14 @@ int service_hotpath_process_packet(struct rte_mbuf *m, unsigned int port_id)
         if      (l4_proto == IPPROTO_TCP)  s->outbound.out_tcp_pkts++;
         else if (l4_proto == IPPROTO_UDP)  s->outbound.out_udp_pkts++;
         else if (l4_proto == IPPROTO_ICMP) s->outbound.out_icmp_pkts++;
+
+        /* P8: outbound HLL sketches for dst-IP/dst-port cardinality. */
+        service_hll_insert(&s->outbound.unique_dst_ips,
+                           hp_hash32(dst_ip));
+        if (dst_port != 0) {
+            service_hll_insert(&s->outbound.unique_dst_ports,
+                               hp_hash32((uint32_t)dst_port));
+        }
         return 0;
     }
 
@@ -449,11 +515,43 @@ void service_hotpath_tick(void)
 {
     if (!g_arr || !g_arr->slots) return;
 
-    /* Emit one debug line per active+non-idle slot to the Unix socket.
-     * P7 uses key=value text for early visibility; P10 will define the
-     * binary protocol. The Python collector will NOT understand this
-     * format — that's an accepted blackout until P12 rewrites the
-     * collector. */
+    /* P8 step 1: derive features from this window's raw counters.
+     * MUST run before the per-window reset below — the raw counters
+     * disappear once service_stats_reset_window_all() fires. */
+    service_features_compute_all(g_arr);
+
+    /* P8 step 2: push one 1Hz temporal sample per active slot.
+     * pkts/bytes come from the just-computed window; flows is the HLL
+     * cardinality estimate at end-of-window; phase comes from the
+     * slot's detection_state if wired (P9 will populate the phase
+     * transitions). Using time(NULL) is good enough for 1Hz cadence;
+     * P10 may swap in rte_get_timer_cycles for sub-second precision. */
+    uint64_t now_ns = (uint64_t)time(NULL) * 1000000000ULL;
+    for (size_t i = 0; i < g_arr->capacity; i++) {
+        struct service_stats *s = &g_arr->slots[i];
+        if (!s->active || !s->temporal_state) continue;
+
+        uint8_t phase = 0;  /* WARMUP default */
+        if (s->detection_state) {
+            const struct service_detection_state *det =
+                (const struct service_detection_state *)s->detection_state;
+            phase = det->phase;
+        }
+        double flows_est = service_features_unique_flows(s);
+        uint64_t flows   = (flows_est > 0.0) ? (uint64_t)flows_est : 0u;
+
+        service_temporal_push_sample(
+            (struct service_temporal_state *)s->temporal_state,
+            now_ns,
+            s->common.inbound_pkts,
+            s->common.inbound_bytes,
+            flows,
+            phase);
+    }
+
+    /* P8 step 3: best-effort text emit (unchanged from P7). Python
+     * collector will not parse this; P10 will replace with the binary
+     * protocol. */
     if (g_stats_sock_fd >= 0) {
         char buf[512];
         for (size_t i = 0; i < g_arr->capacity; i++) {
@@ -479,9 +577,9 @@ void service_hotpath_tick(void)
         }
     }
 
-    /* Reset per-window raw counters on every active slot.
-     * HLL / CM / EWMA / burst-window history is preserved by design — see
-     * service_stats_reset_window() docs. */
+    /* P8 step 4: reset per-window raw counters.
+     * HLL / CM / EWMA / burst-window history is preserved by design —
+     * see service_stats_reset_window() docs. */
     service_stats_reset_window_all(g_arr);
 }
 

@@ -42,6 +42,7 @@ src = [
   'l2fwd_service_temporal_state.c',# P5: per-service temporal state
   'l2fwd_service_reload.c',        # P6: SIGHUP-driven services.json reload
   'l2fwd_service_hotpath.c',       # P7: per-service packet hot path
+  'l2fwd_service_features.c',      # P8: feature extraction (HLL/CM/EWMA)
   ]
 
 executable('l2fwd',
@@ -170,5 +171,31 @@ test_reload = executable('test_service_reload',
 
 test('service_reload',
   test_reload,
+  timeout: 30,
+)
+
+# P8: standalone test harness for the feature extraction primitives.
+# Exercises HLL, CM, EWMA, burst window, Welford, compute_one, and the
+# temporal ring-buffer push. Pulls in service_stats / service_registry
+# only because compute_one walks struct service_stats by value.
+#   Build: ninja -C build test_service_features
+#   Run:   ./build/test_service_features
+test_features = executable('test_service_features',
+  sources: [
+    'tests/test_service_features.c',
+    'l2fwd_service_features.c',
+    'l2fwd_service_stats.c',
+    'l2fwd_service_detection.c',
+    'l2fwd_service_temporal_state.c',
+    'l2fwd_service_registry.c',
+  ],
+  include_directories: inc_dirs,
+  link_with: cjson_lib,
+  link_args: ['-lm'],   # service_features uses log/sqrt/ldexp
+  install: false,
+)
+
+test('service_features',
+  test_features,
   timeout: 30,
 )
