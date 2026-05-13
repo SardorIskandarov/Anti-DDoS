@@ -1,3 +1,29 @@
+/*
+ * ============================================================================
+ *  LEGACY MODULE — PRESERVED DURING DUAL-WRITE (Phase 3 — P7..P15)
+ * ============================================================================
+ *
+ *  Status:      ACTIVE-LEGACY
+ *  Retirement:  P16 cutover commit
+ *  Destination: legacy/  (preserved as forensic reference)
+ *
+ *  This file is part of the per-IP detection architecture that is being
+ *  replaced by the per-service architecture under l2fwd_service_*.{c,h}.
+ *  It REMAINS COMPILED and ACTIVE during P7..P15 because:
+ *
+ *    1. It is the cross-validation reference that proves the new per-service
+ *       hot path produces equivalent aggregate counters.
+ *    2. It provides the rollback path until the new engine is signed off
+ *       at P18.
+ *
+ *  DO NOT delete or rename this file before P16. The big-bang cutover
+ *  prompt (P16) will move it to legacy/ atomically as part of the
+ *  deprecation switch.
+ *
+ *  See docs/architecture_status.md and docs/migration_map.md for the
+ *  full classification of every source file in this project.
+ * ============================================================================
+ */
 #include "l2fwd_ddos_collector.h"
 #include "l2fwd_detection_engine.h"
 #include <stdio.h>

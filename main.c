@@ -40,8 +40,31 @@
 
 
 #include "l2fwd_ddos_collector.h"
+#include "l2fwd_service_registry.h"
+#include "l2fwd_service_stats.h"          /* P6 */
+#include "l2fwd_service_reload.h"         /* P6 */
 
 static volatile bool force_quit;
+
+/* P3: service registry storage + path/required tracking.
+ * The registry is loaded once at startup (after EAL init) and
+ * published via service_registry_set_global(). Hot-path consumption
+ * arrives in P7 — at this stage the registry sits in memory unused. */
+static struct service_registry g_registry_storage;
+static char g_services_json_path[256] = "/etc/anti-ddos/services.json";
+static bool g_services_json_required = false;
+
+/* P5/P6: runtime per-service stats array. Allocated and wired alongside
+ * the registry; torn down at engine cleanup. P6's reload subsystem swaps
+ * the contents in place on SIGHUP. Hot path does not read it yet. */
+static struct service_stats_array g_active_stats_array;
+
+/* P6: staging buffers for SIGHUP reload. The reload routine loads the new
+ * services.json into these, validates, then copies the contents back into
+ * the active storage above. Living in BSS keeps both addresses stable for
+ * the lifetime of the process. */
+static struct service_registry    g_staging_registry_storage;
+static struct service_stats_array g_staging_stats_array;
 
 /* MAC updating enabled by default */
 static int mac_updating = 1;
@@ -227,6 +250,27 @@ l2fwd_main_loop(void)
                         ddos_log_and_reset_stats();
                         // ***********************************
 
+                        /* P6: poll the SIGHUP reload flag on the 1Hz
+                         * timer tick (main lcore only). The reload work
+                         * is heavy — parse JSON, validate, wire 44 slots
+                         * — so we only run it when actually requested,
+                         * and only here so it never enters per-packet
+                         * code. */
+                        if (service_reload_pending()) {
+                            int rrc = service_reload_perform(
+                                &g_staging_registry_storage,
+                                &g_staging_stats_array,
+                                &g_registry_storage,
+                                &g_active_stats_array);
+                            if (rrc != SERVICE_RELOAD_OK &&
+                                rrc != SERVICE_RELOAD_ERR_NO_FLAG) {
+                                fprintf(stderr,
+                                        "[main] reload failed (rc=%d): %s\n",
+                                        rrc,
+                                        service_reload_get_last_error_message());
+                            }
+                        }
+
 						timer_tsc = 0;
 					}
 				}
@@ -384,6 +428,7 @@ static const char short_options[] =
 
 #define CMD_LINE_OPT_NO_MAC_UPDATING "no-mac-updating"
 #define CMD_LINE_OPT_PORTMAP_CONFIG "portmap"
+#define CMD_LINE_OPT_SERVICES_JSON  "services-json"  /* P3 */
 
 enum {
 	/* long options mapped to a short option */
@@ -392,12 +437,15 @@ enum {
 	 * conflict with short options */
 	CMD_LINE_OPT_NO_MAC_UPDATING_NUM = 256,
 	CMD_LINE_OPT_PORTMAP_NUM,
+	CMD_LINE_OPT_SERVICES_JSON_NUM,  /* P3 */
 };
 
 static const struct option lgopts[] = {
 	{ CMD_LINE_OPT_NO_MAC_UPDATING, no_argument, 0,
 		CMD_LINE_OPT_NO_MAC_UPDATING_NUM},
 	{ CMD_LINE_OPT_PORTMAP_CONFIG, 1, 0, CMD_LINE_OPT_PORTMAP_NUM},
+	{ CMD_LINE_OPT_SERVICES_JSON,  required_argument, 0,
+		CMD_LINE_OPT_SERVICES_JSON_NUM},  /* P3 */
 	{NULL, 0, 0, 0}
 };
 
@@ -463,6 +511,23 @@ l2fwd_parse_args(int argc, char **argv)
 
 		case CMD_LINE_OPT_NO_MAC_UPDATING_NUM:
 			mac_updating = 0;
+			break;
+
+		/* P3: --services-json=<path> overrides the default and marks
+		 * the registry as required (fail-loud on load error). */
+		case CMD_LINE_OPT_SERVICES_JSON_NUM:
+			if (optarg == NULL ||
+			    strlen(optarg) >= sizeof(g_services_json_path)) {
+				fprintf(stderr,
+				        "--services-json path missing or too long "
+				        "(max %zu chars)\n",
+				        sizeof(g_services_json_path) - 1);
+				return -1;
+			}
+			strncpy(g_services_json_path, optarg,
+			        sizeof(g_services_json_path) - 1);
+			g_services_json_path[sizeof(g_services_json_path) - 1] = '\0';
+			g_services_json_required = true;
 			break;
 
 		default:
@@ -626,6 +691,9 @@ main(int argc, char **argv)
 	/* >8 End of init EAL. */
 
 	printf("MAC updating %s\n", mac_updating ? "enabled" : "disabled");
+	printf("Services JSON: %s%s\n", g_services_json_path,
+	       g_services_json_required ? " (required)"
+	                                : " (default, warn-and-continue)");
 
 	/* convert to number of cycles */
 	timer_period *= rte_get_timer_hz();
@@ -647,6 +715,83 @@ main(int argc, char **argv)
 	/* Initialization of the driver. 8< */
 
     ddos_collector_init();
+
+	/* P3: load the service registry from JSON. Runs after EAL init and
+	 * app-args parse, before port init. On success, publish the global
+	 * pointer for future P7+ hot-path consumers. On failure, fail-loud
+	 * only if --services-json was explicitly given; otherwise warn and
+	 * continue (development convenience while the default path may not
+	 * yet exist). The hot path still uses legacy dst_ip_stats — this
+	 * load is intentionally observe-only at P3. */
+	{
+		int sr_rc = service_registry_load(&g_registry_storage,
+		                                   g_services_json_path);
+		if (sr_rc == SERVICE_REGISTRY_OK) {
+			service_registry_log_summary(&g_registry_storage);
+			service_registry_set_global(&g_registry_storage);
+			printf("[main] service registry loaded from %s\n",
+			       g_services_json_path);
+
+			/* P5/P6: allocate the runtime stats array and wire
+			 * detection_state + temporal_state for every active slot.
+			 * Hot path doesn't read these yet — P7 wires consumption. */
+			int rc = service_stats_array_init(&g_active_stats_array);
+			if (rc != 0) {
+				rte_exit(EXIT_FAILURE,
+				         "service_stats_array_init failed (rc=%d)\n",
+				         rc);
+			}
+			rc = service_stats_init_from_registry(&g_active_stats_array,
+			                                       &g_registry_storage);
+			if (rc != 0) {
+				rte_exit(EXIT_FAILURE,
+				         "service_stats_init_from_registry failed "
+				         "(rc=%d)\n", rc);
+			}
+			rc = service_stats_wire_all(&g_active_stats_array);
+			if (rc != 0) {
+				rte_exit(EXIT_FAILURE,
+				         "service_stats_wire_all failed (rc=%d)\n",
+				         rc);
+			}
+			printf("[main] service_stats array allocated and wired "
+			       "for %zu slots\n",
+			       g_active_stats_array.n_active);
+		} else {
+			fprintf(stderr,
+			        "[main] failed to load service registry "
+			        "from %s (rc=%d)\n",
+			        g_services_json_path, sr_rc);
+			if (g_services_json_required) {
+				fprintf(stderr,
+				        "[main] --services-json was explicitly given; "
+				        "aborting.\n");
+				rte_exit(EXIT_FAILURE,
+				         "service_registry_load failed\n");
+			}
+			fprintf(stderr,
+			        "[main] using default path; continuing without "
+			        "per-service registry.\n"
+			        "[main] (hot path still uses legacy dst_ip_stats; "
+			        "P3 only loads, does not consume)\n");
+			/* g_active_registry stays NULL; P7+ hot-path code will
+			 * see NULL and fall back to dst_ip-keyed detection. */
+		}
+	}
+
+	/* P6: install the SIGHUP reload handler. We install unconditionally
+	 * (even when no registry loaded) so that a future fix-and-SIGHUP cycle
+	 * is never silently dropped. If no source path is recorded, the
+	 * perform() call will log and return _INTERNAL — never abort. */
+	{
+		int rc = service_reload_install_handler();
+		if (rc != 0) {
+			fprintf(stderr,
+			        "[main] WARNING: SIGHUP handler install failed "
+			        "(rc=%d); reload via signal will not work\n", rc);
+			/* Not fatal — engine can still run without reload. */
+		}
+	}
 
 	/* reset l2fwd_dst_ports */
 	for (portid = 0; portid < RTE_MAX_ETHPORTS; portid++)
@@ -874,6 +1019,18 @@ main(int argc, char **argv)
 		rte_eth_dev_close(portid);
 		printf(" Done\n");
 	}
+
+	/* P5/P6: tear down the stats array (unwire per-slot detection /
+	 * temporal allocations, then free the slot array itself). Must
+	 * happen BEFORE the registry detach so no stray hot-path reader
+	 * could observe a registry pointing at freed slots. (P6 has no
+	 * hot-path readers; ordering matters for P7+.) */
+	service_stats_unwire_all(&g_active_stats_array);
+	service_stats_array_destroy(&g_active_stats_array);
+
+	/* P3: detach + destroy the service registry before EAL cleanup. */
+	service_registry_set_global(NULL);
+	service_registry_destroy(&g_registry_storage);
 
 	/* clean up the EAL */
 	rte_eal_cleanup();
