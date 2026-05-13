@@ -382,6 +382,18 @@ int service_registry_slot_index(const struct service_registry *reg,
                                 uint32_t target_ip, uint16_t port,
                                 uint8_t proto_kind);
 
+/**
+ * @brief True iff `ip` (host byte order) is in reg->protected_ips[].
+ *
+ * Added in P7 for the per-service hot path's inbound/outbound
+ * direction classifier. Linear scan over the protected_ips array
+ * (typically <= 11 entries, capped at SERVICE_REGISTRY_MAX_PROTECTED_IPS).
+ *
+ * Stateless, thread-safe (read-only on the registry).
+ */
+bool service_registry_is_protected_ip(const struct service_registry *reg,
+                                      uint32_t ip);
+
 /* -------------------------------------------------------------------------
  * P3: process-global registry pointer
  *

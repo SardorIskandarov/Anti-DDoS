@@ -32,15 +32,16 @@ cjson_lib = static_library('cjson',
 
 src = [
   'main.c',
-  'l2fwd_ddos_collector.c',
-  'l2fwd_detection_engine.c',
-  'l2fwd_l2_profile.c',
-  'l2fwd_temporal.c',
+  # P7 cutover: the four legacy per-IP modules (l2fwd_ddos_collector.c,
+  # l2fwd_detection_engine.c, l2fwd_l2_profile.c, l2fwd_temporal.c) have
+  # been retired and their source moved to legacy/. They are no longer
+  # compiled into the engine.
   'l2fwd_service_registry.c',      # P1: skeleton (stubs only); P2 fleshed out
   'l2fwd_service_stats.c',         # P4: runtime per-service stats data model
   'l2fwd_service_detection.c',     # P5: per-service detection state
   'l2fwd_service_temporal_state.c',# P5: per-service temporal state
   'l2fwd_service_reload.c',        # P6: SIGHUP-driven services.json reload
+  'l2fwd_service_hotpath.c',       # P7: per-service packet hot path
   ]
 
 executable('l2fwd',

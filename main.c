@@ -39,10 +39,10 @@
 #include <rte_string_fns.h>
 
 
-#include "l2fwd_ddos_collector.h"
 #include "l2fwd_service_registry.h"
 #include "l2fwd_service_stats.h"          /* P6 */
 #include "l2fwd_service_reload.h"         /* P6 */
+#include "l2fwd_service_hotpath.h"        /* P7 — replaces the legacy collector */
 
 static volatile bool force_quit;
 
@@ -246,9 +246,9 @@ l2fwd_main_loop(void)
 					if (lcore_id == rte_get_main_lcore()) {
 						// print_stats();
 						/* reset the timer */
-                        // *** NEW: Log DDoS stats and reset ***
-                        ddos_log_and_reset_stats();
-                        // ***********************************
+                        /* P7: per-service tick replaces the legacy
+                         * ddos_log_and_reset_stats() emit-and-reset. */
+                        service_hotpath_tick();
 
                         /* P6: poll the SIGHUP reload flag on the 1Hz
                          * timer tick (main lcore only). The reload work
@@ -297,9 +297,9 @@ l2fwd_main_loop(void)
 				rte_prefetch0(rte_pktmbuf_mtod(m, void *));
 
 
-                // *** NEW: Collect DDoS statistics ***
-                ddos_collect_packet_stats(m, portid);
-                // **********************************
+                /* P7: per-service hot path replaces the legacy
+                 * ddos_collect_packet_stats() per-IP collector. */
+                service_hotpath_process_packet(m, portid);
 
 				l2fwd_simple_forward(m, portid);
 			}
@@ -714,7 +714,10 @@ main(int argc, char **argv)
 
 	/* Initialization of the driver. 8< */
 
-    ddos_collector_init();
+	/* P7: the legacy ddos_collector_init() call lived here. The legacy
+	 * per-IP collector has been retired and its source files are under
+	 * legacy/. The new per-service hot path is initialised below, after
+	 * the service registry + stats array are ready. */
 
 	/* P3: load the service registry from JSON. Runs after EAL init and
 	 * app-args parse, before port init. On success, publish the global
@@ -757,6 +760,16 @@ main(int argc, char **argv)
 			printf("[main] service_stats array allocated and wired "
 			       "for %zu slots\n",
 			       g_active_stats_array.n_active);
+
+			/* P7: install the per-service packet hot path. From this
+			 * point on, l2fwd_main_loop() routes every packet through
+			 * service_hotpath_process_packet() and ticks the per-window
+			 * reset via service_hotpath_tick() at 1Hz. */
+			if (service_hotpath_init(&g_registry_storage,
+			                          &g_active_stats_array) != 0) {
+				rte_exit(EXIT_FAILURE,
+				         "service_hotpath_init failed\n");
+			}
 		} else {
 			fprintf(stderr,
 			        "[main] failed to load service registry "
@@ -1020,11 +1033,15 @@ main(int argc, char **argv)
 		printf(" Done\n");
 	}
 
+	/* P7: tear down the per-service hot path FIRST so it stops touching
+	 * the stats array before we unwire its slots. service_hotpath_destroy
+	 * is idempotent — calling it when init was skipped is harmless. */
+	service_hotpath_destroy();
+
 	/* P5/P6: tear down the stats array (unwire per-slot detection /
 	 * temporal allocations, then free the slot array itself). Must
 	 * happen BEFORE the registry detach so no stray hot-path reader
-	 * could observe a registry pointing at freed slots. (P6 has no
-	 * hot-path readers; ordering matters for P7+.) */
+	 * could observe a registry pointing at freed slots. */
 	service_stats_unwire_all(&g_active_stats_array);
 	service_stats_array_destroy(&g_active_stats_array);
 

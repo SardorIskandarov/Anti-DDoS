@@ -1139,6 +1139,21 @@ int service_registry_slot_index(const struct service_registry *reg,
     return (int)(d - reg->slots);
 }
 
+/* P7: per-service hot path needs to classify packet direction (inbound vs
+ * outbound) based on whether dst_ip / src_ip is one of the registry's
+ * protected IPs. Linear scan over <= MAX_PROTECTED_IPS (32) entries — small
+ * enough that any O(1) hash structure would cost more in cache pollution
+ * than the scan itself. */
+bool service_registry_is_protected_ip(const struct service_registry *reg,
+                                      uint32_t ip)
+{
+    if (reg == NULL) return false;
+    for (size_t i = 0; i < reg->n_protected_ips; i++) {
+        if (reg->protected_ips[i] == ip) return true;
+    }
+    return false;
+}
+
 /* -------------------------------------------------------------------------
  * 8. Public API — Diagnostics
  * ------------------------------------------------------------------------- */
