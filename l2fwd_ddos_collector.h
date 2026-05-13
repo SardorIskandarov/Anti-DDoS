@@ -103,12 +103,24 @@ struct tier1_tcp_ewma {
     struct ewma_state ack_data_ratio;
     struct ewma_state tcp_pps_ratio;
     struct ewma_state tcp_bps_ratio;
+    /* V2 features */
+    struct ewma_state empty_ack_ratio;
+    struct ewma_state zero_window_ratio;
+    struct ewma_state small_window_ratio;
+    struct ewma_state new_flow_ratio;
+    struct ewma_state syn_fin_ratio;
+    struct ewma_state syn_to_synack_ratio;
+    struct ewma_state tcp_pkt_size_cov;
+    struct ewma_state tcp_mean_pkt_size;
 };
 
 struct tier1_udp_ewma {
     struct ewma_state udp_bps_ratio;
     struct ewma_state udp_pps_ratio;
     struct ewma_state udp_flow_ratio;
+    /* V2 features */
+    struct ewma_state udp_pkt_size_cov;
+    struct ewma_state udp_mean_pkt_size;
 };
 
 struct tier1_icmp_ewma {
@@ -119,6 +131,49 @@ struct tier1_icmp_ewma {
 struct tier1_dist_ewma {
     struct ewma_state src_ip_ratio;
     struct ewma_state dst_port_ratio;
+};
+
+/* V3.0/V3.1: EWMA tracking for L3-channel features.
+ *
+ * ttl_stddev, src_port_top1_share, src_24_top1_share, and
+ * src_24_entropy are EWMA-tracked. ip_frag_ratio and
+ * other_proto_ratio use threshold math, not deviation math,
+ * so they have NO EWMA state. */
+struct tier1_l3_ewma {
+    struct ewma_state ttl_stddev;             /* v3.0 */
+    struct ewma_state src_port_top1_share;    /* v3.1 */
+    struct ewma_state src_24_top1_share;      /* v3.1 */
+    struct ewma_state src_24_entropy;         /* v3.1 */
+};
+
+/* ============================================================
+ * V3.1: Count-min sketch + heavy-hitter tracker.
+ *
+ * Used for two features:
+ *   - src_port_top1_share (key = src_port, 16 bits)
+ *   - src_24_top1_share   (key = src_ip & 0xFFFFFF00, 32 bits)
+ *   - src_24_entropy      (derived from the same sketch as above)
+ *
+ * Approximation: counts are min-of-rows. Top-K is an unsorted
+ * heavy-hitter array maintained on the fast path: when a key's
+ * estimated count exceeds the array minimum, the key replaces
+ * the minimum slot.
+ * ============================================================ */
+#define L3_TOPK 16
+
+struct cm_topk_entry {
+    uint32_t key;     /* src_port (16-bit) or /24 prefix (32-bit) */
+    uint32_t count;   /* estimated count from the sketch */
+};
+
+struct cm_sketch_src_port {
+    uint32_t counters[4][16];   /* SRC_PORT_CM_ROWS x SRC_PORT_CM_COLS */
+    struct cm_topk_entry topk[L3_TOPK];
+};
+
+struct cm_sketch_src_24 {
+    uint32_t counters[4][32];   /* SRC_24_CM_ROWS x SRC_24_CM_COLS */
+    struct cm_topk_entry topk[L3_TOPK];
 };
 
 // ============================================================================
@@ -163,11 +218,42 @@ struct dst_ip_stats {
     uint64_t rst_pkts;
     uint64_t ack_data_pkts;
 
+    /* V2: TCP behavioral signatures (Tier-1) */
+    uint64_t empty_ack_pkts;       /* ACK only, no SYN/FIN/RST, payload_len == 0 */
+    uint64_t zero_window_pkts;     /* tcp_hdr->rx_win == 0 */
+    uint64_t small_window_pkts;    /* 0 < tcp_hdr->rx_win < SMALL_WINDOW_THRESHOLD */
+
+    /* V2: per-protocol packet-size sum-of-squares for CoV computation */
+    uint64_t tcp_pkt_size_sum_sq;
+    uint64_t udp_pkt_size_sum_sq;
+
+    /* V3.0: L3-channel raw counters
+     *
+     * ttl_sum + ttl_sum_sq: Welford-style accumulation for ttl_stddev
+     * ip_frag_pkts: count of fragmented IP packets
+     * other_proto_pkts: count of non-TCP/UDP/ICMP packets
+     */
+    uint64_t ttl_sum;
+    uint64_t ttl_sum_sq;
+    uint64_t ip_frag_pkts;
+    uint64_t other_proto_pkts;
+
+    /* V3.1: count-min sketches for top-1 share and entropy features */
+    struct cm_sketch_src_port cm_src_port;
+    struct cm_sketch_src_24   cm_src_24;
+
     /* HyperLogLog estimators */
     struct hll_counter unique_src_ips;
     struct hll_counter unique_dst_ports;
     struct hll_counter udp_flows;
     struct hll_counter unique_flows;
+    /* V2: TCP flows where a SYN-only packet was observed in this window.
+     * Used for new_flow_ratio = unique_new_flows / unique_flows.
+     *
+     * RACE NOTE: hll_add and hll_init race with no lock. Bounded error
+     * within the HLL precision-14 noise floor (~0.8%). Same race profile
+     * as the existing HLL counters above. */
+    struct hll_counter unique_new_flows;
 
     /* Burst windows */
     struct burst_window bw_pps;
@@ -180,6 +266,7 @@ struct dst_ip_stats {
     struct tier1_udp_ewma  ewma_t1_udp;
     struct tier1_icmp_ewma ewma_t1_icmp;
     struct tier1_dist_ewma ewma_t1_dist;
+    struct tier1_l3_ewma   ewma_t1_l3;
 
     /* Detection engine */
     struct detection_engine *detection;
@@ -198,6 +285,16 @@ struct dst_ip_stats {
      * Updated once per active dst_ip per 1s window in a later commit;
      * not yet read or written by any module. */
     struct l2_temporal_state temporal;
+
+    /* ============================================================
+     * EXPERIMENTAL — DIRECTIONALITY DIAGNOSTIC (REMOVE WHEN DONE)
+     * Added to count inbound vs outbound packets per protected IP.
+     * Search for "DIRECTIONALITY_EXPERIMENT" to find all related code.
+     * ============================================================ */
+    /* DIRECTIONALITY_EXPERIMENT */
+    uint64_t inbound_pkts;
+    /* DIRECTIONALITY_EXPERIMENT */
+    uint64_t outbound_pkts;
 };
 
 // ============================================================================

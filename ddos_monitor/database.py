@@ -60,10 +60,24 @@ def get_db_client():
         tcp_pps_ratio           Float64,
         tcp_bps_ratio           Float64,
 
+        -- ── Tier 1.1 V2: TCP behavioral signatures ──────────────────────
+        empty_ack_ratio         Float64,
+        zero_window_ratio       Float64,
+        small_window_ratio      Float64,
+        new_flow_ratio          Float64,
+        syn_fin_ratio           Float64,
+        syn_to_synack_ratio     Float64,
+        tcp_pkt_size_cov        Float64,
+        tcp_mean_pkt_size       Float64,
+
         -- ── Tier 1.2: UDP behavioural features (passive) ────────────────
         udp_bps_ratio           Float64,
         udp_pps_ratio           Float64,
         udp_flow_ratio          Float64,
+
+        -- ── Tier 1.2 V2: UDP behavioral signatures ──────────────────────
+        udp_pkt_size_cov        Float64,
+        udp_mean_pkt_size       Float64,
 
         -- ── Tier 1.3: ICMP behavioural features (passive) ───────────────
         icmp_echo_ratio         Float64,
@@ -90,10 +104,24 @@ def get_db_client():
         em_tcp_pps_ratio        Float64,
         em_tcp_bps_ratio        Float64,
 
+        -- ── Tier 1.1 V2: TCP EWMA means ─────────────────────────────────
+        em_empty_ack_ratio      Float64,
+        em_zero_window_ratio    Float64,
+        em_small_window_ratio   Float64,
+        em_new_flow_ratio       Float64,
+        em_syn_fin_ratio        Float64,
+        em_syn_to_synack_ratio  Float64,
+        em_tcp_pkt_size_cov     Float64,
+        em_tcp_mean_pkt_size    Float64,
+
         -- ── Tier 1.2 UDP EWMA means ─────────────────────────────────────
         em_udp_bps_ratio        Float64,
         em_udp_pps_ratio        Float64,
         em_udp_flow_ratio       Float64,
+
+        -- ── Tier 1.2 V2: UDP EWMA means ─────────────────────────────────
+        em_udp_pkt_size_cov     Float64,
+        em_udp_mean_pkt_size    Float64,
 
         -- ── Tier 1.3 ICMP EWMA means ────────────────────────────────────
         em_icmp_echo_ratio      Float64,
@@ -133,7 +161,31 @@ def get_db_client():
 
         -- ── Layer-2 profile identity (per dst_ip) ───────────────────────
         profile_name            String DEFAULT 'default',
-        profile_version         String DEFAULT 'v1'
+        profile_version         String DEFAULT 'v1',
+
+        -- ── V3.0 L3-channel raw features ───────────────────────────────
+        ttl_stddev        Float64,
+        ip_frag_ratio     Float64,
+        other_proto_ratio Float64,
+
+        -- ── V3.0 L3-channel derived features ───────────────────────────
+        em_ttl_stddev     Float64,
+        tier1_l3_score    Float64,
+        attack_evidence   Float64,
+
+        -- ── V3.1 L3-channel raw features ───────────────────────────────
+        src_port_top1_share Float64,
+        src_24_top1_share   Float64,
+        src_24_entropy      Float64,
+
+        -- ── V3.1 L3-channel EWMA features ──────────────────────────────
+        em_src_port_top1_share Float64,
+        em_src_24_top1_share   Float64,
+        em_src_24_entropy      Float64,
+
+        -- ── DIRECTIONALITY_EXPERIMENT (TEMPORARY — REMOVE WHEN DONE) ─────
+        inbound_pkts  UInt64,
+        outbound_pkts UInt64
 
     ) ENGINE = MergeTree()
     PARTITION BY toYYYYMMDD(timestamp)
@@ -198,6 +250,99 @@ def get_db_client():
         "ADD COLUMN IF NOT EXISTS profile_version String DEFAULT 'v1' "
         "AFTER profile_name"
     )
+
+    # ─────────────────────────────────────────────────────────────────
+    # V2 columns — additive ALTERs for existing deployments. New
+    # deployments pick these up via the CREATE TABLE above. The order
+    # below mirrors the CSV column order (TCP raw → UDP raw → TCP EWMA
+    # → UDP EWMA) and uses ADD COLUMN IF NOT EXISTS for idempotency.
+    # ─────────────────────────────────────────────────────────────────
+
+    # Tier 1.1 V2 raw — anchor after tcp_bps_ratio
+    v2_tcp_raw_anchor = 'tcp_bps_ratio'
+    for col in (
+        'empty_ack_ratio', 'zero_window_ratio', 'small_window_ratio',
+        'new_flow_ratio', 'syn_fin_ratio', 'syn_to_synack_ratio',
+        'tcp_pkt_size_cov', 'tcp_mean_pkt_size',
+    ):
+        client.execute(
+            f"ALTER TABLE {config.CH_DB}.{config.CH_TABLE} "
+            f"ADD COLUMN IF NOT EXISTS {col} Float64 AFTER {v2_tcp_raw_anchor}"
+        )
+        v2_tcp_raw_anchor = col
+
+    # Tier 1.2 V2 raw — anchor after udp_flow_ratio
+    v2_udp_raw_anchor = 'udp_flow_ratio'
+    for col in ('udp_pkt_size_cov', 'udp_mean_pkt_size'):
+        client.execute(
+            f"ALTER TABLE {config.CH_DB}.{config.CH_TABLE} "
+            f"ADD COLUMN IF NOT EXISTS {col} Float64 AFTER {v2_udp_raw_anchor}"
+        )
+        v2_udp_raw_anchor = col
+
+    # Tier 1.1 V2 EWMA means — anchor after em_tcp_bps_ratio
+    v2_tcp_em_anchor = 'em_tcp_bps_ratio'
+    for col in (
+        'em_empty_ack_ratio', 'em_zero_window_ratio', 'em_small_window_ratio',
+        'em_new_flow_ratio', 'em_syn_fin_ratio', 'em_syn_to_synack_ratio',
+        'em_tcp_pkt_size_cov', 'em_tcp_mean_pkt_size',
+    ):
+        client.execute(
+            f"ALTER TABLE {config.CH_DB}.{config.CH_TABLE} "
+            f"ADD COLUMN IF NOT EXISTS {col} Float64 AFTER {v2_tcp_em_anchor}"
+        )
+        v2_tcp_em_anchor = col
+
+    # Tier 1.2 V2 EWMA means — anchor after em_udp_flow_ratio
+    v2_udp_em_anchor = 'em_udp_flow_ratio'
+    for col in ('em_udp_pkt_size_cov', 'em_udp_mean_pkt_size'):
+        client.execute(
+            f"ALTER TABLE {config.CH_DB}.{config.CH_TABLE} "
+            f"ADD COLUMN IF NOT EXISTS {col} Float64 AFTER {v2_udp_em_anchor}"
+        )
+        v2_udp_em_anchor = col
+
+    # ─────────────────────────────────────────────────────────────────
+    # V3.0 L3-channel columns — additive ALTERs for existing deployments.
+    # All 6 columns appended after profile_version (the v2 trailing
+    # column). Order matches CSV column order.
+    # ─────────────────────────────────────────────────────────────────
+    v3_anchor = 'profile_version'
+    for col in (
+        'ttl_stddev', 'ip_frag_ratio', 'other_proto_ratio',
+        'em_ttl_stddev', 'tier1_l3_score', 'attack_evidence',
+    ):
+        client.execute(
+            f"ALTER TABLE {config.CH_DB}.{config.CH_TABLE} "
+            f"ADD COLUMN IF NOT EXISTS {col} Float64 AFTER {v3_anchor}"
+        )
+        v3_anchor = col
+
+    # ─────────────────────────────────────────────────────────────────
+    # V3.1 L3-channel columns — additive ALTERs for existing deployments.
+    # Anchored after attack_evidence (v3.0 trailing column).
+    # ─────────────────────────────────────────────────────────────────
+    v31_anchor = 'attack_evidence'
+    for col in (
+        'src_port_top1_share', 'src_24_top1_share', 'src_24_entropy',
+        'em_src_port_top1_share', 'em_src_24_top1_share', 'em_src_24_entropy',
+    ):
+        client.execute(
+            f"ALTER TABLE {config.CH_DB}.{config.CH_TABLE} "
+            f"ADD COLUMN IF NOT EXISTS {col} Float64 AFTER {v31_anchor}"
+        )
+        v31_anchor = col
+
+    # ─────────────────────────────────────────────────────────────────
+    # DIRECTIONALITY_EXPERIMENT — additive ALTERs for existing tables.
+    # ─────────────────────────────────────────────────────────────────
+    exp_anchor = 'em_src_24_entropy'
+    for col in ('inbound_pkts', 'outbound_pkts'):
+        client.execute(
+            f"ALTER TABLE {config.CH_DB}.{config.CH_TABLE} "
+            f"ADD COLUMN IF NOT EXISTS {col} UInt64 AFTER {exp_anchor}"
+        )
+        exp_anchor = col
 
     print(f"[Database] Table '{config.CH_DB}.{config.CH_TABLE}' ready")
 

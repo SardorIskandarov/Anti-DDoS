@@ -32,6 +32,29 @@
  */
 #define BURST_Z_THRESHOLD 8.5
 
+/* Window size below which an ACK is considered "small"
+ * (state-exhaustion signature). Hardcoded at 1024 bytes for v2;
+ * could be made per-profile in a future change. */
+#define SMALL_WINDOW_THRESHOLD 1024
+
+/* === Tier-1.5 L3 threshold constants (v3.0) ===
+ *
+ * Two features (ip_frag_ratio, other_proto_ratio) have near-zero
+ * organic baselines on most hosts, so EWMA-based deviation
+ * detection produces nonsense (huge norm_dist on first non-zero
+ * arrival). Instead, these use soft thresholds:
+ *
+ *   signal = clamp01((value - NOISE_FLOOR) / (SATURATION - NOISE_FLOOR))
+ *
+ * value <= NOISE_FLOOR → signal = 0 (inert)
+ * value >= SATURATION  → signal = 1 (fully fired)
+ * linear interpolation between
+ */
+#define L3_FRAG_NOISE_FLOOR      0.05  /* < 5% fragments = ignore */
+#define L3_FRAG_SATURATION       0.20  /* > 20% fragments = fully fired */
+#define L3_OTHER_PROTO_NOISE_FLOOR  0.02  /* < 2% other proto = ignore */
+#define L3_OTHER_PROTO_SATURATION   0.10  /* > 10% = fully fired */
+
 /**
  * CHANGE 2: Per-feature CUSUM parameters (PPS, BPS, FPS only)
  *
@@ -179,15 +202,27 @@ struct tier1_tcp_features {
     double ack_data_ratio;
     double tcp_pps_ratio;
     double tcp_bps_ratio;
+    /* V2 features (Tier-1 TCP behavioral) */
+    double empty_ack_ratio;
+    double zero_window_ratio;
+    double small_window_ratio;
+    double new_flow_ratio;
+    double syn_fin_ratio;
+    double syn_to_synack_ratio;
+    double tcp_pkt_size_cov;
+    double tcp_mean_pkt_size;
 };
-#define TIER1_TCP_N 7
+#define TIER1_TCP_N 15  /* was 7 */
 
 struct tier1_udp_features {
     double udp_bps_ratio;
     double udp_pps_ratio;
     double udp_flow_ratio;
+    /* V2 features (Tier-1 UDP behavioral) */
+    double udp_pkt_size_cov;
+    double udp_mean_pkt_size;
 };
-#define TIER1_UDP_N 3
+#define TIER1_UDP_N 5  /* was 3 */
 
 struct tier1_icmp_features {
     double icmp_echo_ratio;
@@ -200,6 +235,29 @@ struct tier1_dist_features {
     double dst_port_ratio;
 };
 #define TIER1_DIST_N 2
+
+/* ============================================================
+ * Tier-1.5 L3 features (v3.0).
+ *
+ * This channel runs in parallel to Tier-1 TCP/UDP/ICMP/DIST.
+ * Its score `tier1_l3_score` is OR-combined with
+ * `tier1_final_score` in the final decision logic via max().
+ *
+ * v3.0 ships 3 features. v3.1 will append 4 more (src_port_top1,
+ * src_24_top1, src_24_entropy) — do NOT add those fields yet.
+ * ============================================================ */
+struct tier1_l3_features {
+    /* V3.0 */
+    double ttl_stddev;
+    double ip_frag_ratio;
+    double other_proto_ratio;
+    /* V3.1 */
+    double src_port_top1_share;
+    double src_24_top1_share;
+    double src_24_entropy;
+};
+
+#define TIER1_L3_N 7   /* was 3 (v3.0); now 7 with v3.1 */
 
 // ============================================================================
 // CUSUM STATE
@@ -268,6 +326,7 @@ struct detection_result {
     double tier1_dist_raw_dist;
     double tier1_dist_score;
     double tier1_final_score;
+    double tier1_l3_score;   /* V3.0: parallel L3 sub-channel score */
 
     attack_type_t attack_type;
 
@@ -359,6 +418,15 @@ double compute_tier1_icmp_score(const struct tier1_icmp_ewma *ewma,
 double compute_tier1_dist_score(const struct tier1_dist_ewma *ewma,
                                  const struct tier1_dist_features *cur,
                                  const struct l2_profile *profile);
+
+/* V3.0: L3 sub-channel feature extraction + score.
+ * Externally visible so the CSV emitter in l2fwd_ddos_collector.c can
+ * snapshot/recompute the L3 score for every 1-second window. */
+void   extract_tier1_l3_features(const struct dst_ip_stats *stats,
+                                  struct tier1_l3_features *out);
+double compute_tier1_l3_score   (const struct l2_profile *profile,
+                                  const struct tier1_l3_features *cur,
+                                  const struct tier1_l3_ewma *ewma);
 
 double sigmoid_score(double distance, double k, double d0);
 

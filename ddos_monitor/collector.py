@@ -27,8 +27,14 @@ def _is_target_ip(ip_str):
 
 
 # ============================================================================
-# CSV SCHEMA  (60 columns total, 58/52-column legacy formats still accepted)
+# CSV SCHEMA  (94 columns total; 60, 62, 82, and 88-column legacy formats accepted)
 # ============================================================================
+#
+# V2 column placement note: V2 features are spliced INLINE after their
+# corresponding pre-V2 tier blocks (TCP V2 after TCP raw; UDP V2 after
+# UDP raw; same for the EWMA section), matching what the C side emits
+# in the 82-column CSV. The numeric column indices below reflect that
+# inline placement, NOT an "append at end" layout.
 #
 #  Header (3):
 #    0  timestamp_ms
@@ -52,73 +58,121 @@ def _is_target_ip(ip_str):
 #   14  tcp_pps_ratio
 #   15  tcp_bps_ratio
 #
+#  Tier 1.1 V2 raw features (8):
+#   16  empty_ack_ratio
+#   17  zero_window_ratio
+#   18  small_window_ratio
+#   19  new_flow_ratio
+#   20  syn_fin_ratio
+#   21  syn_to_synack_ratio
+#   22  tcp_pkt_size_cov
+#   23  tcp_mean_pkt_size
+#
 #  Tier 1.2 UDP raw features (3):
-#   16  udp_bps_ratio
-#   17  udp_pps_ratio
-#   18  udp_flow_ratio
+#   24  udp_bps_ratio
+#   25  udp_pps_ratio
+#   26  udp_flow_ratio
+#
+#  Tier 1.2 V2 raw features (2):
+#   27  udp_pkt_size_cov
+#   28  udp_mean_pkt_size
 #
 #  Tier 1.3 ICMP raw features (2):
-#   19  icmp_echo_ratio
-#   20  icmp_pps_ratio
+#   29  icmp_echo_ratio
+#   30  icmp_pps_ratio
 #
 #  Tier 1.4 Distribution raw features (2):
-#   21  src_ip_ratio
-#   22  dst_port_ratio
+#   31  src_ip_ratio
+#   32  dst_port_ratio
 #
 #  Tier 0 EWMA means (6):
-#   23  em_pps
-#   24  em_bps
-#   25  em_fps
-#   26  em_burst_pps
-#   27  em_burst_bps
-#   28  em_burst_fps
+#   33  em_pps
+#   34  em_bps
+#   35  em_fps
+#   36  em_burst_pps
+#   37  em_burst_bps
+#   38  em_burst_fps
 #
 #  Tier 1.1 EWMA means (7):
-#   29  em_tcp_syn_ratio
-#   30  em_tcp_synack_ratio
-#   31  em_tcp_finack_ratio
-#   32  em_tcp_rst_ratio
-#   33  em_tcp_ack_data_ratio
-#   34  em_tcp_pps_ratio
-#   35  em_tcp_bps_ratio
+#   39  em_tcp_syn_ratio
+#   40  em_tcp_synack_ratio
+#   41  em_tcp_finack_ratio
+#   42  em_tcp_rst_ratio
+#   43  em_tcp_ack_data_ratio
+#   44  em_tcp_pps_ratio
+#   45  em_tcp_bps_ratio
+#
+#  Tier 1.1 V2 EWMA means (8):
+#   46  em_empty_ack_ratio
+#   47  em_zero_window_ratio
+#   48  em_small_window_ratio
+#   49  em_new_flow_ratio
+#   50  em_syn_fin_ratio
+#   51  em_syn_to_synack_ratio
+#   52  em_tcp_pkt_size_cov
+#   53  em_tcp_mean_pkt_size
 #
 #  Tier 1.2 EWMA means (3):
-#   36  em_udp_bps_ratio
-#   37  em_udp_pps_ratio
-#   38  em_udp_flow_ratio
+#   54  em_udp_bps_ratio
+#   55  em_udp_pps_ratio
+#   56  em_udp_flow_ratio
+#
+#  Tier 1.2 V2 EWMA means (2):
+#   57  em_udp_pkt_size_cov
+#   58  em_udp_mean_pkt_size
 #
 #  Tier 1.3 EWMA means (2):
-#   39  em_icmp_echo_ratio
-#   40  em_icmp_pps_ratio
+#   59  em_icmp_echo_ratio
+#   60  em_icmp_pps_ratio
 #
 #  Tier 1.4 EWMA means (2):
-#   41  em_src_ip_ratio
-#   42  em_dst_port_ratio
+#   61  em_src_ip_ratio
+#   62  em_dst_port_ratio
 #
 #  Detection fields (15):
-#   43  detection_state         (string: WARMUP|NORMAL|SUSPICIOUS|ATTACK|RECOVERING)
-#   44  tier0_global_risk       (float, fused Tier-0 continuous risk)
-#   45  tier0_risk_pps          (float [0,1])
-#   46  tier0_risk_bps          (float [0,1])
-#   47  tier0_risk_fps          (float [0,1])
-#   48  tier0_risk_burst_pps    (float [0,1])
-#   49  tier0_risk_burst_bps    (float [0,1])
-#   50  tier0_risk_burst_fps    (float [0,1])
-#   51  tier1_tcp_score         (float [0,1])
-#   52  tier1_udp_score         (float [0,1])
-#   53  tier1_icmp_score        (float [0,1])
-#   54  tier1_dist_score        (float [0,1])
-#   55  tier1_final_score       (float [0,1], worst-case across sub-tiers)
-#   56  tier1_evaluated         (int 0|1)
-#   57  warmup_remaining        (int, windows left in warm-up phase)
-# 
+#   63  detection_state         (string: WARMUP|NORMAL|SUSPICIOUS|ATTACK|RECOVERING)
+#   64  tier0_global_risk       (float, fused Tier-0 continuous risk)
+#   65  tier0_risk_pps          (float [0,1])
+#   66  tier0_risk_bps          (float [0,1])
+#   67  tier0_risk_fps          (float [0,1])
+#   68  tier0_risk_burst_pps    (float [0,1])
+#   69  tier0_risk_burst_bps    (float [0,1])
+#   70  tier0_risk_burst_fps    (float [0,1])
+#   71  tier1_tcp_score         (float [0,1])
+#   72  tier1_udp_score         (float [0,1])
+#   73  tier1_icmp_score        (float [0,1])
+#   74  tier1_dist_score        (float [0,1])
+#   75  tier1_final_score       (float [0,1], worst-case across sub-tiers)
+#   76  tier1_evaluated         (int 0|1)
+#   77  warmup_remaining        (int, windows left in warm-up phase)
+#
 #  HLL observability fields (2):
-#   58  unique_src_ips          (int, HyperLogLog-estimated count)
-#   59  unique_dst_ports        (int, HyperLogLog-estimated count)
+#   78  unique_src_ips          (int, HyperLogLog-estimated count)
+#   79  unique_dst_ports        (int, HyperLogLog-estimated count)
 #
 #  Layer-2 profile identity (2, appended):
-#   60  profile_name            (string)
-#   61  profile_version         (string)
+#   80  profile_name            (string)
+#   81  profile_version         (string)
+#
+#  V3.0 L3-channel raw features (3, columns 82-84):
+#   82  ttl_stddev
+#   83  ip_frag_ratio
+#   84  other_proto_ratio
+#
+#  V3.0 L3-channel derived (3, columns 85-87):
+#   85  em_ttl_stddev
+#   86  tier1_l3_score
+#   87  attack_evidence
+#
+#  V3.1 L3-channel raw features (3, columns 88-90):
+#   88  src_port_top1_share
+#   89  src_24_top1_share
+#   90  src_24_entropy
+#
+#  V3.1 L3-channel EWMA companions (3, columns 91-93):
+#   91  em_src_port_top1_share
+#   92  em_src_24_top1_share
+#   93  em_src_24_entropy
 
 # ----------------------------------------------------------------------------
 # Field schema — (name, type) pairs listed in the EXACT order emitted by the
@@ -139,7 +193,7 @@ CSV_FIELDS = [
     ('burst_bps',              'float'),
     ('burst_fps',              'float'),
 
-    # ── Tier 1.1 TCP raw (7) ───────────────────────────────────────────
+    # ── Tier 1.1 TCP raw (15) ──────────────────────────────────────────
     ('tcp_syn_ratio',          'float'),
     ('tcp_synack_ratio',       'float'),
     ('tcp_finack_ratio',       'float'),
@@ -147,11 +201,23 @@ CSV_FIELDS = [
     ('tcp_ack_data_ratio',     'float'),
     ('tcp_pps_ratio',          'float'),
     ('tcp_bps_ratio',          'float'),
+    # V2 features
+    ('empty_ack_ratio',        'float'),
+    ('zero_window_ratio',      'float'),
+    ('small_window_ratio',     'float'),
+    ('new_flow_ratio',         'float'),
+    ('syn_fin_ratio',          'float'),
+    ('syn_to_synack_ratio',    'float'),
+    ('tcp_pkt_size_cov',       'float'),
+    ('tcp_mean_pkt_size',      'float'),
 
-    # ── Tier 1.2 UDP raw (3) ───────────────────────────────────────────
+    # ── Tier 1.2 UDP raw (5) ───────────────────────────────────────────
     ('udp_bps_ratio',          'float'),
     ('udp_pps_ratio',          'float'),
     ('udp_flow_ratio',         'float'),
+    # V2 features
+    ('udp_pkt_size_cov',       'float'),
+    ('udp_mean_pkt_size',      'float'),
 
     # ── Tier 1.3 ICMP raw (2) ──────────────────────────────────────────
     ('icmp_echo_ratio',        'float'),
@@ -169,7 +235,7 @@ CSV_FIELDS = [
     ('em_burst_bps',           'float'),
     ('em_burst_fps',           'float'),
 
-    # ── Tier 1.1 TCP EWMA means (7) ────────────────────────────────────
+    # ── Tier 1.1 TCP EWMA means (15) ───────────────────────────────────
     ('em_tcp_syn_ratio',       'float'),
     ('em_tcp_synack_ratio',    'float'),
     ('em_tcp_finack_ratio',    'float'),
@@ -177,11 +243,23 @@ CSV_FIELDS = [
     ('em_tcp_ack_data_ratio',  'float'),
     ('em_tcp_pps_ratio',       'float'),
     ('em_tcp_bps_ratio',       'float'),
+    # V2 features
+    ('em_empty_ack_ratio',     'float'),
+    ('em_zero_window_ratio',   'float'),
+    ('em_small_window_ratio',  'float'),
+    ('em_new_flow_ratio',      'float'),
+    ('em_syn_fin_ratio',       'float'),
+    ('em_syn_to_synack_ratio', 'float'),
+    ('em_tcp_pkt_size_cov',    'float'),
+    ('em_tcp_mean_pkt_size',   'float'),
 
-    # ── Tier 1.2 UDP EWMA means (3) ────────────────────────────────────
+    # ── Tier 1.2 UDP EWMA means (5) ────────────────────────────────────
     ('em_udp_bps_ratio',       'float'),
     ('em_udp_pps_ratio',       'float'),
     ('em_udp_flow_ratio',      'float'),
+    # V2 features
+    ('em_udp_pkt_size_cov',    'float'),
+    ('em_udp_mean_pkt_size',   'float'),
 
     # ── Tier 1.3 ICMP EWMA means (2) ───────────────────────────────────
     ('em_icmp_echo_ratio',     'float'),
@@ -215,15 +293,46 @@ CSV_FIELDS = [
     # ── Layer-2 profile identity (2) ───────────────────────────────────
     ('profile_name',           'str'),
     ('profile_version',        'str'),
+
+    # ── V3.0 L3-channel raw (3) ────────────────────────────────────────
+    ('ttl_stddev',        'float'),
+    ('ip_frag_ratio',     'float'),
+    ('other_proto_ratio', 'float'),
+
+    # ── V3.0 L3-channel derived (3) ────────────────────────────────────
+    ('em_ttl_stddev',     'float'),
+    ('tier1_l3_score',    'float'),
+    ('attack_evidence',   'float'),
+
+    # ── V3.1 L3-channel raw (3) ────────────────────────────────────────
+    ('src_port_top1_share', 'float'),
+    ('src_24_top1_share',   'float'),
+    ('src_24_entropy',      'float'),
+
+    # ── V3.1 L3-channel EWMA (3) ───────────────────────────────────────
+    ('em_src_port_top1_share', 'float'),
+    ('em_src_24_top1_share',   'float'),
+    ('em_src_24_entropy',      'float'),
+
+    # ── DIRECTIONALITY_EXPERIMENT (TEMPORARY — REMOVE WHEN DONE) ───────
+    ('inbound_pkts',  'int'),
+    ('outbound_pkts', 'int'),
 ]
 
-EXPECTED_CSV_FIELDS = len(CSV_FIELDS)  # 62
-assert EXPECTED_CSV_FIELDS == 62, f"CSV schema drift: {EXPECTED_CSV_FIELDS} fields"
+EXPECTED_CSV_FIELDS = len(CSV_FIELDS)  # 96 (was 94, +2 for direction experiment)
+assert EXPECTED_CSV_FIELDS == 96, \
+    f"CSV schema drift: {EXPECTED_CSV_FIELDS} fields"
 
-# Accept legacy 60-column lines from a pre-profile C binary so a partial
-# upgrade doesn't drop telemetry. Missing profile fields are filled in
-# with the "default" identity, which matches the C-side fallback.
-LEGACY_CSV_FIELDS = 60
+# The pre-profile (60-column), pre-V2 (62-column), pre-V3 (82-column),
+# and pre-V3.1 (88-column) layouts are all still accepted for
+# partial-rollback safety. Each is widened to the current 94-column
+# layout by appending zero-valued columns (and, for 60-column lines,
+# the default profile identity).
+LEGACY_60_FIELDS = 60   # pre-profile schema
+LEGACY_62_FIELDS = 62   # pre-V2 schema (had profile identity, no V2)
+LEGACY_82_FIELDS = 82   # pre-V3 schema
+LEGACY_88_FIELDS = 88   # post-v3.0, pre-v3.1
+LEGACY_94_FIELDS = 94   # post-v3.1, pre-direction-experiment
 
 
 def _coerce(raw, kind):
@@ -413,10 +522,56 @@ def parse_csv_line(line):
     """
     parts = line.strip().split(',')
 
-    if len(parts) == LEGACY_CSV_FIELDS:
-        # Legacy pre-profile line: synthesize the two profile-identity
-        # fields so downstream code can treat the record uniformly.
+    # 20 zero-valued strings to fill in the V2 columns when an older
+    # binary's CSV is observed. Order must match CSV_FIELDS V2 inserts:
+    # 8 TCP raw + 2 UDP raw + 8 TCP EWMA + 2 UDP EWMA. We splice them
+    # at the correct positions rather than appending, so all downstream
+    # column indices remain valid.
+    if len(parts) == LEGACY_60_FIELDS:
+        # Pre-profile binary: pad to 62, then to 82
         parts = parts + ['default', 'v1']
+    if len(parts) == LEGACY_62_FIELDS:
+        # Pre-V2 binary: splice 20 zero-valued V2 columns into the
+        # correct positions. Splice right-to-left so earlier index
+        # math stays valid.
+        ZERO = '0.0'
+
+        # Insertion point 4: after em_udp_flow_ratio (index 38 in the
+        # 62-schema, i.e. just before the Tier 1.3 EWMA block)
+        parts = parts[:39] + [ZERO, ZERO] + parts[39:]
+
+        # Insertion point 3: after em_tcp_bps_ratio (index 35 in the
+        # 62-schema, i.e. just before em_udp_bps_ratio)
+        parts = parts[:36] + [ZERO]*8 + parts[36:]
+
+        # Insertion point 2: after udp_flow_ratio (index 18 in the
+        # 62-schema, i.e. just before icmp_echo_ratio)
+        parts = parts[:19] + [ZERO, ZERO] + parts[19:]
+
+        # Insertion point 1: after tcp_bps_ratio (index 15 in the
+        # 62-schema, i.e. just before udp_bps_ratio)
+        parts = parts[:16] + [ZERO]*8 + parts[16:]
+
+        # parts is now 82 elements long.
+
+    if len(parts) == LEGACY_82_FIELDS:
+        # Pre-V3 binary: append 6 zero-valued V3 columns.
+        # V3 columns are all appended at the end (no in-the-middle
+        # splices needed), making this the simplest legacy path.
+        ZERO = '0.0'
+        parts = parts + [ZERO, ZERO, ZERO, ZERO, ZERO, ZERO]
+        # parts is now 88 elements long.
+
+    if len(parts) == LEGACY_88_FIELDS:
+        # Pre-v3.1 binary: append 6 zero-valued v3.1 columns at end.
+        ZERO = '0.0'
+        parts = parts + [ZERO, ZERO, ZERO, ZERO, ZERO, ZERO]
+        # parts is now 94 elements long.
+
+    if len(parts) == LEGACY_94_FIELDS:
+        # Pre-experiment binary: append 2 zero-valued direction columns.
+        parts = parts + ['0', '0']
+        # parts is now 96 elements long.
 
     if len(parts) != EXPECTED_CSV_FIELDS:
         print(f"[Collector] Bad CSV: expected {EXPECTED_CSV_FIELDS} "

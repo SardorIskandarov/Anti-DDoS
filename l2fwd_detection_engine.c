@@ -68,6 +68,63 @@ void extract_tier1_tcp_features(const struct dst_ip_stats *stats,
     out->ack_data_ratio = (double)stats->ack_data_pkts / tcp_safe;
     out->tcp_pps_ratio  = (double)stats->tcp_pkts      / tot_safe;
     out->tcp_bps_ratio  = (double)stats->tcp_bytes     / tot_bytes_safe;
+
+    /* === V2 FEATURES === */
+
+    /* Empty ACK / Zero-window / Small-window ratios */
+    out->empty_ack_ratio    = (double)stats->empty_ack_pkts    / tcp_safe;
+    out->zero_window_ratio  = (double)stats->zero_window_pkts  / tcp_safe;
+    out->small_window_ratio = (double)stats->small_window_pkts / tcp_safe;
+
+    /* New flow ratio: SYN-flagged unique flows / all unique flows.
+     * RACE NOTE: hll_count is read twice in sequence with no lock; a
+     * packet arriving between reads can perturb the ratio by at most
+     * a few packets per second. Bounded well within HLL noise floor. */
+    {
+        uint64_t new_flows_cnt = hll_count(&stats->unique_new_flows);
+        uint64_t all_flows_cnt = hll_count(&stats->unique_flows);
+        out->new_flow_ratio = (all_flows_cnt > 0)
+                              ? (double)new_flows_cnt / (double)all_flows_cnt
+                              : 0.0;
+    }
+
+    /* SYN/FIN ratio with Laplace smoothing and bounded cap.
+     * Cap at 50.0 prevents single-zero-FIN-window spikes from saturating
+     * the EWMA. */
+    {
+        double sf_raw = ((double)stats->syn_pkts + 1.0) /
+                        ((double)stats->fin_ack_pkts + 1.0);
+        out->syn_fin_ratio = (sf_raw > 50.0) ? 50.0 : sf_raw;
+    }
+
+    /* SYN to SYN-ACK ratio (asymmetry indicator).
+     * Same cap and Laplace reasoning as syn_fin_ratio. */
+    {
+        double sa_raw = (double)stats->syn_pkts /
+                        ((double)stats->syn_ack_pkts + 1.0);
+        out->syn_to_synack_ratio = (sa_raw > 50.0) ? 50.0 : sa_raw;
+    }
+
+    /* TCP packet-size CoV and mean.
+     *   variance = E[X^2] - E[X]^2 = sum_sq/N - (sum/N)^2
+     *   CoV = sqrt(variance) / mean
+     * Requires N >= 10 packets for the moment estimate to be meaningful;
+     * below that we still emit the raw mean (informational) but force
+     * CoV to zero. */
+    if (stats->tcp_pkts >= 10) {
+        double n = (double)stats->tcp_pkts;
+        double mean = (double)stats->tcp_bytes / n;
+        double mean_sq = (double)stats->tcp_pkt_size_sum_sq / n;
+        double variance = mean_sq - mean * mean;
+        if (variance < 0.0) variance = 0.0;  /* numeric error guard */
+        out->tcp_pkt_size_cov = (mean > 1.0) ? sqrt(variance) / mean : 0.0;
+        out->tcp_mean_pkt_size = mean;
+    } else {
+        out->tcp_pkt_size_cov = 0.0;
+        out->tcp_mean_pkt_size = (stats->tcp_pkts > 0)
+                                 ? (double)stats->tcp_bytes / (double)stats->tcp_pkts
+                                 : 0.0;
+    }
 }
 
 void extract_tier1_udp_features(const struct dst_ip_stats *stats,
@@ -81,6 +138,22 @@ void extract_tier1_udp_features(const struct dst_ip_stats *stats,
     out->udp_bps_ratio  = (double)stats->udp_bytes / tot_bytes_safe;
     out->udp_pps_ratio  = (double)stats->udp_pkts  / tot_safe;
     out->udp_flow_ratio = (double)hll_count(&stats->udp_flows) / udp_pps_safe;
+
+    /* === V2 FEATURES === */
+    if (stats->udp_pkts >= 10) {
+        double n = (double)stats->udp_pkts;
+        double mean = (double)stats->udp_bytes / n;
+        double mean_sq = (double)stats->udp_pkt_size_sum_sq / n;
+        double variance = mean_sq - mean * mean;
+        if (variance < 0.0) variance = 0.0;
+        out->udp_pkt_size_cov = (mean > 1.0) ? sqrt(variance) / mean : 0.0;
+        out->udp_mean_pkt_size = mean;
+    } else {
+        out->udp_pkt_size_cov = 0.0;
+        out->udp_mean_pkt_size = (stats->udp_pkts > 0)
+                                 ? (double)stats->udp_bytes / (double)stats->udp_pkts
+                                 : 0.0;
+    }
 }
 
 void extract_tier1_icmp_features(const struct dst_ip_stats *stats,
@@ -106,6 +179,108 @@ void extract_tier1_dist_features(const struct dst_ip_stats *stats,
 }
 
 // ============================================================================
+// V3.1 COUNT-MIN SKETCH QUERY HELPERS
+// ============================================================================
+
+/* V3.1: scan top-K array to find the largest count.
+ * Returns 0 if all slots are empty. */
+static inline uint32_t cm_query_top1_count(const struct cm_topk_entry *topk) {
+    uint32_t max_count = 0;
+    for (int i = 0; i < L3_TOPK; i++) {
+        if (topk[i].count > max_count) max_count = topk[i].count;
+    }
+    return max_count;
+}
+
+/* V3.1: Shannon entropy approximation across K=16 heavy hitters
+ * plus an "everything else" bucket.
+ *
+ * H = -sum(p_i * log2(p_i)) for non-zero p_i.
+ *
+ * The "everything else" bucket has count = max(0, total -
+ * sum(top-K counts)) and is included as one more term. This
+ * biases entropy slightly DOWN compared to true entropy (the
+ * tail is collapsed to one term), but is direction-consistent
+ * and the EWMA baseline learns the biased value — correct for
+ * detection.
+ *
+ * Returns 0.0 if total == 0. */
+static double cm_compute_entropy(const struct cm_topk_entry *topk,
+                                  uint64_t total) {
+    if (total == 0) return 0.0;
+    double t = (double)total;
+    double sum_topk = 0.0;
+    double h = 0.0;
+    for (int i = 0; i < L3_TOPK; i++) {
+        if (topk[i].count == 0) continue;
+        double p = (double)topk[i].count / t;
+        h -= p * log2(p);
+        sum_topk += (double)topk[i].count;
+    }
+    double tail = t - sum_topk;
+    if (tail > 0.0) {
+        double p_tail = tail / t;
+        h -= p_tail * log2(p_tail);
+    }
+    return h;
+}
+
+void extract_tier1_l3_features(
+    const struct dst_ip_stats *stats,
+    struct tier1_l3_features *out)
+{
+    double total = (double)stats->total_pkts;
+    double total_safe = (total > 0.0) ? total : 1.0;
+
+    /* === ttl_stddev (EWMA-tracked) ===
+     * Same Welford-style math as v2's tcp_pkt_size_cov.
+     * Need N >= 10 packets to be meaningful; below that emit 0. */
+    if (stats->total_pkts >= 10) {
+        double n = total;
+        double mean = (double)stats->ttl_sum / n;
+        double mean_sq = (double)stats->ttl_sum_sq / n;
+        double variance = mean_sq - mean * mean;
+        if (variance < 0.0) variance = 0.0;  /* numeric guard */
+        out->ttl_stddev = sqrt(variance);
+    } else {
+        out->ttl_stddev = 0.0;
+    }
+
+    /* === ip_frag_ratio (threshold-based, no EWMA) === */
+    out->ip_frag_ratio = (double)stats->ip_frag_pkts / total_safe;
+
+    /* === other_proto_ratio (threshold-based, no EWMA) === */
+    out->other_proto_ratio = (double)stats->other_proto_pkts / total_safe;
+
+    /* === V3.1: src_port_top1_share === */
+    {
+        uint64_t total_l4 = (uint64_t)stats->tcp_pkts +
+                            (uint64_t)stats->udp_pkts;
+        if (total_l4 > 0) {
+            uint32_t top1 = cm_query_top1_count(stats->cm_src_port.topk);
+            out->src_port_top1_share = (double)top1 / (double)total_l4;
+            /* Clamp: sketch over-estimation can push slightly >1.0 */
+            if (out->src_port_top1_share > 1.0) out->src_port_top1_share = 1.0;
+        } else {
+            out->src_port_top1_share = 0.0;
+        }
+    }
+
+    /* === V3.1: src_24_top1_share === */
+    if (stats->total_pkts > 0) {
+        uint32_t top1 = cm_query_top1_count(stats->cm_src_24.topk);
+        out->src_24_top1_share = (double)top1 / total_safe;
+        if (out->src_24_top1_share > 1.0) out->src_24_top1_share = 1.0;
+    } else {
+        out->src_24_top1_share = 0.0;
+    }
+
+    /* === V3.1: src_24_entropy === */
+    out->src_24_entropy = cm_compute_entropy(
+        stats->cm_src_24.topk, stats->total_pkts);
+}
+
+// ============================================================================
 // UTILITY: Clamp function
 // ============================================================================
 
@@ -113,6 +288,12 @@ static inline double clamp(double value, double min_val, double max_val) {
     if (value < min_val) return min_val;
     if (value > max_val) return max_val;
     return value;
+}
+
+static inline double clamp01(double x) {
+    if (x < 0.0) return 0.0;
+    if (x > 1.0) return 1.0;
+    return x;
 }
 
 static void print_risk_bar(const char *name, double risk) {
@@ -300,6 +481,20 @@ double compute_tier1_tcp_score(const struct tier1_tcp_ewma *ewma,
     d += norm_dist(&ewma->ack_data_ratio, cur->ack_data_ratio);
     d += norm_dist(&ewma->tcp_pps_ratio,  cur->tcp_pps_ratio);
     d += norm_dist(&ewma->tcp_bps_ratio,  cur->tcp_bps_ratio);
+
+    /* === V2 FEATURES — gated by per-profile weights (default 0.0) ===
+     *
+     * When all weights are 0.0, this block contributes nothing to `d`
+     * and the function returns the same value as the pre-v2 version.
+     * Verified by regression test against pre-change baseline. */
+    d += profile->w_feat_empty_ack         * norm_dist(&ewma->empty_ack_ratio,     cur->empty_ack_ratio);
+    d += profile->w_feat_zero_window       * norm_dist(&ewma->zero_window_ratio,   cur->zero_window_ratio);
+    d += profile->w_feat_small_window      * norm_dist(&ewma->small_window_ratio,  cur->small_window_ratio);
+    d += profile->w_feat_new_flow          * norm_dist(&ewma->new_flow_ratio,      cur->new_flow_ratio);
+    d += profile->w_feat_syn_fin           * norm_dist(&ewma->syn_fin_ratio,       cur->syn_fin_ratio);
+    d += profile->w_feat_syn_to_synack     * norm_dist(&ewma->syn_to_synack_ratio, cur->syn_to_synack_ratio);
+    d += profile->w_feat_tcp_pkt_size_cov  * norm_dist(&ewma->tcp_pkt_size_cov,    cur->tcp_pkt_size_cov);
+    d += profile->w_feat_tcp_mean_pkt_size * norm_dist(&ewma->tcp_mean_pkt_size,   cur->tcp_mean_pkt_size);
     return sigmoid_score(d, profile->sigmoid_k, profile->sigmoid_d0);
 }
 
@@ -311,6 +506,10 @@ double compute_tier1_udp_score(const struct tier1_udp_ewma *ewma,
     d += norm_dist(&ewma->udp_bps_ratio,  cur->udp_bps_ratio) * 1.6;
     d += norm_dist(&ewma->udp_pps_ratio,  cur->udp_pps_ratio) * 1.5;
     d += norm_dist(&ewma->udp_flow_ratio, cur->udp_flow_ratio) * 0.6;
+
+    /* V2 features — gated by per-profile weights (default 0.0) */
+    d += profile->w_feat_udp_pkt_size_cov  * norm_dist(&ewma->udp_pkt_size_cov,  cur->udp_pkt_size_cov);
+    d += profile->w_feat_udp_mean_pkt_size * norm_dist(&ewma->udp_mean_pkt_size, cur->udp_mean_pkt_size);
     return sigmoid_score(d, profile->sigmoid_k, profile->sigmoid_d0);
 }
 
@@ -330,6 +529,68 @@ double compute_tier1_dist_score(const struct tier1_dist_ewma *ewma,
     d += norm_dist(&ewma->src_ip_ratio,   cur->src_ip_ratio);
     d += norm_dist(&ewma->dst_port_ratio, cur->dst_port_ratio);
     return sigmoid_score(d, profile->sigmoid_k, profile->sigmoid_d0);
+}
+
+double compute_tier1_l3_score(
+    const struct l2_profile *profile,
+    const struct tier1_l3_features *cur,
+    const struct tier1_l3_ewma *ewma)
+{
+    /* L3 channel fully inert when every L3 feature weight is 0.0.
+     * Returns exactly 0.0 in that case, bypassing the sigmoid — which
+     * is otherwise degenerate (k=0, d0=0 → 0.5 constant) for any
+     * profile whose v3 fields were left at designated-init defaults.
+     * This preserves byte-identical detection_state for profiles that
+     * have not opted into L3 scoring. */
+    if (profile->w_feat_ttl_stddev      == 0.0 &&
+        profile->w_feat_ip_frag         == 0.0 &&
+        profile->w_feat_other_proto     == 0.0 &&
+        profile->w_feat_src_port_top1   == 0.0 &&
+        profile->w_feat_src_24_top1     == 0.0 &&
+        profile->w_feat_src_24_entropy  == 0.0) {
+        return 0.0;
+    }
+
+    double d = 0.0;
+
+    /* === EWMA-tracked feature === */
+    d += profile->w_feat_ttl_stddev *
+         norm_dist(&ewma->ttl_stddev, cur->ttl_stddev);
+
+    /* === Threshold-based features ===
+     * signal = clamp01((value - noise_floor) / (saturation - noise_floor))
+     * Per-profile override: noise-floor override of 0.0 means
+     * "use the macro default." */
+    double frag_floor = (profile->frag_noise_floor_override > 0.0)
+                      ? profile->frag_noise_floor_override
+                      : L3_FRAG_NOISE_FLOOR;
+    double frag_signal = clamp01(
+        (cur->ip_frag_ratio - frag_floor) /
+        (L3_FRAG_SATURATION - frag_floor));
+    d += profile->w_feat_ip_frag * frag_signal;
+
+    double op_floor = (profile->other_proto_noise_floor_override > 0.0)
+                    ? profile->other_proto_noise_floor_override
+                    : L3_OTHER_PROTO_NOISE_FLOOR;
+    double op_signal = clamp01(
+        (cur->other_proto_ratio - op_floor) /
+        (L3_OTHER_PROTO_SATURATION - op_floor));
+    d += profile->w_feat_other_proto * op_signal;
+
+    /* === V3.1: EWMA-tracked features ===
+     * All three use norm_dist on the EWMA baseline, same pattern
+     * as ttl_stddev. */
+    d += profile->w_feat_src_port_top1 *
+         norm_dist(&ewma->src_port_top1_share, cur->src_port_top1_share);
+    d += profile->w_feat_src_24_top1 *
+         norm_dist(&ewma->src_24_top1_share, cur->src_24_top1_share);
+    d += profile->w_feat_src_24_entropy *
+         norm_dist(&ewma->src_24_entropy, cur->src_24_entropy);
+
+    /* L3 has its own sigmoid (independent from Tier-1 sigmoid)
+     * so calibration changes here do not perturb Tier-1
+     * TCP/UDP/ICMP/DIST score curves. */
+    return sigmoid_score(d, profile->sigmoid_k_l3, profile->sigmoid_d0_l3);
 }
 
 // ============================================================================
@@ -363,6 +624,16 @@ static void update_tier1_tcp_ewma(struct tier1_tcp_ewma *e,
     update_ewma_if_active(&e->ack_data_ratio, f->ack_data_ratio, ts);
     update_ewma_if_active(&e->tcp_pps_ratio,  f->tcp_pps_ratio,  ts);
     update_ewma_if_active(&e->tcp_bps_ratio,  f->tcp_bps_ratio,  ts);
+
+    /* V2 features */
+    update_ewma_if_active(&e->empty_ack_ratio,    f->empty_ack_ratio,    ts);
+    update_ewma_if_active(&e->zero_window_ratio,  f->zero_window_ratio,  ts);
+    update_ewma_if_active(&e->small_window_ratio, f->small_window_ratio, ts);
+    update_ewma_if_active(&e->new_flow_ratio,     f->new_flow_ratio,     ts);
+    update_ewma_if_active(&e->syn_fin_ratio,      f->syn_fin_ratio,      ts);
+    update_ewma_if_active(&e->syn_to_synack_ratio, f->syn_to_synack_ratio, ts);
+    update_ewma_if_active(&e->tcp_pkt_size_cov,   f->tcp_pkt_size_cov,   ts);
+    update_ewma_if_active(&e->tcp_mean_pkt_size,  f->tcp_mean_pkt_size,  ts);
 }
 
 static void update_tier1_udp_ewma(struct tier1_udp_ewma *e,
@@ -371,6 +642,10 @@ static void update_tier1_udp_ewma(struct tier1_udp_ewma *e,
     update_ewma_if_active(&e->udp_bps_ratio,  f->udp_bps_ratio,  ts);
     update_ewma_if_active(&e->udp_pps_ratio,  f->udp_pps_ratio,  ts);
     update_ewma_if_active(&e->udp_flow_ratio, f->udp_flow_ratio, ts);
+
+    /* V2 features */
+    update_ewma_if_active(&e->udp_pkt_size_cov,  f->udp_pkt_size_cov,  ts);
+    update_ewma_if_active(&e->udp_mean_pkt_size, f->udp_mean_pkt_size, ts);
 }
 
 static void update_tier1_icmp_ewma(struct tier1_icmp_ewma *e,
@@ -385,6 +660,18 @@ static void update_tier1_dist_ewma(struct tier1_dist_ewma *e,
                                     const struct tier_state *ts) {
     update_ewma_if_active(&e->src_ip_ratio,   f->src_ip_ratio,   ts);
     update_ewma_if_active(&e->dst_port_ratio, f->dst_port_ratio, ts);
+}
+
+static void update_tier1_l3_ewma(struct tier1_l3_ewma *e,
+                                  const struct tier1_l3_features *f,
+                                  const struct tier_state *ts) {
+    /* ttl_stddev and v3.1 sketch-derived features are EWMA-tracked.
+     * ip_frag_ratio and other_proto_ratio use threshold math at
+     * scoring time and have no EWMA state. */
+    update_ewma_if_active(&e->ttl_stddev, f->ttl_stddev, ts);
+    update_ewma_if_active(&e->src_port_top1_share, f->src_port_top1_share, ts);
+    update_ewma_if_active(&e->src_24_top1_share,   f->src_24_top1_share,   ts);
+    update_ewma_if_active(&e->src_24_entropy,      f->src_24_entropy,      ts);
 }
 
 // ============================================================================
@@ -458,12 +745,15 @@ struct detection_result detection_engine_process(
     struct tier1_udp_features   t1_udp;
     struct tier1_icmp_features  t1_icmp;
     struct tier1_dist_features  t1_dist;
+    struct tier1_l3_features    t1_l3;
 
     extract_tier0_features     (stats, &t0,     time_sec);
     extract_tier1_tcp_features (stats, &t1_tcp,  time_sec);
     extract_tier1_udp_features (stats, &t1_udp,  time_sec);
     extract_tier1_icmp_features(stats, &t1_icmp, time_sec);
     extract_tier1_dist_features(stats, &t1_dist, time_sec);
+    /* V3.0: L3 channel extraction (parallel to Tier-1 dist) */
+    extract_tier1_l3_features  (stats, &t1_l3);
 
     bool absolute_override =
         (t0.pps > p->absolute_pps_threshold ||
@@ -476,6 +766,8 @@ struct detection_result detection_engine_process(
         update_tier1_udp_ewma (&stats->ewma_t1_udp,  &t1_udp,  &engine->tier1_udp_state);
         update_tier1_icmp_ewma(&stats->ewma_t1_icmp, &t1_icmp, &engine->tier1_icmp_state);
         update_tier1_dist_ewma(&stats->ewma_t1_dist, &t1_dist, &engine->tier1_dist_state);
+        /* V3.0: L3 baseline shares dist's freeze state (same alpha cadence) */
+        update_tier1_l3_ewma  (&stats->ewma_t1_l3,   &t1_l3,   &engine->tier1_dist_state);
 
         cusum_update_tier0(engine, stats, &t0, &result, false);
         result.tier0_state = classify_tier0_state(result.tier0_global_risk,
@@ -628,6 +920,19 @@ struct detection_result detection_engine_process(
         // Use whichever is higher: weighted fusion (balanced attacks) or max individual (single-protocol)
         result.tier1_final_score = (weighted_score > max_individual) ? weighted_score : max_individual;
 
+        /* V3.0: compute L3 score in parallel with Tier-1 */
+        double tier1_l3_score = compute_tier1_l3_score(p, &t1_l3, &stats->ewma_t1_l3);
+        result.tier1_l3_score = tier1_l3_score;
+
+        /* OR-combination: either Tier-1 conventional OR L3 evidence
+         * can confirm an attack. This preserves existing detection
+         * behavior when w_feat_* weights are 0.0 (because in that
+         * case tier1_l3_score is a small constant below the
+         * threshold_suspicious). */
+        double attack_evidence = (result.tier1_final_score > tier1_l3_score)
+                               ? result.tier1_final_score
+                               : tier1_l3_score;
+
         if (dst_ip == DEBUG_IP) {
             printf("[Detection] Tier-1 gating tcp=%.2f(%s) udp=%.2f(%s) icmp=%.2f(%s) weighted=%.3f max=%.3f final=%.3f\n",
                    t1_tcp.tcp_pps_ratio,   tcp_active  ? "on" : "off",
@@ -636,8 +941,8 @@ struct detection_result detection_engine_process(
                    weighted_score, max_individual, result.tier1_final_score);
         }
 
-        // Classify based on weighted final score
-        final_state = classify(result.tier1_final_score,
+        // Classify based on attack_evidence = max(tier1_final_score, tier1_l3_score)
+        final_state = classify(attack_evidence,
                                p->threshold_normal,
                                p->threshold_suspicious);
 
@@ -750,6 +1055,8 @@ struct detection_result detection_engine_process(
         update_tier1_udp_ewma (&stats->ewma_t1_udp,  &t1_udp,  &engine->tier1_udp_state);
         update_tier1_icmp_ewma(&stats->ewma_t1_icmp, &t1_icmp, &engine->tier1_icmp_state);
         update_tier1_dist_ewma(&stats->ewma_t1_dist, &t1_dist, &engine->tier1_dist_state);
+        /* V3.0: L3 baseline shares dist's freeze state (same alpha cadence) */
+        update_tier1_l3_ewma  (&stats->ewma_t1_l3,   &t1_l3,   &engine->tier1_dist_state);
     }
 
     if (dst_ip == DEBUG_IP) {

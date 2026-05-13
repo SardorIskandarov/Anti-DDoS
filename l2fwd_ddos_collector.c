@@ -169,6 +169,87 @@ double burst_window_avg(const struct burst_window *bw) {
 }
 
 // ============================================================================
+// COUNT-MIN SKETCH IMPLEMENTATION  (V3.1)
+// ============================================================================
+
+/* ============================================================
+ * V3.1: Count-min sketch update inlines.
+ *
+ * 4 hashes via multiplicative hashing with 4 distinct primes.
+ * Update increments one counter per row; estimated count for a
+ * key is the minimum across all 4 row counters.
+ *
+ * Top-K maintained as unsorted array. When an updated estimate
+ * exceeds the array's current minimum entry, the key replaces
+ * the minimum.
+ *
+ * NOTE: This is single-writer per dst_ip (the RX core for that
+ * dst_ip), so no atomics or locks are needed on the sketch
+ * itself. If we ever go multi-RX-core per dst_ip, this MUST
+ * change.
+ * ============================================================ */
+
+static const uint32_t CM_HASH_PRIMES[4] = {
+    2654435761u, 2246822519u, 3266489917u, 668265263u
+};
+
+static inline uint32_t cm_hash(uint32_t key, int row, uint32_t cols) {
+    uint32_t h = key * CM_HASH_PRIMES[row];
+    h ^= h >> 16;
+    return h & (cols - 1);  /* cols must be power of 2 */
+}
+
+/* Update an unsorted top-K array with a key/count pair.
+ * If key is already present, refresh its count. Else if the
+ * array minimum is less than the new count, replace the min. */
+static inline void cm_topk_update(struct cm_topk_entry *topk,
+                                   uint32_t key, uint32_t count) {
+    int min_idx = 0;
+    uint32_t min_count = topk[0].count;
+    for (int i = 0; i < L3_TOPK; i++) {
+        if (topk[i].key == key) {
+            topk[i].count = count;
+            return;
+        }
+        if (topk[i].count < min_count) {
+            min_count = topk[i].count;
+            min_idx = i;
+        }
+    }
+    if (count > min_count) {
+        topk[min_idx].key   = key;
+        topk[min_idx].count = count;
+    }
+}
+
+/* Update sketch for src_port (16-bit key). */
+static inline void cm_update_src_port(struct cm_sketch_src_port *s,
+                                       uint16_t src_port) {
+    uint32_t key = (uint32_t)src_port;
+    uint32_t est = UINT32_MAX;
+    for (int r = 0; r < 4; r++) {
+        uint32_t c = cm_hash(key, r, 16);
+        s->counters[r][c]++;
+        if (s->counters[r][c] < est) est = s->counters[r][c];
+    }
+    cm_topk_update(s->topk, key, est);
+}
+
+/* Update sketch for /24 prefix (32-bit key, top 24 bits of src_ip).
+ * src_ip is big-endian from the IP header; convert and mask. */
+static inline void cm_update_src_24(struct cm_sketch_src_24 *s,
+                                     uint32_t src_ip_be) {
+    uint32_t key = rte_be_to_cpu_32(src_ip_be) & 0xFFFFFF00u;
+    uint32_t est = UINT32_MAX;
+    for (int r = 0; r < 4; r++) {
+        uint32_t c = cm_hash(key, r, 32);
+        s->counters[r][c]++;
+        if (s->counters[r][c] < est) est = s->counters[r][c];
+    }
+    cm_topk_update(s->topk, key, est);
+}
+
+// ============================================================================
 // ALPHA INITIALISATION HELPERS
 // ============================================================================
 
@@ -190,12 +271,24 @@ static void init_tier1_tcp_alpha(struct tier1_tcp_ewma *e,
     e->ack_data_ratio.alpha = p->alpha_tier1_tcp;
     e->tcp_pps_ratio.alpha  = p->alpha_tier1_tcp;
     e->tcp_bps_ratio.alpha  = p->alpha_tier1_tcp;
+    /* V2 features — same alpha as the rest of TCP tier */
+    e->empty_ack_ratio.alpha       = p->alpha_tier1_tcp;
+    e->zero_window_ratio.alpha     = p->alpha_tier1_tcp;
+    e->small_window_ratio.alpha    = p->alpha_tier1_tcp;
+    e->new_flow_ratio.alpha        = p->alpha_tier1_tcp;
+    e->syn_fin_ratio.alpha         = p->alpha_tier1_tcp;
+    e->syn_to_synack_ratio.alpha   = p->alpha_tier1_tcp;
+    e->tcp_pkt_size_cov.alpha      = p->alpha_tier1_tcp;
+    e->tcp_mean_pkt_size.alpha     = p->alpha_tier1_tcp;
 }
 static void init_tier1_udp_alpha(struct tier1_udp_ewma *e,
                                   const struct l2_profile *p) {
     e->udp_bps_ratio.alpha  = p->alpha_tier1_udp;
     e->udp_pps_ratio.alpha  = p->alpha_tier1_udp;
     e->udp_flow_ratio.alpha = p->alpha_tier1_udp;
+    /* V2 features */
+    e->udp_pkt_size_cov.alpha   = p->alpha_tier1_udp;
+    e->udp_mean_pkt_size.alpha  = p->alpha_tier1_udp;
 }
 static void init_tier1_icmp_alpha(struct tier1_icmp_ewma *e,
                                    const struct l2_profile *p) {
@@ -206,6 +299,17 @@ static void init_tier1_dist_alpha(struct tier1_dist_ewma *e,
                                    const struct l2_profile *p) {
     e->src_ip_ratio.alpha   = p->alpha_tier1_dist;
     e->dst_port_ratio.alpha = p->alpha_tier1_dist;
+}
+static inline void init_tier1_l3_alpha(struct dst_ip_stats *e,
+                                        const struct l2_profile *p) {
+    /* L3 channel uses alpha_tier1_dist cadence — same time-scale
+     * as distribution features (slow EWMA, suited to features
+     * that move on minute scales not second scales) */
+    e->ewma_t1_l3.ttl_stddev.alpha = p->alpha_tier1_dist;
+    /* V3.1: sketch-derived features track on the same cadence */
+    e->ewma_t1_l3.src_port_top1_share.alpha = p->alpha_tier1_dist;
+    e->ewma_t1_l3.src_24_top1_share.alpha   = p->alpha_tier1_dist;
+    e->ewma_t1_l3.src_24_entropy.alpha      = p->alpha_tier1_dist;
 }
 
 // ============================================================================
@@ -249,6 +353,8 @@ struct dst_ip_stats *dst_ip_table_get_or_create(struct dst_ip_table *table,
             hll_init(&e->unique_dst_ports,0x22222222 + dst_ip);
             hll_init(&e->udp_flows,       0x33333333 + dst_ip);
             hll_init(&e->unique_flows,    0x44444444 + dst_ip);
+            /* V2 */
+            hll_init(&e->unique_new_flows, 0x55555555 + dst_ip);
 
             /* Set per-tier EWMA alphas from the attached profile */
             init_tier0_alpha    (&e->ewma_t0,      e->profile);
@@ -256,6 +362,7 @@ struct dst_ip_stats *dst_ip_table_get_or_create(struct dst_ip_table *table,
             init_tier1_udp_alpha(&e->ewma_t1_udp,  e->profile);
             init_tier1_icmp_alpha(&e->ewma_t1_icmp, e->profile);
             init_tier1_dist_alpha(&e->ewma_t1_dist, e->profile);
+            init_tier1_l3_alpha(e, e->profile);
 
             /* Allocate and initialise detection engine */
             e->detection = (struct detection_engine *)
@@ -397,6 +504,23 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
         &port_stats[portid].dst_table, dst_ip, timestamp, portid);
     if (!s) return;
 
+    /* DIRECTIONALITY_EXPERIMENT: increment inbound count for dst_ip.
+     * The packet was destined for this IP, so it's inbound from the
+     * IP's perspective. */
+    __atomic_fetch_add(&s->inbound_pkts, 1, __ATOMIC_RELAXED);
+
+    /* DIRECTIONALITY_EXPERIMENT: also look up src_ip and increment
+     * outbound count on its slot. The packet was sent FROM that IP,
+     * so it's outbound from that IP's perspective.
+     * Note: src_ip lookup may fail (NULL) if the hash table is full
+     * with other IPs. That's acceptable — we still get the inbound
+     * count, and if the table fills, the diagnostic will reveal it. */
+    struct dst_ip_stats *s_src = dst_ip_table_get_or_create(
+        &port_stats[portid].dst_table, src_ip, timestamp, portid);
+    if (s_src) {
+        __atomic_fetch_add(&s_src->outbound_pkts, 1, __ATOMIC_RELAXED);
+    }
+
     /* Hot path: RELAXED atomics keep counter updates lock-free and
      * cache-friendly when multiple lcores touch the same dst_ip entry. */
     __atomic_fetch_add(&s->total_pkts,  1,            __ATOMIC_RELAXED);
@@ -406,6 +530,23 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
     /* Track unique source IPs (Tier 1.4) */
     hll_add(&s->unique_src_ips, &src_ip, sizeof(src_ip));
 
+    /* V3.0: accumulate TTL for stddev computation.
+     * Single byte field, no endian conversion needed. */
+    uint8_t ttl = ipv4_hdr->time_to_live;
+    __atomic_fetch_add(&s->ttl_sum,    (uint64_t)ttl,        __ATOMIC_RELAXED);
+    __atomic_fetch_add(&s->ttl_sum_sq, (uint64_t)ttl * ttl,  __ATOMIC_RELAXED);
+
+    /* V3.0: detect IP fragments.
+     * Fragment iff (MF flag set) OR (offset != 0).
+     * Mask 0x3FFF = MF bit + 13 offset bits; ignores DF bit. */
+    uint16_t frag_field = rte_be_to_cpu_16(ipv4_hdr->fragment_offset);
+    if ((frag_field & 0x3FFF) != 0) {
+        __atomic_fetch_add(&s->ip_frag_pkts, 1, __ATOMIC_RELAXED);
+    }
+
+    /* V3.1: update /24 sketch on every IPv4 packet */
+    cm_update_src_24(&s->cm_src_24, ipv4_hdr->src_addr);
+
     switch (protocol) {
 
     case IPPROTO_TCP: {
@@ -414,8 +555,25 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
         uint16_t dst_port = rte_be_to_cpu_16(tcp_hdr->dst_port);
         uint8_t  flags    = tcp_hdr->tcp_flags;
 
+        /* V3.1: update src_port sketch (TCP path) */
+        cm_update_src_port(&s->cm_src_port,
+                           rte_be_to_cpu_16(tcp_hdr->src_port));
+
+        /* V2: Compute TCP payload length and receive window for behavioral
+         * signatures (empty ACK, zero/small window, packet-size CoV). */
+        uint16_t tcp_hdr_len = ((tcp_hdr->data_off & 0xf0) >> 4) * 4;
+        uint16_t ip_total_len = rte_be_to_cpu_16(ipv4_hdr->total_length);
+        int32_t  tcp_payload_len = (int32_t)ip_total_len - ip_hl - tcp_hdr_len;
+        if (tcp_payload_len < 0) tcp_payload_len = 0;
+        uint16_t rx_win = rte_be_to_cpu_16(tcp_hdr->rx_win);
+
         __atomic_fetch_add(&s->tcp_pkts,  1,           __ATOMIC_RELAXED);
         __atomic_fetch_add(&s->tcp_bytes, m->pkt_len,  __ATOMIC_RELAXED);
+
+        /* V2: TCP packet-size sum-of-squares (for CoV computation) */
+        __atomic_fetch_add(&s->tcp_pkt_size_sum_sq,
+                           (uint64_t)m->pkt_len * (uint64_t)m->pkt_len,
+                           __ATOMIC_RELAXED);
 
         hll_add(&s->unique_dst_ports, &dst_port, sizeof(dst_port));
 
@@ -430,13 +588,33 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
         uint8_t fin = !!(flags & RTE_TCP_FIN_FLAG);
         uint8_t rst = !!(flags & RTE_TCP_RST_FLAG);
 
-        if (syn && !ack) __atomic_fetch_add(&s->syn_pkts,      1, __ATOMIC_RELAXED);
+        if (syn && !ack) {
+            __atomic_fetch_add(&s->syn_pkts, 1, __ATOMIC_RELAXED);
+            /* V2: track unique flows that contained a SYN-only packet */
+            hll_add(&s->unique_new_flows, &flow_key, sizeof(flow_key));
+        }
         if (syn &&  ack) __atomic_fetch_add(&s->syn_ack_pkts,  1, __ATOMIC_RELAXED);
         if (fin &&  ack) __atomic_fetch_add(&s->fin_ack_pkts,  1, __ATOMIC_RELAXED);
         if (rst)         __atomic_fetch_add(&s->rst_pkts,      1, __ATOMIC_RELAXED);
         /* ACK-only data packet: ACK set, no SYN / FIN / RST */
-        if (ack && !syn && !fin && !rst)
+        if (ack && !syn && !fin && !rst) {
             __atomic_fetch_add(&s->ack_data_pkts, 1, __ATOMIC_RELAXED);
+            /* V2: empty ACK = ACK-only with no payload */
+            if (tcp_payload_len == 0) {
+                __atomic_fetch_add(&s->empty_ack_pkts, 1, __ATOMIC_RELAXED);
+            }
+        }
+
+        /* V2: TCP receive window signatures.
+         * Zero window: receiver advertised 0 (state-exhaustion signature).
+         * Small window: 0 < rx_win < SMALL_WINDOW_THRESHOLD. Mutually
+         * exclusive with zero window so each packet contributes to at most
+         * one of these counters. */
+        if (rx_win == 0) {
+            __atomic_fetch_add(&s->zero_window_pkts, 1, __ATOMIC_RELAXED);
+        } else if (rx_win < SMALL_WINDOW_THRESHOLD) {
+            __atomic_fetch_add(&s->small_window_pkts, 1, __ATOMIC_RELAXED);
+        }
 
         break;
     }
@@ -446,8 +624,17 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
         uint16_t src_port = rte_be_to_cpu_16(udp_hdr->src_port);
         uint16_t dst_port = rte_be_to_cpu_16(udp_hdr->dst_port);
 
+        /* V3.1: update src_port sketch (UDP path) */
+        cm_update_src_port(&s->cm_src_port,
+                           rte_be_to_cpu_16(udp_hdr->src_port));
+
         __atomic_fetch_add(&s->udp_pkts,  1,          __ATOMIC_RELAXED);
         __atomic_fetch_add(&s->udp_bytes, m->pkt_len, __ATOMIC_RELAXED);
+
+        /* V2: UDP packet-size sum-of-squares (for CoV computation) */
+        __atomic_fetch_add(&s->udp_pkt_size_sum_sq,
+                           (uint64_t)m->pkt_len * (uint64_t)m->pkt_len,
+                           __ATOMIC_RELAXED);
 
         hll_add(&s->unique_dst_ports, &dst_port, sizeof(dst_port));
 
@@ -478,6 +665,9 @@ void ddos_collect_packet_stats(struct rte_mbuf *m, unsigned portid) {
     }
 
     default:
+        /* V3.0: catch GRE (47), ESP (50), IP-in-IP (4), and any
+         * other non-TCP/UDP/ICMP traffic. */
+        __atomic_fetch_add(&s->other_proto_pkts, 1, __ATOMIC_RELAXED);
         break;
     }
 }
@@ -628,7 +818,7 @@ static void log_raw_features_to_csv(long long timestamp_ms,
 // ============================================================================
 
 /**
- * CSV schema  (60 columns total):
+ * CSV schema  (94 columns total):
  *
  *  Header (3):
  *    timestamp_ms, port, dst_ip
@@ -680,6 +870,61 @@ static void log_raw_features_to_csv(long long timestamp_ms,
  *
  *  Layer-2 profile identity (2, appended):
  *    profile_name, profile_version
+ *
+ *  V2 EXTENSIONS (added after Layer-2 profile identity columns):
+ *
+ *  Tier 1.1 raw V2 (8 fields, appended after existing 7 raw):
+ *    empty_ack_ratio, zero_window_ratio, small_window_ratio,
+ *    new_flow_ratio, syn_fin_ratio, syn_to_synack_ratio,
+ *    tcp_pkt_size_cov, tcp_mean_pkt_size
+ *
+ *  Tier 1.2 raw V2 (2 fields, appended after existing 3 raw):
+ *    udp_pkt_size_cov, udp_mean_pkt_size
+ *
+ *  Tier 1.1 EWMA V2 (8 fields, appended after existing 7 EWMA):
+ *    em_empty_ack_ratio, em_zero_window_ratio, em_small_window_ratio,
+ *    em_new_flow_ratio, em_syn_fin_ratio, em_syn_to_synack_ratio,
+ *    em_tcp_pkt_size_cov, em_tcp_mean_pkt_size
+ *
+ *  Tier 1.2 EWMA V2 (2 fields, appended after existing 3 EWMA):
+ *    em_udp_pkt_size_cov, em_udp_mean_pkt_size
+ *
+ *  Total V2 column delta: +20 columns (10 raw + 10 EWMA).
+ *  Total IP CSV column count after V2: 82.
+ *
+ *  V3.0 EXTENSIONS (appended after Layer-2 profile identity columns
+ *  but before any future schema version field):
+ *
+ *  L3-channel raw (3 fields):
+ *    ttl_stddev, ip_frag_ratio, other_proto_ratio
+ *
+ *  L3-channel derived (3 fields):
+ *    em_ttl_stddev, tier1_l3_score, attack_evidence
+ *
+ *  Total V3.0 column delta: +6 columns.
+ *  Total IP CSV column count after V3.0: 88.
+ *
+ *  V3.1 EXTENSIONS:
+ *
+ *  L3-channel raw v3.1 (3 fields):
+ *    src_port_top1_share, src_24_top1_share, src_24_entropy
+ *
+ *  L3-channel EWMA companions v3.1 (3 fields):
+ *    em_src_port_top1_share, em_src_24_top1_share, em_src_24_entropy
+ *
+ *  Total V3.1 column delta: +6 columns.
+ *  Total IP CSV column count after V3.1: 94.
+ *
+ *  DIRECTIONALITY_EXPERIMENT (TEMPORARY — REMOVE WHEN DONE):
+ *
+ *  Diagnostic counters (2 fields, appended at the very end):
+ *    inbound_pkts, outbound_pkts
+ *
+ *  These count, per 1-second window, how many packets had this
+ *  dst_ip as the destination vs the source. Pure observability;
+ *  does not feed into any scoring or detection path.
+ *
+ *  Total V3.1+DIAGNOSTIC column count: 96.
  */
 void ddos_log_and_reset_stats(void) {
     struct timespec ts;
@@ -688,7 +933,7 @@ void ddos_log_and_reset_stats(void) {
     /*
      * 60 fields × ~12 chars + separators still fits comfortably in 1536 bytes.
      */
-    char buffer[1536];
+    char buffer[2880];  /* DIRECTIONALITY_EXPERIMENT: +2 columns */
     int  len;
 
     check_and_connect_socket();
@@ -775,10 +1020,41 @@ void ddos_log_and_reset_stats(void) {
             double em_tcp_pps_r = s->ewma_t1_tcp.tcp_pps_ratio.mean;
             double em_tcp_bps_r = s->ewma_t1_tcp.tcp_bps_ratio.mean;
 
+            /* V2 TCP EWMA snapshots */
+            double em_empty_ack       = s->ewma_t1_tcp.empty_ack_ratio.mean;
+            double em_zero_window     = s->ewma_t1_tcp.zero_window_ratio.mean;
+            double em_small_window    = s->ewma_t1_tcp.small_window_ratio.mean;
+            double em_new_flow        = s->ewma_t1_tcp.new_flow_ratio.mean;
+            double em_syn_fin         = s->ewma_t1_tcp.syn_fin_ratio.mean;
+            double em_syn_to_synack   = s->ewma_t1_tcp.syn_to_synack_ratio.mean;
+            double em_tcp_pkt_size_cov  = s->ewma_t1_tcp.tcp_pkt_size_cov.mean;
+            double em_tcp_mean_pkt_size = s->ewma_t1_tcp.tcp_mean_pkt_size.mean;
+
             /* Tier 1.2 */
             double em_udp_bps_r  = s->ewma_t1_udp.udp_bps_ratio.mean;
             double em_udp_pps_r  = s->ewma_t1_udp.udp_pps_ratio.mean;
             double em_udp_flow_r = s->ewma_t1_udp.udp_flow_ratio.mean;
+
+            /* V2 UDP EWMA snapshots */
+            double em_udp_pkt_size_cov  = s->ewma_t1_udp.udp_pkt_size_cov.mean;
+            double em_udp_mean_pkt_size = s->ewma_t1_udp.udp_mean_pkt_size.mean;
+
+            /* V3.0: L3-channel snapshot values */
+            struct tier1_l3_features t1_l3_snap;
+            extract_tier1_l3_features(s, &t1_l3_snap);
+
+            double em_ttl_stddev = s->ewma_t1_l3.ttl_stddev.mean;
+
+            /* V3.1 L3 EWMA snapshots */
+            double em_src_port_top1   = s->ewma_t1_l3.src_port_top1_share.mean;
+            double em_src_24_top1     = s->ewma_t1_l3.src_24_top1_share.mean;
+            double em_src_24_entropy  = s->ewma_t1_l3.src_24_entropy.mean;
+
+            /* tier1_l3_score: re-derived from snapshots for emission.
+             * This mirrors how tier1_*_score variables are derived for the
+             * existing CSV row. */
+            double tier1_l3_score_emit =
+                compute_tier1_l3_score(s->profile, &t1_l3_snap, &s->ewma_t1_l3);
 
             /* Tier 1.3 */
             double em_icmp_echo  = s->ewma_t1_icmp.icmp_echo_ratio.mean;
@@ -787,6 +1063,10 @@ void ddos_log_and_reset_stats(void) {
             /* Tier 1.4 */
             double em_src_ip_r  = s->ewma_t1_dist.src_ip_ratio.mean;
             double em_dst_port_r = s->ewma_t1_dist.dst_port_ratio.mean;
+
+            /* DIRECTIONALITY_EXPERIMENT: snapshot inbound/outbound counts */
+            uint64_t exp_inbound  = s->inbound_pkts;
+            uint64_t exp_outbound = s->outbound_pkts;
 
             /* ----------------------------------------------------------------
              * STEP 5: Format and emit CSV.
@@ -805,20 +1085,24 @@ void ddos_log_and_reset_stats(void) {
                 "%lld,%u,%s,"
                 /* Tier 0 raw (6) */
                 "%.2f,%.2f,%.2f,%.4f,%.4f,%.4f,"
-                /* Tier 1.1 raw (7) */
+                /* Tier 1.1 raw (15) — was 7 */
                 "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
-                /* Tier 1.2 raw (3) */
+                "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f,"
+                /* Tier 1.2 raw (5) — was 3 */
                 "%.4f,%.4f,%.4f,"
+                "%.4f,%.2f,"
                 /* Tier 1.3 raw (2) */
                 "%.4f,%.4f,"
                 /* Tier 1.4 raw (2) */
                 "%.4f,%.4f,"
                 /* Tier 0 EWMA means (6) */
                 "%.2f,%.2f,%.2f,%.4f,%.4f,%.4f,"
-                /* Tier 1.1 EWMA means (7) */
+                /* Tier 1.1 EWMA means (15) — was 7 */
                 "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
-                /* Tier 1.2 EWMA means (3) */
+                "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f,"
+                /* Tier 1.2 EWMA means (5) — was 3 */
                 "%.4f,%.4f,%.4f,"
+                "%.4f,%.2f,"
                 /* Tier 1.3 EWMA means (2) */
                 "%.4f,%.4f,"
                 /* Tier 1.4 EWMA means (2) */
@@ -828,7 +1112,15 @@ void ddos_log_and_reset_stats(void) {
                 /* HLL observability (2) */
                 "%llu,%llu,"
                 /* Layer-2 profile identity (2) */
-                "%s,%s\n",
+                "%s,%s,"
+                /* V3.0: ttl_stddev, ip_frag_ratio, other_proto_ratio,
+                 *       em_ttl_stddev, tier1_l3_score, attack_evidence */
+                "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f"
+                /* V3.1: src_port_top1_share, src_24_top1_share, src_24_entropy,
+                   em_src_port_top1, em_src_24_top1, em_src_24_entropy */
+                ",%.4f,%.4f,%.4f,%.4f,%.4f,%.4f"
+                /* DIRECTIONALITY_EXPERIMENT: inbound_pkts, outbound_pkts */
+                ",%lu,%lu\n",
 
                 /* Header values */
                 timestamp_ms, (unsigned)port, dst_ip_str,
@@ -842,8 +1134,22 @@ void ddos_log_and_reset_stats(void) {
                 t1_tcp.ack_data_ratio,
                 t1_tcp.tcp_pps_ratio, t1_tcp.tcp_bps_ratio,
 
+                /* Tier 1.1 raw V2 */
+                t1_tcp.empty_ack_ratio,
+                t1_tcp.zero_window_ratio,
+                t1_tcp.small_window_ratio,
+                t1_tcp.new_flow_ratio,
+                t1_tcp.syn_fin_ratio,
+                t1_tcp.syn_to_synack_ratio,
+                t1_tcp.tcp_pkt_size_cov,
+                t1_tcp.tcp_mean_pkt_size,
+
                 /* Tier 1.2 raw */
                 t1_udp.udp_bps_ratio, t1_udp.udp_pps_ratio, t1_udp.udp_flow_ratio,
+
+                /* Tier 1.2 raw V2 */
+                t1_udp.udp_pkt_size_cov,
+                t1_udp.udp_mean_pkt_size,
 
                 /* Tier 1.3 raw */
                 t1_icmp.icmp_echo_ratio, t1_icmp.icmp_pps_ratio,
@@ -859,8 +1165,22 @@ void ddos_log_and_reset_stats(void) {
                 em_syn, em_synack, em_finack, em_rst, em_ack_data,
                 em_tcp_pps_r, em_tcp_bps_r,
 
+                /* Tier 1.1 EWMA means V2 */
+                em_empty_ack,
+                em_zero_window,
+                em_small_window,
+                em_new_flow,
+                em_syn_fin,
+                em_syn_to_synack,
+                em_tcp_pkt_size_cov,
+                em_tcp_mean_pkt_size,
+
                 /* Tier 1.2 EWMA means */
                 em_udp_bps_r, em_udp_pps_r, em_udp_flow_r,
+
+                /* Tier 1.2 EWMA means V2 */
+                em_udp_pkt_size_cov,
+                em_udp_mean_pkt_size,
 
                 /* Tier 1.3 EWMA means */
                 em_icmp_echo, em_icmp_pps_r,
@@ -888,7 +1208,30 @@ void ddos_log_and_reset_stats(void) {
                  * if a resolver somehow returned NULL so the CSV line
                  * still has the expected column count. */
                 (s->profile && s->profile->name)    ? s->profile->name    : "-",
-                (s->profile && s->profile->version) ? s->profile->version : "-");
+                (s->profile && s->profile->version) ? s->profile->version : "-",
+
+                /* V3.0 L3-channel */
+                t1_l3_snap.ttl_stddev,
+                t1_l3_snap.ip_frag_ratio,
+                t1_l3_snap.other_proto_ratio,
+                em_ttl_stddev,
+                tier1_l3_score_emit,
+                /* attack_evidence emitted for observability of OR-combination */
+                (det.tier1_final_score > tier1_l3_score_emit
+                    ? det.tier1_final_score
+                    : tier1_l3_score_emit),
+
+                /* V3.1 L3-channel */
+                t1_l3_snap.src_port_top1_share,
+                t1_l3_snap.src_24_top1_share,
+                t1_l3_snap.src_24_entropy,
+                em_src_port_top1,
+                em_src_24_top1,
+                em_src_24_entropy,
+
+                /* DIRECTIONALITY_EXPERIMENT */
+                (unsigned long)exp_inbound,
+                (unsigned long)exp_outbound);
 
             if (sock_fd >= 0) {
                 if (send(sock_fd, buffer, len, MSG_NOSIGNAL) < 0) {
@@ -942,6 +1285,29 @@ void ddos_log_and_reset_stats(void) {
             __atomic_store_n(&s->rst_pkts,       0, __ATOMIC_RELAXED);
             __atomic_store_n(&s->ack_data_pkts,  0, __ATOMIC_RELAXED);
 
+            /* V2: reset new behavioral counters at window boundary */
+            __atomic_store_n(&s->empty_ack_pkts,       0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->zero_window_pkts,     0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->small_window_pkts,    0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->tcp_pkt_size_sum_sq,  0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->udp_pkt_size_sum_sq,  0, __ATOMIC_RELAXED);
+
+            /* V3.0 resets */
+            __atomic_store_n(&s->ttl_sum,          0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->ttl_sum_sq,       0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->ip_frag_pkts,     0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->other_proto_pkts, 0, __ATOMIC_RELAXED);
+
+            /* V3.1 resets: zero both sketches in-place.
+             * memset is fine — sketch dimensions are stable, and resetting
+             * counters AND topk together preserves invariants. */
+            memset(&s->cm_src_port, 0, sizeof(s->cm_src_port));
+            memset(&s->cm_src_24,   0, sizeof(s->cm_src_24));
+
+            /* DIRECTIONALITY_EXPERIMENT: reset window counters */
+            __atomic_store_n(&s->inbound_pkts,  0, __ATOMIC_RELAXED);
+            __atomic_store_n(&s->outbound_pkts, 0, __ATOMIC_RELAXED);
+
             /* HLL reset: hll_init() memsets register bytes back to zero.
              * Concurrent hll_add() CAS updates on the same registers may
              * race with this memset, but any lost updates are bounded to
@@ -951,6 +1317,8 @@ void ddos_log_and_reset_stats(void) {
             hll_init(&s->unique_dst_ports,0x22222222 + s->dst_ip);
             hll_init(&s->udp_flows,       0x33333333 + s->dst_ip);
             hll_init(&s->unique_flows,    0x44444444 + s->dst_ip);
+            /* V2 */
+            hll_init(&s->unique_new_flows, 0x55555555 + s->dst_ip);
         }
     }
 }

@@ -26,6 +26,7 @@
             --icmp: #b0bec5;
             --dist: #31c6a8;
             --tier0: #5aa6ff;
+            --l3: #b388ff;
             --ewma: #ff9f5a;
             --shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
         }
@@ -561,6 +562,7 @@
         .branch-icmp { background: rgba(176, 190, 197, 0.18); color: #edf2f4; }
         .branch-dist { background: rgba(49, 198, 168, 0.16); color: #e0fff7; }
         .branch-tier0 { background: rgba(90, 166, 255, 0.16); color: #dcebff; }
+        .branch-l3 { background: rgba(179, 136, 255, 0.16); color: #ece0ff; }
         .branch-none { background: rgba(255, 255, 255, 0.06); color: #d7dfef; }
 
         .section-shell {
@@ -1068,6 +1070,11 @@
                             <div class="score-label">Tier-1 DIST</div>
                             <div class="score-track"><div class="score-fill" id="bar-dist"></div></div>
                             <div class="score-value text-mono" id="val-dist">0.000</div>
+                        </div>
+                        <div class="score-row">
+                            <div class="score-label">Tier-1.5 L3</div>
+                            <div class="score-track"><div class="score-fill" id="bar-l3"></div></div>
+                            <div class="score-value text-mono" id="val-l3">0.000</div>
                         </div>
                         <div class="score-row">
                             <div class="score-label">Tier-1 Final</div>
@@ -1633,6 +1640,7 @@ const BRANCH_META = {
     icmp: { label: 'ICMP', color: getCssVar('--icmp'), chipClass: 'branch-icmp' },
     dist: { label: 'DIST', color: getCssVar('--dist'), chipClass: 'branch-dist' },
     tier0: { label: 'Tier-0', color: getCssVar('--tier0'), chipClass: 'branch-tier0' },
+    l3: { label: 'L3', color: getCssVar('--l3'), chipClass: 'branch-l3' },
     none: { label: 'None', color: '#9fb1cd', chipClass: 'branch-none' },
 };
 
@@ -1662,6 +1670,31 @@ const METRIC_SECTIONS = [
             { tier: 'Tier-1 TCP', key: 'tcp_ack_data_ratio', label: 'ACK-Data / TCP', em: 'em_tcp_ack_data_ratio', color: getCssVar('--tcp') },
             { tier: 'Tier-1 TCP', key: 'tcp_pps_ratio', label: 'TCP PPS / Total', em: 'em_tcp_pps_ratio', color: getCssVar('--tcp') },
             { tier: 'Tier-1 TCP', key: 'tcp_bps_ratio', label: 'TCP BPS / Total', em: 'em_tcp_bps_ratio', color: getCssVar('--tcp') },
+            { tier: 'Tier-1 TCP V2', key: 'empty_ack_ratio',
+              label: 'Empty ACK Ratio', em: 'em_empty_ack_ratio',
+              color: getCssVar('--tcp') },
+            { tier: 'Tier-1 TCP V2', key: 'zero_window_ratio',
+              label: 'Zero-Window Ratio', em: 'em_zero_window_ratio',
+              color: getCssVar('--tcp') },
+            { tier: 'Tier-1 TCP V2', key: 'small_window_ratio',
+              label: 'Small-Window Ratio', em: 'em_small_window_ratio',
+              color: getCssVar('--tcp') },
+            { tier: 'Tier-1 TCP V2', key: 'new_flow_ratio',
+              label: 'New Flow Ratio', em: 'em_new_flow_ratio',
+              color: getCssVar('--tcp') },
+            { tier: 'Tier-1 TCP V2', key: 'syn_fin_ratio',
+              label: 'SYN/FIN Ratio (capped)', em: 'em_syn_fin_ratio',
+              color: getCssVar('--tcp') },
+            { tier: 'Tier-1 TCP V2', key: 'syn_to_synack_ratio',
+              label: 'SYN to SYN-ACK Ratio (capped)',
+              em: 'em_syn_to_synack_ratio', color: getCssVar('--tcp') },
+            { tier: 'Tier-1 TCP V2', key: 'tcp_pkt_size_cov',
+              label: 'TCP Packet Size CoV', em: 'em_tcp_pkt_size_cov',
+              color: getCssVar('--tcp') },
+            { tier: 'Tier-1 TCP V2', key: 'tcp_mean_pkt_size',
+              label: 'TCP Mean Packet Size (bytes)',
+              em: 'em_tcp_mean_pkt_size', color: getCssVar('--tcp'),
+              digits: 0 },
         ],
     },
     {
@@ -1672,6 +1705,13 @@ const METRIC_SECTIONS = [
             { tier: 'Tier-1 UDP', key: 'udp_bps_ratio', label: 'UDP BPS / Total', em: 'em_udp_bps_ratio', color: getCssVar('--udp') },
             { tier: 'Tier-1 UDP', key: 'udp_pps_ratio', label: 'UDP PPS / Total', em: 'em_udp_pps_ratio', color: getCssVar('--udp') },
             { tier: 'Tier-1 UDP', key: 'udp_flow_ratio', label: 'UDP Flows / PPS', em: 'em_udp_flow_ratio', color: getCssVar('--udp') },
+            { tier: 'Tier-1 UDP V2', key: 'udp_pkt_size_cov',
+              label: 'UDP Packet Size CoV', em: 'em_udp_pkt_size_cov',
+              color: getCssVar('--udp') },
+            { tier: 'Tier-1 UDP V2', key: 'udp_mean_pkt_size',
+              label: 'UDP Mean Packet Size (bytes)',
+              em: 'em_udp_mean_pkt_size', color: getCssVar('--udp'),
+              digits: 0 },
         ],
     },
     {
@@ -1690,6 +1730,80 @@ const METRIC_SECTIONS = [
         metrics: [
             { tier: 'Tier-1 DIST', key: 'src_ip_ratio', label: 'Source IPs / PPS', em: 'em_src_ip_ratio', color: getCssVar('--dist') },
             { tier: 'Tier-1 DIST', key: 'dst_port_ratio', label: 'Destination Ports / PPS', em: 'em_dst_port_ratio', color: getCssVar('--dist') },
+        ],
+    },
+    {
+        id: 'l3',
+        title: 'Tier-1.5 L3 / Source-Origin',
+        subtitle: 'V3.0 features running in a parallel detection channel. ' +
+                  'Detects spoofed sources (ttl_stddev), fragment floods ' +
+                  '(ip_frag_ratio), and exotic-protocol attacks ' +
+                  '(other_proto_ratio). Combined with Tier-1 via ' +
+                  'attack_evidence = max(tier1_final_score, tier1_l3_score).',
+        metrics: [
+            // === L3 raw features ===
+            {
+                tier:   'Tier-1.5 L3',
+                key:    'ttl_stddev',
+                em:     'em_ttl_stddev',
+                label:  'TTL Std-Dev',
+                color:  getCssVar('--l3'),
+                digits: 2,
+            },
+            {
+                tier:   'Tier-1.5 L3',
+                key:    'ip_frag_ratio',
+                label:  'IP Fragment Ratio',
+                color:  getCssVar('--l3'),
+                digits: 4,
+            },
+            {
+                tier:   'Tier-1.5 L3',
+                key:    'other_proto_ratio',
+                label:  'Other-Protocol Ratio',
+                color:  getCssVar('--l3'),
+                digits: 4,
+            },
+            // === L3 score + combined evidence ===
+            {
+                tier:   'Tier-1.5 L3',
+                key:    'tier1_l3_score',
+                label:  'L3 Channel Score',
+                color:  getCssVar('--l3'),
+                digits: 3,
+            },
+            {
+                tier:   'Verdict',
+                key:    'attack_evidence',
+                label:  'Combined Attack Evidence (max of Tier-1 + L3)',
+                color:  getCssVar('--attack'),
+                digits: 3,
+            },
+            // === V3.1 L3 raw features ===
+            {
+                tier:   'Tier-1.5 L3',
+                key:    'src_port_top1_share',
+                em:     'em_src_port_top1_share',
+                label:  'Source Port Top-1 Share',
+                color:  getCssVar('--l3'),
+                digits: 4,
+            },
+            {
+                tier:   'Tier-1.5 L3',
+                key:    'src_24_top1_share',
+                em:     'em_src_24_top1_share',
+                label:  '/24 Subnet Top-1 Share',
+                color:  getCssVar('--l3'),
+                digits: 4,
+            },
+            {
+                tier:   'Tier-1.5 L3',
+                key:    'src_24_entropy',
+                em:     'em_src_24_entropy',
+                label:  '/24 Subnet Entropy',
+                color:  getCssVar('--l3'),
+                digits: 3,
+            },
         ],
     },
     {
@@ -2054,6 +2168,7 @@ function updateStatus(record, history) {
     setScoreBar('bar-udp', 'val-udp', record.tier1_udp_score || 0, !!record.tier1_evaluated);
     setScoreBar('bar-icmp', 'val-icmp', record.tier1_icmp_score || 0, !!record.tier1_evaluated);
     setScoreBar('bar-dist', 'val-dist', record.tier1_dist_score || 0, !!record.tier1_evaluated);
+    setScoreBar('bar-l3', 'val-l3', record.tier1_l3_score || 0, true);
     setScoreBar('bar-final', 'val-final', record.tier1_final_score || 0, !!record.tier1_evaluated);
     updateTier0RiskBreakdown(record);
 

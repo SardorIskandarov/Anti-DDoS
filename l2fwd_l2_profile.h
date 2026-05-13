@@ -79,6 +79,91 @@ struct l2_profile {
     double w_udp;
     double w_icmp;
     double w_dist;
+
+    /* === V2 FEATURE WEIGHTS ===
+     *
+     * These weights gate the contribution of new v2 features to Tier-1
+     * distance computation. Default 0.0 means feature is computed and
+     * logged but does NOT contribute to attack scoring — existing
+     * profile behavior is preserved.
+     *
+     * IMPORTANT CALIBRATION COUPLING:
+     * When you set non-zero weights for these features in a profile,
+     * you are increasing the dynamic range of the Tier-1 raw distance
+     * `d`. This affects how `sigmoid_d0` should be tuned for that
+     * profile. Specifically:
+     *   - With all weights at 0.0:  d ranges over [0, ~21]
+     *     (existing 7 TCP / 3 UDP / 2 ICMP / 2 DIST features)
+     *   - With weights summing to W: d ranges over roughly [0, ~21 + 3*W]
+     *
+     * After adding non-zero weights for an IP, you typically need to
+     * RE-TUNE `sigmoid_d0` upward to compensate, otherwise classification
+     * thresholds will fire earlier than intended.
+     *
+     * Practical guidance:
+     *   - Start by enabling ONE new feature with weight 0.3
+     *   - Re-run profile validation against captured normal data
+     *   - Adjust sigmoid_d0 if FP rate or attack-coverage shifts
+     *   - Repeat per feature
+     *
+     * The existing 7 TCP / 3 UDP / 2 ICMP / 2 DIST features keep
+     * implicit weight 1.0 (hardcoded in compute_tier1_*_score).
+     * Unification into the weight system is deferred to a future
+     * refactor. */
+
+    /* TCP behavioral feature weights */
+    double w_feat_empty_ack;
+    double w_feat_zero_window;
+    double w_feat_small_window;
+    double w_feat_new_flow;
+    double w_feat_syn_fin;
+    double w_feat_syn_to_synack;
+    double w_feat_tcp_pkt_size_cov;
+    double w_feat_tcp_mean_pkt_size;
+
+    /* UDP behavioral feature weights */
+    double w_feat_udp_pkt_size_cov;
+    double w_feat_udp_mean_pkt_size;
+
+    /* === V3.0 L3-CHANNEL WEIGHTS AND THRESHOLDS ===
+     *
+     * v3 features form a parallel Tier-1.5 L3 channel that runs
+     * alongside Tier-1 TCP/UDP/ICMP/DIST. The L3 score is
+     * OR-combined with tier1_final_score via max() in the final
+     * decision logic. This means activating an L3 weight does NOT
+     * perturb existing TCP/UDP/ICMP/DIST calibrations for an IP.
+     *
+     * CALIBRATION COUPLING:
+     * The L3 channel has its own sigmoid (k_l3, d0_l3). When you
+     * activate L3 weights, adjust sigmoid_d0_l3 to compensate for
+     * additional raw distance contribution, exactly like v2's
+     * calibration coupling for Tier-1 TCP/UDP.
+     *
+     * Default 0.0 means features are computed and logged but contribute
+     * nothing to scoring. Existing profile behavior is preserved.
+     */
+
+    /* L3 sub-channel sigmoid (independent from Tier-1 sigmoid) */
+    double sigmoid_k_l3;
+    double sigmoid_d0_l3;
+
+    /* L3 feature weights (v3.0) */
+    double w_feat_ttl_stddev;
+    double w_feat_ip_frag;
+    double w_feat_other_proto;
+
+    /* V3.1 L3 weights (count-min-sketch based features) */
+    double w_feat_src_port_top1;
+    double w_feat_src_24_top1;
+    double w_feat_src_24_entropy;
+
+    /* Per-profile noise-floor overrides for the threshold-based
+     * L3 features. Default 0.0 means "use the macro default from
+     * l2fwd_detection_engine.h" (NaN → fall back). Non-zero values
+     * let specific IPs (e.g. VPN concentrators that legitimately
+     * see ESP traffic) raise their floor. */
+    double frag_noise_floor_override;       /* 0.0 = use default */
+    double other_proto_noise_floor_override; /* 0.0 = use default */
 };
 
 /*
@@ -92,6 +177,11 @@ extern const struct l2_profile l2_profile_default;
  * Example non-default profile. Demonstrates that alternate profiles
  * compile and can be pointed at; not assigned to any IP by default.
  */
+extern const struct l2_profile l2_profile_213_230_125_130_manual_v1;
+extern const struct l2_profile l2_profile_213_230_125_50_manual_v1;
+extern const struct l2_profile l2_profile_213_230_125_148_manual_v1;
+extern const struct l2_profile l2_profile_213_230_125_46_manual_v1;
+extern const struct l2_profile l2_profile_89_249_63_215_manual_v1;
 extern const struct l2_profile l2_profile_45_150_25_70_manual_v1;
 extern const struct l2_profile l2_profile_213_230_125_66_manual_v1;
 extern const struct l2_profile l2_profile_213_230_125_170_manual_v1;
