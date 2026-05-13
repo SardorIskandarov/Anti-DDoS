@@ -14,6 +14,7 @@
 #include "l2fwd_service_registry.h"
 #include "l2fwd_service_stats.h"
 #include "l2fwd_service_features.h"      /* P8: HLL/CM/EWMA primitives + compute_all */
+#include "l2fwd_service_scoring.h"       /* P9: detection scoring + phase machine */
 #include "l2fwd_service_detection.h"     /* P8: phase enum used in temporal push */
 #include "l2fwd_service_temporal_state.h"/* P8: per-slot temporal ring buffer  */
 
@@ -112,10 +113,16 @@ int service_hotpath_init(struct service_registry    *reg,
     fprintf(stderr,
             "[hotpath] initialized: registry=%p stats_array=%p socket_fd=%d\n",
             (void *)g_reg, (void *)g_arr, g_stats_sock_fd);
+
+    /* P9: scoring subsystem init (currently a log line + reserved hook). */
+    (void)service_scoring_init();
     return 0;
 }
 
 void service_hotpath_destroy(void) {
+    /* P9: tear down scoring before releasing the stats array. Idempotent. */
+    service_scoring_destroy();
+
     if (g_stats_sock_fd >= 0) {
         close(g_stats_sock_fd);
         g_stats_sock_fd = -1;
@@ -517,8 +524,19 @@ void service_hotpath_tick(void)
 
     /* P8 step 1: derive features from this window's raw counters.
      * MUST run before the per-window reset below — the raw counters
-     * disappear once service_stats_reset_window_all() fires. */
+     * disappear once service_stats_reset_window_all() fires.
+     *
+     * P9: compute_all reads the freeze flag from each slot's
+     * detection_state and skips EWMA updates when frozen, so this call
+     * is safe to invoke before the scoring evaluate_all below. */
     service_features_compute_all(g_arr);
+
+    /* P9 step 1b: scoring — Tier-0 CUSUM, Tier-1 multi-feature combine,
+     * phase machine. Must run BEFORE the per-window reset (uses the
+     * raw counters and just-updated EWMA state). Updates each slot's
+     * detection_state in place; subsequent calls to
+     * service_scoring_is_frozen() see the new freeze status. */
+    service_scoring_evaluate_all(g_arr);
 
     /* P8 step 2: push one 1Hz temporal sample per active slot.
      * pkts/bytes come from the just-computed window; flows is the HLL

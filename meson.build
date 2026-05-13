@@ -43,6 +43,7 @@ src = [
   'l2fwd_service_reload.c',        # P6: SIGHUP-driven services.json reload
   'l2fwd_service_hotpath.c',       # P7: per-service packet hot path
   'l2fwd_service_features.c',      # P8: feature extraction (HLL/CM/EWMA)
+  'l2fwd_service_scoring.c',       # P9: detection scoring + phase machine
   ]
 
 executable('l2fwd',
@@ -184,6 +185,7 @@ test_features = executable('test_service_features',
   sources: [
     'tests/test_service_features.c',
     'l2fwd_service_features.c',
+    'l2fwd_service_scoring.c',          # P9: features.c now refs is_frozen
     'l2fwd_service_stats.c',
     'l2fwd_service_detection.c',
     'l2fwd_service_temporal_state.c',
@@ -197,5 +199,32 @@ test_features = executable('test_service_features',
 
 test('service_features',
   test_features,
+  timeout: 30,
+)
+
+# P9: standalone test harness for the detection scoring layer. Exercises
+# CUSUM, Tier-1 channels, phase machine, freeze respect, off-protocol
+# detector. Pulls in scoring + features + the data-model modules (no
+# DPDK; the scoring layer is pure CPU math on stats).
+#   Build: ninja -C build test_service_scoring
+#   Run:   ./build/test_service_scoring
+test_scoring = executable('test_service_scoring',
+  sources: [
+    'tests/test_service_scoring.c',
+    'l2fwd_service_scoring.c',
+    'l2fwd_service_features.c',
+    'l2fwd_service_stats.c',
+    'l2fwd_service_detection.c',
+    'l2fwd_service_temporal_state.c',
+    'l2fwd_service_registry.c',
+  ],
+  include_directories: inc_dirs,
+  link_with: cjson_lib,
+  link_args: ['-lm'],   # scoring + features use math
+  install: false,
+)
+
+test('service_scoring',
+  test_scoring,
   timeout: 30,
 )

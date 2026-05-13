@@ -10,9 +10,11 @@
 #include "l2fwd_service_features.h"
 #include "l2fwd_service_stats.h"
 #include "l2fwd_service_temporal_state.h"
+#include "l2fwd_service_scoring.h"     /* P9: service_scoring_is_frozen() */
 #include "l2fwd_l2_profile.h"
 
 #include <math.h>
+#include <stdbool.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -321,10 +323,28 @@ static double estimate_flows_for_kind(const struct service_stats *slot) {
     }
 }
 
+/* P9: function-scoped macro that gates every EWMA update on the freeze
+ * flag captured at the top of service_features_compute_one. Calls into the
+ * underlying primitive `service_ewma_update`. When `frozen` is true the
+ * macro is a no-op — the slot's EWMA baselines stay unchanged across the
+ * attack so they don't get poisoned by attack-elevated traffic.
+ *
+ * The macro must be #undef'd at the end of the function so it doesn't
+ * leak into any other TU that includes this file (it doesn't, but
+ * defensive hygiene). */
+#define MAYBE_EWMA(state, x) do { \
+    if (!frozen) service_ewma_update((state), (x), alpha); \
+} while (0)
+
 void service_features_compute_one(struct service_stats *slot) {
     if (!slot || !slot->active) return;
 
-    const double alpha = pick_alpha(slot);
+    /* P9: while in ATTACK with active baseline-freeze, every EWMA update
+     * below is skipped. Raw counter reads + burst-window pushes + Welford
+     * mean/stddev computations continue normally — they don't mutate
+     * persistent baseline state. */
+    const bool   frozen = service_scoring_is_frozen(slot);
+    const double alpha  = pick_alpha(slot);
 
     uint64_t inbound_pkts  = slot->common.inbound_pkts;
     uint64_t inbound_bytes = slot->common.inbound_bytes;
@@ -334,20 +354,17 @@ void service_features_compute_one(struct service_stats *slot) {
     double bps = (double)inbound_bytes * 8.0;       /* convert to bits/sec */
     double fps = estimate_flows_for_kind(slot);
 
-    service_ewma_update(&slot->common_ewma.pps, pps, alpha);
-    service_ewma_update(&slot->common_ewma.bps, bps, alpha);
-    service_ewma_update(&slot->common_ewma.fps, fps, alpha);
+    MAYBE_EWMA(&slot->common_ewma.pps, pps);
+    MAYBE_EWMA(&slot->common_ewma.bps, bps);
+    MAYBE_EWMA(&slot->common_ewma.fps, fps);
 
     /* --- Burst windows: push current value, then feed z-scores -- */
     service_burst_window_push(&slot->common.bw_pps, pps);
     service_burst_window_push(&slot->common.bw_bps, bps);
     service_burst_window_push(&slot->common.bw_fps, fps);
-    service_ewma_update(&slot->common_ewma.burst_pps,
-                         slot->common.bw_pps.z_last, alpha);
-    service_ewma_update(&slot->common_ewma.burst_bps,
-                         slot->common.bw_bps.z_last, alpha);
-    service_ewma_update(&slot->common_ewma.burst_fps,
-                         slot->common.bw_fps.z_last, alpha);
+    MAYBE_EWMA(&slot->common_ewma.burst_pps, slot->common.bw_pps.z_last);
+    MAYBE_EWMA(&slot->common_ewma.burst_bps, slot->common.bw_bps.z_last);
+    MAYBE_EWMA(&slot->common_ewma.burst_fps, slot->common.bw_fps.z_last);
 
     /* --- L3 / TTL features ------------------------------------- */
     double ttl_mean = 0.0, ttl_stddev = 0.0;
@@ -355,7 +372,7 @@ void service_features_compute_one(struct service_stats *slot) {
                                  slot->common.ttl_sum_sq,
                                  inbound_pkts,
                                  &ttl_mean, &ttl_stddev);
-    service_ewma_update(&slot->common_ewma.ttl_stddev, ttl_stddev, alpha);
+    MAYBE_EWMA(&slot->common_ewma.ttl_stddev, ttl_stddev);
 
     /* src_ip_ratio = unique_src_ips / inbound_pkts. */
     double src_ip_ratio = 0.0;
@@ -363,7 +380,7 @@ void service_features_compute_one(struct service_stats *slot) {
         double unique_src = service_hll_estimate(&slot->common.unique_src_ips);
         src_ip_ratio = unique_src / (double)inbound_pkts;
     }
-    service_ewma_update(&slot->common_ewma.src_ip_ratio, src_ip_ratio, alpha);
+    MAYBE_EWMA(&slot->common_ewma.src_ip_ratio, src_ip_ratio);
 
     /* off_proto_pkts_ratio = off_proto_pkts / inbound_pkts. */
     double off_proto_ratio = 0.0;
@@ -371,18 +388,15 @@ void service_features_compute_one(struct service_stats *slot) {
         off_proto_ratio = (double)slot->common.off_proto_pkts /
                           (double)inbound_pkts;
     }
-    service_ewma_update(&slot->common_ewma.off_proto_pkts_ratio,
-                         off_proto_ratio, alpha);
+    MAYBE_EWMA(&slot->common_ewma.off_proto_pkts_ratio, off_proto_ratio);
 
     /* /24 distribution features. */
     double src24_top1 = service_cm_top1_share(
         (uint64_t)slot->common.cm_src_24.top_count,
         slot->common.cm_src_24.total);
     double src24_ent  = service_cm_src_24_entropy(&slot->common.cm_src_24);
-    service_ewma_update(&slot->common_ewma.src_24_top1_share,
-                         src24_top1, alpha);
-    service_ewma_update(&slot->common_ewma.src_24_entropy,
-                         src24_ent, alpha);
+    MAYBE_EWMA(&slot->common_ewma.src_24_top1_share, src24_top1);
+    MAYBE_EWMA(&slot->common_ewma.src_24_entropy,    src24_ent);
 
     /* --- Protocol-specific dispatch ---------------------------- */
     switch (slot->proto_kind) {
@@ -393,34 +407,26 @@ void service_features_compute_one(struct service_stats *slot) {
         if (t->tcp_pkts > 0) {
             double dn = (double)t->tcp_pkts;
 
-            service_ewma_update(&e->syn_ratio,
-                                 (double)t->syn_pkts          / dn, alpha);
-            service_ewma_update(&e->synack_ratio,
-                                 (double)t->syn_ack_pkts      / dn, alpha);
-            service_ewma_update(&e->finack_ratio,
-                                 (double)t->fin_ack_pkts      / dn, alpha);
-            service_ewma_update(&e->rst_ratio,
-                                 (double)t->rst_pkts          / dn, alpha);
-            service_ewma_update(&e->ack_data_ratio,
-                                 (double)t->ack_data_pkts     / dn, alpha);
-            service_ewma_update(&e->empty_ack_ratio,
-                                 (double)t->empty_ack_pkts    / dn, alpha);
-            service_ewma_update(&e->zero_window_ratio,
-                                 (double)t->zero_window_pkts  / dn, alpha);
-            service_ewma_update(&e->small_window_ratio,
-                                 (double)t->small_window_pkts / dn, alpha);
+            MAYBE_EWMA(&e->syn_ratio,          (double)t->syn_pkts          / dn);
+            MAYBE_EWMA(&e->synack_ratio,       (double)t->syn_ack_pkts      / dn);
+            MAYBE_EWMA(&e->finack_ratio,       (double)t->fin_ack_pkts      / dn);
+            MAYBE_EWMA(&e->rst_ratio,          (double)t->rst_pkts          / dn);
+            MAYBE_EWMA(&e->ack_data_ratio,     (double)t->ack_data_pkts     / dn);
+            MAYBE_EWMA(&e->empty_ack_ratio,    (double)t->empty_ack_pkts    / dn);
+            MAYBE_EWMA(&e->zero_window_ratio,  (double)t->zero_window_pkts  / dn);
+            MAYBE_EWMA(&e->small_window_ratio, (double)t->small_window_pkts / dn);
 
             /* SYN ratio guards — when denominator is 0, return the
              * numerator as a sentinel ("pure SYN flood, no replies"). */
             double syn_to_synack = (t->syn_ack_pkts > 0)
                 ? (double)t->syn_pkts / (double)t->syn_ack_pkts
                 : (double)t->syn_pkts;
-            service_ewma_update(&e->syn_to_synack_ratio, syn_to_synack, alpha);
+            MAYBE_EWMA(&e->syn_to_synack_ratio, syn_to_synack);
 
             double syn_fin = (t->fin_ack_pkts > 0)
                 ? (double)t->syn_pkts / (double)t->fin_ack_pkts
                 : (double)t->syn_pkts;
-            service_ewma_update(&e->syn_fin_ratio, syn_fin, alpha);
+            MAYBE_EWMA(&e->syn_fin_ratio, syn_fin);
 
             /* Packet-size mean + coefficient of variation. */
             double sz_mean = 0.0, sz_stddev = 0.0;
@@ -429,15 +435,15 @@ void service_features_compute_one(struct service_stats *slot) {
                                          t->tcp_pkts,
                                          &sz_mean, &sz_stddev);
             double sz_cov = (sz_mean > 0.0) ? sz_stddev / sz_mean : 0.0;
-            service_ewma_update(&e->tcp_mean_pkt_size, sz_mean,  alpha);
-            service_ewma_update(&e->tcp_pkt_size_cov,  sz_cov,   alpha);
+            MAYBE_EWMA(&e->tcp_mean_pkt_size, sz_mean);
+            MAYBE_EWMA(&e->tcp_pkt_size_cov,  sz_cov);
 
-            double uflows = service_hll_estimate(&t->unique_new_flows);
+            double uflows     = service_hll_estimate(&t->unique_new_flows);
             double new_flow_r = uflows / dn;
-            service_ewma_update(&e->new_flow_ratio, new_flow_r, alpha);
+            MAYBE_EWMA(&e->new_flow_ratio, new_flow_r);
 
-            service_ewma_update(&e->tcp_pps_ratio, dn,                          alpha);
-            service_ewma_update(&e->tcp_bps_ratio, (double)t->tcp_bytes * 8.0, alpha);
+            MAYBE_EWMA(&e->tcp_pps_ratio, dn);
+            MAYBE_EWMA(&e->tcp_bps_ratio, (double)t->tcp_bytes * 8.0);
         }
         break;
     }
@@ -455,13 +461,13 @@ void service_features_compute_one(struct service_stats *slot) {
                                          u->udp_pkts,
                                          &sz_mean, &sz_stddev);
             double sz_cov = (sz_mean > 0.0) ? sz_stddev / sz_mean : 0.0;
-            service_ewma_update(&e->udp_mean_pkt_size, sz_mean, alpha);
-            service_ewma_update(&e->udp_pkt_size_cov,  sz_cov,  alpha);
+            MAYBE_EWMA(&e->udp_mean_pkt_size, sz_mean);
+            MAYBE_EWMA(&e->udp_pkt_size_cov,  sz_cov);
 
             double uflows = service_hll_estimate(&u->udp_flows);
-            service_ewma_update(&e->udp_flow_ratio, uflows / dn, alpha);
-            service_ewma_update(&e->udp_pps_ratio,  dn,                          alpha);
-            service_ewma_update(&e->udp_bps_ratio,  (double)u->udp_bytes * 8.0, alpha);
+            MAYBE_EWMA(&e->udp_flow_ratio, uflows / dn);
+            MAYBE_EWMA(&e->udp_pps_ratio,  dn);
+            MAYBE_EWMA(&e->udp_bps_ratio,  (double)u->udp_bytes * 8.0);
         }
         break;
     }
@@ -473,8 +479,8 @@ void service_features_compute_one(struct service_stats *slot) {
         if (ic->icmp_pkts > 0) {
             double dn = (double)ic->icmp_pkts;
             double echo_r = (double)ic->icmp_echo_pkts / dn;
-            service_ewma_update(&e->icmp_echo_ratio, echo_r, alpha);
-            service_ewma_update(&e->icmp_pps_ratio,  dn,     alpha);
+            MAYBE_EWMA(&e->icmp_echo_ratio, echo_r);
+            MAYBE_EWMA(&e->icmp_pps_ratio,  dn);
         }
         break;
     }
@@ -488,8 +494,7 @@ void service_features_compute_one(struct service_stats *slot) {
 
         double other_ratio = (total > 0)
             ? (double)oth_p / (double)total : 0.0;
-        service_ewma_update(&slot->common_ewma.other_proto_ratio,
-                             other_ratio, alpha);
+        MAYBE_EWMA(&slot->common_ewma.other_proto_ratio, other_ratio);
 
         /* dst_port_ratio is only meaningful for OTHER catchall (per the
          * data-model docs in l2fwd_service_stats.h). */
@@ -497,8 +502,7 @@ void service_features_compute_one(struct service_stats *slot) {
             &slot->proto.other_catchall.unique_dst_ports);
         double dst_port_r = (total > 0)
             ? udp_ports / (double)total : 0.0;
-        service_ewma_update(&slot->common_ewma.dst_port_ratio,
-                             dst_port_r, alpha);
+        MAYBE_EWMA(&slot->common_ewma.dst_port_ratio, dst_port_r);
         break;
     }
 
@@ -506,6 +510,7 @@ void service_features_compute_one(struct service_stats *slot) {
         break;
     }
 }
+#undef MAYBE_EWMA
 
 void service_features_compute_all(struct service_stats_array *arr) {
     if (!arr || !arr->slots) return;
