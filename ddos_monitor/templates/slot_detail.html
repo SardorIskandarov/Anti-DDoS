@@ -1,0 +1,279 @@
+{% extends "base.html" %}
+{% block title %}Slot {{ slot_id }}{% endblock %}
+
+{% block content %}
+  <p class="subtitle"><a href="/services">&larr; Services</a></p>
+  <h1 id="sd-header">Slot {{ slot_id }}</h1>
+  <p class="subtitle" id="sd-subtitle">Loading slot {{ slot_id }}…</p>
+
+  <div id="sd-error"></div>
+
+  <!-- current-state summary tiles -->
+  <div class="panel">
+    <h2>Current state</h2>
+    <div class="tile-grid">
+      <div class="tile" id="t-phase-tile">
+        <div class="label">Phase</div>
+        <div class="value" id="t-phase">—</div>
+      </div>
+      <div class="tile">
+        <div class="label">Tier-0 score</div>
+        <div class="value" id="t-tier0">—</div>
+      </div>
+      <div class="tile">
+        <div class="label">Tier-1 final</div>
+        <div class="value" id="t-tier1">—</div>
+      </div>
+      <div class="tile">
+        <div class="label">Consecutive attack windows</div>
+        <div class="value" id="t-consec">—</div>
+      </div>
+      <div class="tile">
+        <div class="label">Warmup remaining</div>
+        <div class="value" id="t-warmup">—</div>
+      </div>
+      <div class="tile">
+        <div class="label">Freeze / thaw remaining</div>
+        <div class="value" id="t-freeze">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- tier-1 component scores -->
+  <div class="panel">
+    <h2>Tier-1 component scores</h2>
+    <div class="tile-grid" id="sd-tier1-grid">
+      <div class="tile"><div class="label">loading…</div><div class="value">—</div></div>
+    </div>
+  </div>
+
+  <!-- charts -->
+  <div class="panel">
+    <h2>Inbound packets / sec &mdash; last {{ config.DASHBOARD_TIMESERIES_WINDOW_SECONDS }}s</h2>
+    <div class="chart-box"><canvas id="chart-pkts"></canvas></div>
+  </div>
+  <div class="panel">
+    <h2>Detection scores &mdash; last {{ config.DASHBOARD_TIMESERIES_WINDOW_SECONDS }}s</h2>
+    <div class="chart-box"><canvas id="chart-scores"></canvas></div>
+  </div>
+  <div class="panel">
+    <h2>Phase &mdash; last {{ config.DASHBOARD_TIMESERIES_WINDOW_SECONDS }}s
+      <span class="clock">(0 warmup &middot; 1 normal &middot; 2 suspicious &middot; 3 attack)</span></h2>
+    <div class="chart-box"><canvas id="chart-phase"></canvas></div>
+  </div>
+
+  <!-- features -->
+  <div class="panel">
+    <h2>Computed features</h2>
+    <div class="kv-grid" id="sd-features">
+      <div class="k">loading…</div><div class="v">—</div>
+    </div>
+  </div>
+
+  <!-- raw counters (collapsible) -->
+  <div class="panel">
+    <h2>Raw counters</h2>
+    <details>
+      <summary>show all raw fields</summary>
+      <div class="kv-grid" id="sd-raw" style="margin-top:12px;">
+        <div class="k">loading…</div><div class="v">—</div>
+      </div>
+    </details>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const SLOT_ID = {{ slot_id }};
+  const TS_WINDOW = {{ config.DASHBOARD_TIMESERIES_WINDOW_SECONDS }};
+
+  const PHASE_COLOR = {
+    WARMUP:     "#8b949e",
+    NORMAL:     "#3fb950",
+    SUSPICIOUS: "#d29922",
+    ATTACK:     "#f85149",
+  };
+
+  // ---- raw / feature field groupings ----
+  const RAW_FIELDS = [
+    "inbound_pkts","inbound_bytes","off_proto_pkts","ip_frag_pkts",
+    "ttl_sum","ttl_sum_sq","out_pkts","out_bytes",
+    "out_tcp_pkts","out_udp_pkts","out_icmp_pkts",
+    "tcp_pkts","tcp_bytes","syn_pkts","syn_ack_pkts","fin_ack_pkts",
+    "rst_pkts","ack_data_pkts","empty_ack_pkts","zero_window_pkts",
+    "udp_pkts","udp_bytes","icmp_pkts",
+    "win_10s_total_pkts","win_10s_attack_seconds",
+    "win_60s_total_pkts","win_60s_attack_seconds",
+    "win_300s_total_pkts","win_300s_attack_seconds",
+    "sequence_num","windows_seen","prev_phase",
+    "thaw_cooldown_remaining","baseline_freeze_remaining",
+  ];
+  const FEATURE_FIELDS = [
+    "unique_src_ips","unique_flows","src_24_top1_share","src_24_entropy",
+    "ttl_mean","ttl_stddev","bw_pps_z_last","bw_bps_z_last",
+  ];
+  const TIER1_FIELDS = [
+    ["tier1_tcp_score","TCP"],["tier1_udp_score","UDP"],
+    ["tier1_icmp_score","ICMP"],["tier1_dist_score","Distribution"],
+    ["tier1_l3_score","L3"],["tier1_offproto_score","Off-proto"],
+    ["tier0_score","Tier-0"],["tier1_final_score","Tier-1 final"],
+  ];
+
+  function kvHTML(obj, fields, fmt) {
+    return fields.map(f => {
+      let v = obj[f];
+      if (fmt) v = fmt(f, v);
+      else if (typeof v === "number") v = v.toLocaleString("en-US");
+      return `<div class="k">${f}</div><div class="v">${v ?? "—"}</div>`;
+    }).join("");
+  }
+
+  // ---- chart setup ----
+  const chartOpts = (yLabel) => ({
+    responsive: true, maintainAspectRatio: false,
+    animation: false,
+    scales: {
+      x: { ticks: { color: "#8b949e", maxRotation: 0, autoSkip: true,
+                    maxTicksLimit: 8 },
+           grid: { color: "#21262d" } },
+      y: { title: { display: true, text: yLabel, color: "#8b949e" },
+           ticks: { color: "#8b949e" }, grid: { color: "#21262d" },
+           beginAtZero: true },
+    },
+    plugins: { legend: { labels: { color: "#c9d1d9" } } },
+  });
+
+  const chartPkts = new Chart(document.getElementById("chart-pkts"), {
+    type: "line",
+    data: { labels: [], datasets: [{
+      label: "inbound pkts/s", data: [],
+      borderColor: "#58a6ff", backgroundColor: "rgba(88,166,255,.15)",
+      borderWidth: 2, pointRadius: 0, fill: true, tension: 0.2,
+    }]},
+    options: chartOpts("packets / sec"),
+  });
+
+  const chartScores = new Chart(document.getElementById("chart-scores"), {
+    type: "line",
+    data: { labels: [], datasets: [
+      { label: "Tier-0", data: [], borderColor: "#d29922",
+        borderWidth: 2, pointRadius: 0, tension: 0.2 },
+      { label: "Tier-1 final", data: [], borderColor: "#f85149",
+        borderWidth: 2, pointRadius: 0, tension: 0.2 },
+    ]},
+    options: (() => { const o = chartOpts("score [0..1]");
+                      o.scales.y.max = 1; return o; })(),
+  });
+
+  const chartPhase = new Chart(document.getElementById("chart-phase"), {
+    type: "line",
+    data: { labels: [], datasets: [{
+      label: "phase", data: [],
+      borderColor: "#3fb950", borderWidth: 2, pointRadius: 0,
+      stepped: true,
+    }]},
+    options: (() => {
+      const o = chartOpts("phase");
+      o.scales.y.min = 0; o.scales.y.max = 3;
+      o.scales.y.ticks.stepSize = 1;
+      o.scales.y.ticks.callback = (v) => PHASE_NAMES[v] || v;
+      return o;
+    })(),
+  });
+
+  function shortTs(iso) {
+    const d = new Date(iso);
+    if (isNaN(d)) return iso;
+    return d.toLocaleTimeString("en-US", { hour12: false });
+  }
+
+  async function refreshDetail() {
+    // ---- latest snapshot ----
+    try {
+      const s = await getJSON(`/api/services/${SLOT_ID}`);
+      document.getElementById("sd-error").innerHTML = "";
+
+      const proto = proto_label(s.proto_kind, s.proto_kind_str);
+      document.getElementById("sd-header").textContent =
+        `${s.target_ip_str || "?"}:${s.port}  ·  ${proto}`;
+      document.getElementById("sd-subtitle").innerHTML =
+        `slot ${s.slot_id} · profile <code>${s.profile_name || "—"}</code>` +
+        (s.is_catchall ? ' · <span class="clock">catchall</span>' : '');
+
+      const phStr = (s.phase_str || PHASE_NAMES[s.phase] || "UNKNOWN").toUpperCase();
+      const phTile = document.getElementById("t-phase-tile");
+      phTile.className = "tile " + phStr.toLowerCase();
+      document.getElementById("t-phase").textContent = phStr;
+      document.getElementById("t-tier0").textContent =
+        (Number(s.tier0_score)||0).toFixed(3);
+      document.getElementById("t-tier1").textContent =
+        (Number(s.tier1_final_score)||0).toFixed(3);
+      document.getElementById("t-consec").textContent =
+        fmtNum(s.consecutive_attack_windows);
+      document.getElementById("t-warmup").textContent =
+        fmtNum(s.warmup_remaining);
+      document.getElementById("t-freeze").textContent =
+        `${fmtNum(s.baseline_freeze_remaining)} / ${fmtNum(s.thaw_cooldown_remaining)}`;
+
+      // tier-1 component grid
+      document.getElementById("sd-tier1-grid").innerHTML =
+        TIER1_FIELDS.map(([f, label]) => `
+          <div class="tile">
+            <div class="label">${label}</div>
+            <div class="value">${(Number(s[f])||0).toFixed(3)}</div>
+          </div>`).join("");
+
+      // features
+      document.getElementById("sd-features").innerHTML =
+        kvHTML(s, FEATURE_FIELDS, (f, v) =>
+          (typeof v === "number") ? v.toFixed(4) : (v ?? "—"));
+
+      // raw counters — peak_pps fields use the *_display variant
+      document.getElementById("sd-raw").innerHTML =
+        kvHTML(s, RAW_FIELDS) +
+        ["win_10s_peak_pps","win_60s_peak_pps","win_300s_peak_pps"]
+          .map(f => `<div class="k">${f}</div>` +
+                    `<div class="v">${s[f + "_display"] ?? "—"}</div>`).join("");
+
+      setClock(s.timestamp_dt, true);
+    } catch (e) {
+      showError("sd-error", e.message);
+      setClock(null, false);
+    }
+
+    // ---- time series ----
+    try {
+      const ts = await getJSON(
+        `/api/services/${SLOT_ID}/timeseries?window=${TS_WINDOW}`);
+      const labels = ts.timestamps.map(shortTs);
+
+      chartPkts.data.labels = labels;
+      chartPkts.data.datasets[0].data = ts.inbound_pkts;
+      chartPkts.update();
+
+      chartScores.data.labels = labels;
+      chartScores.data.datasets[0].data = ts.tier0_score;
+      chartScores.data.datasets[1].data = ts.tier1_final_score;
+      chartScores.update();
+
+      chartPhase.data.labels = labels;
+      chartPhase.data.datasets[0].data = ts.phase;
+      chartPhase.update();
+    } catch (e) {
+      showError("sd-error", "timeseries: " + e.message);
+    }
+  }
+
+  function proto_label(kind, kindStr) {
+    if (kindStr) return kindStr;
+    return PROTO_FALLBACK[kind] || ("proto " + kind);
+  }
+  const PROTO_FALLBACK = {
+    1:"TCP",2:"UDP",3:"ICMP",4:"CATCHALL_TCP",5:"CATCHALL_UDP",
+    6:"CATCHALL_ICMP",7:"CATCHALL_OTHER",
+  };
+
+  refreshDetail();
+  setInterval(refreshDetail, REFRESH_MS);
+</script>
+{% endblock %}

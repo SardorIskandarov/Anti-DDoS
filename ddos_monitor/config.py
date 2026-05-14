@@ -413,3 +413,17 @@ TARGET_PREFIXES = [
     "89.249.62.47/32",
 ]
 
+# ============================================================================
+# P14 — DASHBOARD CONFIGURATION
+#
+# Added for the per-service web dashboard (ddos_monitor/web.py). All
+# constants above are PRESERVED unchanged. The dashboard reads only from
+# ClickHouse (the TABLE_* names + CH_* credentials) — never from
+# shared_state or database.py.
+# ============================================================================
+DASHBOARD_REFRESH_SECONDS           = 5     # browser auto-refresh interval
+DASHBOARD_TIMESERIES_WINDOW_SECONDS = 300   # 5-min window for slot-detail charts
+DASHBOARD_ALERTS_LIMIT              = 100   # max rows on the Alerts tab
+DASHBOARD_OVERVIEW_RECENT_SECONDS   = 60    # "recent activity" window on Overview
+SERVICES_JSON_PATH                  = "/tmp/svc.json"  # live registry for Registry tab
+

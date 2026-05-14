@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}Registry{% endblock %}
+
+{% block content %}
+  <h1>Registry</h1>
+  <p class="subtitle">
+    Read-only view of the live <code>services.json</code> and the engine's
+    reload audit log. Refreshes every 30s.
+  </p>
+
+  <div id="rg-error"></div>
+
+  <div class="panel">
+    <h2>services.json &mdash; file metadata</h2>
+    <div class="kv-grid" id="rg-meta">
+      <div class="k">loading…</div><div class="v">—</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Protected IPs</h2>
+    <div id="rg-protected" class="mono" style="line-height:1.8;">loading…</div>
+  </div>
+
+  <div class="panel">
+    <h2>Profiles</h2>
+    <div id="rg-profiles">loading…</div>
+  </div>
+
+  <div class="panel">
+    <h2>Full services.json</h2>
+    <details>
+      <summary>show raw JSON</summary>
+      <pre class="json" id="rg-rawjson">—</pre>
+    </details>
+  </div>
+
+  <div class="panel">
+    <h2>Reload audit &mdash; service_registry_snapshots</h2>
+    <table class="grid">
+      <thead>
+        <tr>
+          <th>Timestamp</th><th>Event</th><th>Total slots</th>
+          <th>Protected IPs</th><th>Profiles</th>
+          <th>Reload count</th><th>Failures</th><th>Error</th>
+        </tr>
+      </thead>
+      <tbody id="rg-audit-body">
+        <tr><td colspan="8" class="empty">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const REGISTRY_REFRESH_MS = 30000;  // registry changes rarely
+
+  function eventPill(ev) {
+    const e = (ev || "").toLowerCase();
+    if (e.includes("fail")) return `<span class="pill ATTACK">${ev}</span>`;
+    if (e.includes("success")) return `<span class="pill NORMAL">${ev}</span>`;
+    return `<span class="pill WARMUP">${ev || "—"}</span>`;
+  }
+
+  async function refreshRegistry() {
+    // ---- services.json ----
+    try {
+      const d = await getJSON("/api/registry");
+      document.getElementById("rg-error").innerHTML = "";
+
+      document.getElementById("rg-meta").innerHTML = `
+        <div class="k">path</div><div class="v">${d.path}</div>
+        <div class="k">modified</div><div class="v">${fmtTs(d.modified_time)}</div>
+        <div class="k">size</div><div class="v">${fmtBytes(d.size_bytes)}</div>`;
+
+      const c = d.content || {};
+      const protected_ips = c.protected_ips || c.protectedIps || [];
+      const protEl = document.getElementById("rg-protected");
+      if (Array.isArray(protected_ips) && protected_ips.length) {
+        protEl.innerHTML = protected_ips.map(x =>
+          `<span style="display:inline-block;min-width:160px;">${
+            (typeof x === "object") ? JSON.stringify(x) : x}</span>`).join("");
+      } else {
+        protEl.innerHTML = '<span class="clock">none listed</span>';
+      }
+
+      const profiles = c.profiles || [];
+      const profEl = document.getElementById("rg-profiles");
+      if (Array.isArray(profiles) && profiles.length) {
+        profEl.innerHTML = profiles.map((p, i) => {
+          const name = (p && (p.name || p.profile_name)) || `profile_${i}`;
+          return `<details>
+            <summary>${name}</summary>
+            <pre class="json">${JSON.stringify(p, null, 2)}</pre>
+          </details>`;
+        }).join("");
+      } else if (profiles && typeof profiles === "object") {
+        profEl.innerHTML =
+          `<pre class="json">${JSON.stringify(profiles, null, 2)}</pre>`;
+      } else {
+        profEl.innerHTML = '<span class="clock">none listed</span>';
+      }
+
+      document.getElementById("rg-rawjson").textContent =
+        JSON.stringify(c, null, 2);
+    } catch (e) {
+      showError("rg-error", e.message);
+    }
+
+    // ---- reload audit ----
+    try {
+      const audit = await getJSON("/api/registry/audit?limit=50");
+      const body = document.getElementById("rg-audit-body");
+      if (!audit.length) {
+        body.innerHTML =
+          '<tr><td colspan="8" class="empty">' +
+          'No registry snapshots recorded yet.</td></tr>';
+      } else {
+        body.innerHTML = audit.map(a => `
+          <tr>
+            <td class="mono">${fmtTs(a.timestamp)}</td>
+            <td>${eventPill(a.event_type)}</td>
+            <td class="mono num">${fmtNum(a.n_total_slots)}</td>
+            <td class="mono num">${fmtNum(a.n_protected_ips)}</td>
+            <td class="mono num">${fmtNum(a.n_profiles)}</td>
+            <td class="mono num">${fmtNum(a.reload_count)}</td>
+            <td class="mono num">${fmtNum(a.reload_failures)}</td>
+            <td class="mono">${a.error_message || "—"}</td>
+          </tr>`).join("");
+      }
+    } catch (e) {
+      // audit table failing is non-fatal — keep the services.json view
+      document.getElementById("rg-audit-body").innerHTML =
+        `<tr><td colspan="8" class="empty">audit unavailable: ${e.message}</td></tr>`;
+    }
+
+    setClock(new Date().toISOString(), true);
+  }
+  refreshRegistry();
+  setInterval(refreshRegistry, REGISTRY_REFRESH_MS);
+</script>
+{% endblock %}

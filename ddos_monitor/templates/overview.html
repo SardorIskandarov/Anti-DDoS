@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+
+{% block content %}
+  <h1>Overview</h1>
+  <p class="subtitle">
+    Per-service detection state across all active slots.
+    Auto-refreshes every {{ config.DASHBOARD_REFRESH_SECONDS }}s.
+  </p>
+
+  <div id="ov-error"></div>
+
+  <div class="panel">
+    <h2>Phase distribution
+      &mdash; latest per slot, last {{ config.DASHBOARD_OVERVIEW_RECENT_SECONDS }}s</h2>
+    <div class="tile-grid">
+      <div class="tile warmup">
+        <div class="label">Warmup</div>
+        <div class="value" id="ph-warmup">—</div>
+      </div>
+      <div class="tile normal">
+        <div class="label">Normal</div>
+        <div class="value" id="ph-normal">—</div>
+      </div>
+      <div class="tile suspicious">
+        <div class="label">Suspicious</div>
+        <div class="value" id="ph-suspicious">—</div>
+      </div>
+      <div class="tile attack">
+        <div class="label">Attack</div>
+        <div class="value" id="ph-attack">—</div>
+      </div>
+      <div class="tile">
+        <div class="label">Transitions ({{ config.DASHBOARD_OVERVIEW_RECENT_SECONDS }}s)</div>
+        <div class="value" id="ov-transitions">—</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Top active slots &mdash; by Tier-1 final score (excludes WARMUP)</h2>
+    <table class="grid">
+      <thead>
+        <tr>
+          <th>Slot</th><th>Target</th><th>Port</th><th>Proto</th>
+          <th>Phase</th><th>Tier-1 final</th><th>Tier-0</th>
+        </tr>
+      </thead>
+      <tbody id="ov-top-body">
+        <tr><td colspan="7" class="empty">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  async function refreshOverview() {
+    try {
+      const d = await getJSON("/api/overview");
+      document.getElementById("ov-error").innerHTML = "";
+
+      const pc = d.phase_counts || {};
+      document.getElementById("ph-warmup").textContent     = fmtNum(pc.WARMUP || 0);
+      document.getElementById("ph-normal").textContent     = fmtNum(pc.NORMAL || 0);
+      document.getElementById("ph-suspicious").textContent = fmtNum(pc.SUSPICIOUS || 0);
+      document.getElementById("ph-attack").textContent     = fmtNum(pc.ATTACK || 0);
+      document.getElementById("ov-transitions").textContent =
+        fmtNum(d.transitions_recent || 0);
+
+      const body = document.getElementById("ov-top-body");
+      const slots = d.top_slots || [];
+      if (slots.length === 0) {
+        body.innerHTML =
+          '<tr><td colspan="7" class="empty">' +
+          'No non-WARMUP slots yet — system is still warming up.</td></tr>';
+      } else {
+        body.innerHTML = slots.map(s => `
+          <tr class="clickable" onclick="location.href='/services/${s.slot_id}'">
+            <td class="mono">${s.slot_id}</td>
+            <td class="mono">${s.target_ip}</td>
+            <td class="mono num">${s.port}</td>
+            <td>${s.proto_kind}</td>
+            <td>${phasePill(s.phase)}</td>
+            <td>${scoreBar(s.tier1_final_score)}</td>
+            <td>${scoreBar(s.tier0_score)}</td>
+          </tr>`).join("");
+      }
+
+      setClock(d.latest_timestamp, true);
+    } catch (e) {
+      showError("ov-error", e.message);
+      setClock(null, false);
+    }
+  }
+  refreshOverview();
+  setInterval(refreshOverview, REFRESH_MS);
+</script>
+{% endblock %}

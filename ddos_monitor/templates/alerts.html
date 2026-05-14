@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Alerts{% endblock %}
+
+{% block content %}
+  <h1>Alerts</h1>
+  <p class="subtitle">
+    Phase transitions, newest first (up to {{ config.DASHBOARD_ALERTS_LIMIT }}).
+    Auto-refreshes every {{ config.DASHBOARD_REFRESH_SECONDS }}s.
+  </p>
+
+  <div id="al-error"></div>
+
+  <div class="panel">
+    <span class="clock" id="al-count"></span>
+    <table class="grid">
+      <thead>
+        <tr>
+          <th>Timestamp</th><th>Slot</th><th>Target</th><th>Proto</th>
+          <th>Transition</th><th>Tier-0</th><th>Tier-1 final</th>
+          <th>Attack evidence</th><th>Consec.</th>
+        </tr>
+      </thead>
+      <tbody id="al-body">
+        <tr><td colspan="9" class="empty">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Row tint: a transition INTO ATTACK is red; INTO NORMAL is a green
+  // recovery; everything else (e.g. -> SUSPICIOUS, WARMUP -> NORMAL) is
+  // left neutral.
+  function rowStyle(toPhase) {
+    const t = (toPhase || "").toUpperCase();
+    if (t === "ATTACK")     return ' style="background:rgba(248,81,73,.10);"';
+    if (t === "NORMAL")     return ' style="background:rgba(63,185,80,.08);"';
+    if (t === "SUSPICIOUS") return ' style="background:rgba(210,153,34,.07);"';
+    return "";
+  }
+
+  async function refreshAlerts() {
+    try {
+      const rows = await getJSON(
+        `/api/alerts?limit={{ config.DASHBOARD_ALERTS_LIMIT }}`);
+      document.getElementById("al-error").innerHTML = "";
+
+      const body = document.getElementById("al-body");
+      if (!rows.length) {
+        body.innerHTML =
+          '<tr><td colspan="9" class="empty">' +
+          'No phase transitions in the last query window. System nominal.' +
+          '</td></tr>';
+      } else {
+        body.innerHTML = rows.map(r => `
+          <tr${rowStyle(r.to_phase)}>
+            <td class="mono">${fmtTs(r.timestamp)}</td>
+            <td class="mono">
+              <a href="/services/${r.slot_id}">${r.slot_id}</a></td>
+            <td class="mono">${r.target_ip}:${r.port}</td>
+            <td>${r.proto_kind}</td>
+            <td>${phasePill(r.from_phase)}<span class="arrow">&rarr;</span>${phasePill(r.to_phase)}</td>
+            <td>${scoreBar(r.tier0_score)}</td>
+            <td>${scoreBar(r.tier1_final_score)}</td>
+            <td>${scoreBar(r.attack_evidence)}</td>
+            <td class="mono num">${fmtNum(r.consecutive_attack_windows)}</td>
+          </tr>`).join("");
+      }
+      document.getElementById("al-count").textContent =
+        `${rows.length} transition${rows.length === 1 ? "" : "s"}`;
+
+      setClock(rows.length ? rows[0].timestamp : new Date().toISOString(), true);
+    } catch (e) {
+      showError("al-error", e.message);
+      setClock(null, false);
+    }
+  }
+  refreshAlerts();
+  setInterval(refreshAlerts, REFRESH_MS);
+</script>
+{% endblock %}

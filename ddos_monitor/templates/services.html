@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Services{% endblock %}
+
+{% block content %}
+  <h1>Services</h1>
+  <p class="subtitle">
+    Latest snapshot per slot (last hour). Click a row for slot detail.
+    Auto-refreshes every {{ config.DASHBOARD_REFRESH_SECONDS }}s.
+  </p>
+
+  <div id="sv-error"></div>
+
+  <div class="panel">
+    <div class="controls">
+      <label>Search
+        <input type="text" id="f-search" placeholder="IP or port…"
+               oninput="renderServices()">
+      </label>
+      <label>Phase
+        <select id="f-phase" onchange="renderServices()">
+          <option value="">all</option>
+          <option value="WARMUP">WARMUP</option>
+          <option value="NORMAL">NORMAL</option>
+          <option value="SUSPICIOUS">SUSPICIOUS</option>
+          <option value="ATTACK">ATTACK</option>
+        </select>
+      </label>
+      <label>Protocol
+        <select id="f-proto" onchange="renderServices()">
+          <option value="">all</option>
+          <option value="TCP">TCP</option>
+          <option value="UDP">UDP</option>
+          <option value="ICMP">ICMP</option>
+          <option value="CATCHALL_TCP">CATCHALL_TCP</option>
+          <option value="CATCHALL_UDP">CATCHALL_UDP</option>
+          <option value="CATCHALL_ICMP">CATCHALL_ICMP</option>
+          <option value="CATCHALL_OTHER">CATCHALL_OTHER</option>
+        </select>
+      </label>
+      <span class="clock" id="sv-count"></span>
+    </div>
+
+    <table class="grid">
+      <thead>
+        <tr>
+          <th>Slot</th><th>Target IP</th><th>Port</th><th>Proto</th>
+          <th>Phase</th><th>Tier-1</th><th>Tier-0</th>
+          <th>Inbound pkts</th><th>Peak pps (10s)</th>
+          <th>Unique src IPs</th><th>Last update</th>
+        </tr>
+      </thead>
+      <tbody id="sv-body">
+        <tr><td colspan="11" class="empty">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  let SERVICES = [];
+
+  function renderServices() {
+    const q     = (document.getElementById("f-search").value || "").trim().toLowerCase();
+    const phase = document.getElementById("f-phase").value;
+    const proto = document.getElementById("f-proto").value;
+
+    const rows = SERVICES.filter(s => {
+      if (phase && s.phase !== phase) return false;
+      if (proto && s.proto_kind !== proto) return false;
+      if (q) {
+        const hay = `${s.target_ip} ${s.port} ${s.slot_id} ${s.profile_name}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+
+    const body = document.getElementById("sv-body");
+    if (rows.length === 0) {
+      body.innerHTML =
+        '<tr><td colspan="11" class="empty">No slots match the filter.</td></tr>';
+    } else {
+      body.innerHTML = rows.map(s => `
+        <tr class="clickable" onclick="location.href='/services/${s.slot_id}'">
+          <td class="mono">${s.slot_id}</td>
+          <td class="mono">${s.target_ip}</td>
+          <td class="mono num">${s.port}</td>
+          <td>${s.proto_kind}${s.is_catchall ? ' <span class="clock">(catchall)</span>' : ''}</td>
+          <td>${phasePill(s.phase)}</td>
+          <td>${scoreBar(s.tier1_final_score)}</td>
+          <td>${scoreBar(s.tier0_score)}</td>
+          <td class="mono num">${fmtNum(s.inbound_pkts)}</td>
+          <td class="mono num">${s.peak_pps_10s}</td>
+          <td class="mono num">${fmtNum(Math.round(s.unique_src_ips))}</td>
+          <td class="mono">${fmtTs(s.latest_timestamp)}</td>
+        </tr>`).join("");
+    }
+    document.getElementById("sv-count").textContent =
+      `${rows.length} / ${SERVICES.length} slots`;
+  }
+
+  async function refreshServices() {
+    try {
+      SERVICES = await getJSON("/api/services");
+      document.getElementById("sv-error").innerHTML = "";
+      renderServices();
+      let newest = null;
+      for (const s of SERVICES) {
+        if (s.latest_timestamp && (!newest || s.latest_timestamp > newest))
+          newest = s.latest_timestamp;
+      }
+      setClock(newest, true);
+    } catch (e) {
+      showError("sv-error", e.message);
+      setClock(null, false);
+    }
+  }
+  refreshServices();
+  setInterval(refreshServices, REFRESH_MS);
+</script>
+{% endblock %}
