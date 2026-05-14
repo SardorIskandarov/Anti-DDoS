@@ -87,3 +87,67 @@ but the struct definition in `.h` may persist (decision deferred).
 This snapshot reflects the state at the end of P6 (Phase 2 complete).
 Will be regenerated at P15 (pre-cutover) and at P16 (post-cutover) to
 reflect the actual moves.
+
+---
+
+## Post-P15 final state (v1.0.0)
+
+P15 was production sign-off — operational hardening and documentation only,
+no functional code changes. The per-service architecture (P0–P14) plus the
+systemd integration is the shipped system.
+
+### Final runtime architecture
+
+Four systemd units, grouped by `anti-ddos.target`:
+
+- `anti-ddos-dpdk-setup.service` — oneshot; binds the two data-plane NICs
+  (`0000:02:02.0`, `0000:02:05.0`) to `vfio-pci` in no-IOMMU mode at boot so
+  the stack survives reboots. Never touches the management NIC.
+- `anti-ddos-collector.service` — `ddos_monitor/main.py`, runs as `user_1`;
+  binds `/tmp/ddos_stats_socket`, parses the binary wire protocol, batch-
+  inserts into ClickHouse.
+- `anti-ddos-engine.service` — `build/l2fwd`, runs as `root` (DPDK); per-
+  service detection hot path; emits the wire protocol.
+- `anti-ddos-dashboard.service` — `ddos_monitor/web.py`, runs as `user_1`;
+  Flask dashboard on `:5000`, reads ClickHouse only.
+
+ClickHouse (`clickhouse-server.service`) is a separate, independently-managed
+service holding the four per-service tables plus the preserved
+`traffic_stats_legacy`. The dev workflow (`make run` / `make stop`) is
+preserved alongside the systemd workflow; the two are mutually exclusive.
+
+### Credentials hardened
+
+`CH_PASSWORD` is no longer hardcoded in `ddos_monitor/config.py`. It is read
+from the environment, supplied in production by
+`EnvironmentFile=-/etc/anti-ddos/env` (mode 0640, root:user_1) on the
+collector, engine, and dashboard units. `config.py` keeps a loud-warning dev
+fallback; `.env.example` documents the file format. `.gitignore` now excludes
+`.env`, `__pycache__/`, and `/etc/anti-ddos/`, and the previously-tracked
+`__pycache__` files were removed from the git index.
+
+### Operations documentation
+
+- Five runbooks in `docs/runbooks/` — restart procedures, attack-alert
+  response, protected-IP management, ClickHouse failure recovery, engine/code
+  update procedures.
+- `docs/monitoring.md` — daily health checks, ClickHouse reference queries,
+  anomaly indicators, dashboard signal reference.
+- `docs/SIGN_OFF.md` — one-page production acceptance checklist.
+
+### Final integration smoke test
+
+`scripts/integration_smoke_test.sh` (`make smoke`) — fast end-to-end health
+check covering systemd unit state, processes, NIC bindings, dashboard health,
+slot count, and ClickHouse data freshness.
+
+### Deprecated modules
+
+`ddos_monitor/database.py` and `ddos_monitor/shared_state.py` belong to the
+retired legacy per-IP CSV path. Both carry `DEPRECATED post-P12` headers and
+are preserved for git history only — the post-P12 collector and post-P14
+dashboard do not use them.
+
+### Tag
+
+The project is sealed at tag `v1.0.0`.

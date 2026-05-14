@@ -4,3 +4,11 @@ logs/
 *.csv
 build/
 out/
+
+# === P15 additions ===
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.local
+/etc/anti-ddos/

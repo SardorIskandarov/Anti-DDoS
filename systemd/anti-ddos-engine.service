@@ -9,6 +9,7 @@ Type=simple
 User=root
 Group=root
 WorkingDirectory=/home/user_1/Music/Anti-DDoS
+EnvironmentFile=-/etc/anti-ddos/env
 ExecStartPre=/bin/cp /home/user_1/Music/Anti-DDoS/service_registry/services.json /tmp/svc.json
 # Wait up to 10s for the collector's socket to appear before launching engine
 ExecStartPre=/bin/bash -c 'for i in $(seq 1 20); do [ -S /tmp/ddos_stats_socket ] && exit 0; sleep 0.5; done; echo "collector socket not found"; exit 1'

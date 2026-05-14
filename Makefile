@@ -59,6 +59,13 @@ help:
 	@echo "  make systemd-logs             tail journalctl for all 3"
 	@echo "  make systemd-restart          restart all 3 services in order"
 	@echo "  sudo make uninstall-systemd   remove systemd integration"
+	@echo ""
+	@echo "Credential management:"
+	@echo "  sudo make install-env-template   create /etc/anti-ddos/env from .env.example"
+	@echo "  sudo make uninstall-env-template remove /etc/anti-ddos/env"
+	@echo ""
+	@echo "Verification:"
+	@echo "  make smoke                    run end-to-end integration smoke test"
 
 run:
 	@echo "============================================"
@@ -305,3 +312,40 @@ systemd-disable:
 .PHONY: install-systemd uninstall-systemd systemd-start systemd-stop systemd-restart \
         systemd-status systemd-logs systemd-logs-collector systemd-logs-engine \
         systemd-logs-dashboard systemd-enable systemd-disable
+
+# ====== credential management ======
+ENV_FILE := /etc/anti-ddos/env
+ENV_DIR  := $(dir $(ENV_FILE))
+
+install-env-template:
+	@if [ -f $(ENV_FILE) ]; then \
+		echo "✗ $(ENV_FILE) already exists. Not overwriting."; \
+		echo "  Edit it manually if you need to change credentials."; \
+		exit 1; \
+	fi
+	@echo "Creating $(ENV_DIR) (owned by root:user_1, mode 0750) ..."
+	@sudo install -d -m 0750 -o root -g user_1 $(ENV_DIR)
+	@echo "Copying .env.example -> $(ENV_FILE) ..."
+	@sudo install -m 0640 -o root -g user_1 $(PROJECT_ROOT)/.env.example $(ENV_FILE)
+	@echo ""
+	@echo "✓ $(ENV_FILE) installed (mode 0640, root:user_1)."
+	@echo ""
+	@echo "NEXT STEP: edit it with the real password:"
+	@echo "  sudo nano $(ENV_FILE)"
+	@echo ""
+	@echo "Then restart services to pick up the new credentials:"
+	@echo "  sudo systemctl restart anti-ddos-collector"
+	@echo "  sudo systemctl restart anti-ddos-dashboard"
+	@echo "  sudo systemctl restart anti-ddos-engine"
+
+uninstall-env-template:
+	@echo "Removing $(ENV_FILE) ..."
+	@sudo rm -f $(ENV_FILE)
+	@sudo rmdir $(ENV_DIR) 2>/dev/null || true
+	@echo "✓ Removed."
+
+# ====== integration smoke test ======
+smoke:
+	@bash $(PROJECT_ROOT)/scripts/integration_smoke_test.sh
+
+.PHONY: install-env-template uninstall-env-template smoke

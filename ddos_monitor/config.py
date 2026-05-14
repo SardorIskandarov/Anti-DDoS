@@ -4,7 +4,18 @@
 CH_HOST = 'localhost'
 CH_PORT = 9000
 CH_USER = 'default'
-CH_PASSWORD = 'sardor1217'
+import os as _os
+CH_PASSWORD = _os.environ.get('CH_PASSWORD')
+if CH_PASSWORD is None:
+    # Fall back to legacy hardcoded value ONLY for dev convenience.
+    # In production (systemd), EnvironmentFile=/etc/anti-ddos/env supplies this.
+    # Remove the fallback entirely after P15 verification.
+    import sys as _sys
+    print("[config] WARNING: CH_PASSWORD not set in environment. "
+          "Production deployment requires /etc/anti-ddos/env. "
+          "Falling back to dev default — DO NOT use in production.",
+          file=_sys.stderr)
+    CH_PASSWORD = 'sardor1217'
 CH_DB = 'ddos_detection'
 CH_TABLE = 'traffic_stats'
 

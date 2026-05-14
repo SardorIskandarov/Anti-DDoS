@@ -1,3 +1,11 @@
+# =============================================================================
+# DEPRECATED post-P12.
+#
+# These in-memory buffers were written by the legacy CSV collector and read
+# by the legacy web.py. The post-P12 collector (collector.py) does NOT
+# populate these buffers, and the post-P14 dashboard (web.py) does NOT read
+# them. Preserved for git history only.
+# =============================================================================
 # shared_state.py — process-wide thread-safe buffers shared between the
 # DPDK collector threads (writers) and the Flask web layer (readers).
 #

@@ -10,6 +10,7 @@ Type=simple
 User=user_1
 Group=user_1
 WorkingDirectory=/home/user_1/Music/Anti-DDoS
+EnvironmentFile=-/etc/anti-ddos/env
 ExecStart=/home/user_1/Music/Anti-DDoS/ddos_monitor/venv/bin/python3 /home/user_1/Music/Anti-DDoS/ddos_monitor/web.py
 Restart=always
 RestartSec=3

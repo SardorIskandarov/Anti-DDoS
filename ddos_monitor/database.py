@@ -1,3 +1,14 @@
+# =============================================================================
+# DEPRECATED post-P12.
+#
+# This module belongs to the legacy per-IP CSV collector path. The post-P12
+# binary collector (collector.py, P11/P12/P13) does NOT use this file.
+# Its get_db_client() function also creates a legacy traffic_stats table as
+# a side effect, which is why P14's web.py explicitly avoids importing it.
+#
+# Preserved for git history and the legacy CSV path. Do NOT import from new
+# modules. To remove entirely, audit for unexpected callers first.
+# =============================================================================
 from clickhouse_driver import Client
 import config
 
