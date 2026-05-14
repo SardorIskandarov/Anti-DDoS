@@ -432,7 +432,7 @@ TARGET_PREFIXES = [
 # ClickHouse (the TABLE_* names + CH_* credentials) — never from
 # shared_state or database.py.
 # ============================================================================
-DASHBOARD_REFRESH_SECONDS           = 5     # browser auto-refresh interval
+DASHBOARD_REFRESH_SECONDS           = 1     # browser auto-refresh interval
 DASHBOARD_TIMESERIES_WINDOW_SECONDS = 300   # 5-min window for slot-detail charts
 DASHBOARD_ALERTS_LIMIT              = 100   # max rows on the Alerts tab
 DASHBOARD_OVERVIEW_RECENT_SECONDS   = 60    # "recent activity" window on Overview

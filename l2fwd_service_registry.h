@@ -221,6 +221,11 @@ struct service_registry {
      */
     int32_t                    hash_table[SERVICE_REGISTRY_HASH_SIZE];
 
+    bool                       learning_mode;   /**< When true, phase
+        transitions are suppressed engine-wide. EWMA baselines and
+        counters still update normally. Used for data collection
+        before threshold tuning. */
+
     uint64_t                   loaded_at_unix;
     uint32_t                   reload_count;
     char                       source_path[SERVICE_REGISTRY_PATH_MAX];

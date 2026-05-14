@@ -109,6 +109,28 @@ def safe_int(v) -> int:
         return 0
 
 
+def format_slot_display_title(slot_dict) -> str:
+    """Human-readable slot title for the detail page header.
+
+    Catch-all slots are keyed by protocol family (proto_kind 4..7);
+    named services carry a profile + port. Reads target_ip_str for
+    the IP. Falls back gracefully on unexpected proto_kind values.
+    """
+    ip = slot_dict.get('target_ip_str')
+    if slot_dict.get('is_catchall'):
+        catchall_labels = {
+            4: 'Any TCP',
+            5: 'Any UDP',
+            6: 'Any ICMP',
+            7: 'Other Protocols',
+        }
+        label = catchall_labels.get(safe_int(slot_dict.get('proto_kind')),
+                                    'Catch-all')
+        return f"{ip} — {label}"
+    return (f"{ip} — {slot_dict.get('proto_kind_str')}/"
+            f"{slot_dict.get('port')} ({slot_dict.get('profile_name')})")
+
+
 # -------------------- Flask app + routes --------------------
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -326,6 +348,7 @@ def api_service_one(slot_id):
                 result[f + '_display'] = '—'
             else:
                 result[f + '_display'] = fmt_peak_pps(result.get(f))
+        result['display_title'] = format_slot_display_title(result)
         return jsonify(result)
     except Exception as e:  # noqa: BLE001
         logger.exception("api_service_one failed")
@@ -346,7 +369,37 @@ def api_slot_timeseries(slot_id):
             SELECT timestamp_dt,
                    inbound_pkts,
                    inbound_bytes,
+                   unique_flows,
+                   out_pkts,
+                   out_bytes,
+                   ip_frag_pkts,
+                   off_proto_pkts,
+                   tcp_pkts,
+                   tcp_bytes,
+                   syn_pkts,
+                   syn_ack_pkts,
+                   fin_ack_pkts,
+                   rst_pkts,
+                   ack_data_pkts,
+                   empty_ack_pkts,
+                   zero_window_pkts,
+                   udp_pkts,
+                   udp_bytes,
+                   icmp_pkts,
+                   unique_src_ips,
+                   src_24_top1_share,
+                   src_24_entropy,
+                   ttl_mean,
+                   ttl_stddev,
+                   bw_pps_z_last,
+                   bw_bps_z_last,
                    tier0_score,
+                   tier1_tcp_score,
+                   tier1_udp_score,
+                   tier1_icmp_score,
+                   tier1_dist_score,
+                   tier1_l3_score,
+                   tier1_offproto_score,
                    tier1_final_score,
                    phase
             FROM {config.TABLE_SERVICE_STATS}
@@ -355,16 +408,35 @@ def api_slot_timeseries(slot_id):
             ORDER BY timestamp_ns ASC
         """, {'sid': slot_id, 'w': window})
         timestamps = [r[0].isoformat() for r in rows]
-        return jsonify({
+        # Column order MUST match the SELECT above; index is offset by 1
+        # for timestamp_dt at r[0]. Caster: int for UInt64 counts,
+        # float for Float stats and Decimal scores.
+        series_cols = [
+            ('inbound_pkts', int), ('inbound_bytes', int),
+            ('unique_flows', int), ('out_pkts', int), ('out_bytes', int),
+            ('ip_frag_pkts', int), ('off_proto_pkts', int),
+            ('tcp_pkts', int), ('tcp_bytes', int), ('syn_pkts', int),
+            ('syn_ack_pkts', int), ('fin_ack_pkts', int), ('rst_pkts', int),
+            ('ack_data_pkts', int), ('empty_ack_pkts', int),
+            ('zero_window_pkts', int), ('udp_pkts', int), ('udp_bytes', int),
+            ('icmp_pkts', int), ('unique_src_ips', int),
+            ('src_24_top1_share', float), ('src_24_entropy', float),
+            ('ttl_mean', float), ('ttl_stddev', float),
+            ('bw_pps_z_last', float), ('bw_bps_z_last', float),
+            ('tier0_score', float), ('tier1_tcp_score', float),
+            ('tier1_udp_score', float), ('tier1_icmp_score', float),
+            ('tier1_dist_score', float), ('tier1_l3_score', float),
+            ('tier1_offproto_score', float), ('tier1_final_score', float),
+            ('phase', int),
+        ]
+        payload = {
             'slot_id': slot_id,
             'window_seconds': window,
             'timestamps': timestamps,
-            'inbound_pkts': [int(r[1]) for r in rows],
-            'inbound_bytes': [int(r[2]) for r in rows],
-            'tier0_score': [float(r[3]) for r in rows],
-            'tier1_final_score': [float(r[4]) for r in rows],
-            'phase': [int(r[5]) for r in rows],
-        })
+        }
+        for idx, (name, caster) in enumerate(series_cols, start=1):
+            payload[name] = [caster(r[idx]) for r in rows]
+        return jsonify(payload)
     except Exception as e:  # noqa: BLE001
         logger.exception("api_slot_timeseries failed")
         return jsonify({'error': str(e)}), 500

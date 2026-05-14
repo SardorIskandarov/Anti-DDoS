@@ -15,6 +15,7 @@
 #include "l2fwd_service_stats.h"
 #include "l2fwd_service_detection.h"
 #include "l2fwd_service_features.h"
+#include "l2fwd_service_registry.h"   /* learning_mode flag (phase suppression) */
 #include "l2fwd_l2_profile.h"
 
 #include <math.h>
@@ -497,6 +498,21 @@ void service_scoring_update_phase(struct service_stats *slot)
     double t1 = service_scoring_combine(slot);
     det->last_tier0_score     = t0;
     det->last_attack_evidence = fmax(t0, t1);
+
+    /* Learning mode: the Tier-0 / Tier-1 scores above are still computed
+     * and cached (we want that data in ClickHouse for threshold tuning),
+     * but the slot's phase is frozen at its initial value — no
+     * WARMUP->NORMAL, no NORMAL->SUSPICIOUS->ATTACK, no recovery, and
+     * therefore no rows written to service_phase_transitions. EWMA
+     * baselines are untouched here regardless (they update in the
+     * feature-extraction layer). windows_seen still advances so the tick
+     * counter stays meaningful. Used for the 5-7 day data-collection
+     * period before detection thresholds are tuned. */
+    const struct service_registry *reg = service_registry_get_global();
+    if (reg && reg->learning_mode) {
+        det->windows_seen++;
+        return;
+    }
 
     uint8_t old_phase = det->phase;
 

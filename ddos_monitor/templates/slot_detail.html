@@ -1,6 +1,46 @@
 {% extends "base.html" %}
 {% block title %}Slot {{ slot_id }}{% endblock %}
 
+{% block head_extra %}
+<style>
+  /* ---- per-page tab bar (scoped, does not touch global nav.tabs) ---- */
+  .tab-bar {
+    display: flex; gap: 4px; margin: 0 0 16px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .tab-bar button {
+    background: none; border: none; cursor: pointer;
+    padding: 8px 14px; border-radius: 6px 6px 0 0;
+    color: var(--text-dim); font-weight: 500; font-size: 13px;
+    font-family: inherit;
+  }
+  .tab-bar button:hover { background: var(--panel-2); color: var(--text); }
+  .tab-bar button.active {
+    background: var(--panel-2); color: var(--text);
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  /* ---- responsive chart grid — wide cells so each chart is readable ---- */
+  .chart-grid {
+    display: grid; gap: 18px;
+    grid-template-columns: repeat(auto-fit, minmax(560px, 1fr));
+  }
+  .chart-grid .panel { margin-bottom: 0; }
+  /* analysis charts, not sparklines — override base.html's 240px box */
+  .chart-grid .chart-box { height: 320px; }
+
+  /* ---- protocol sub-panels ---- */
+  .proto-group { display: none; }
+  .proto-group.active { display: block; }
+  .proto-empty {
+    color: var(--text-dim); padding: 30px; text-align: center;
+    font-style: italic;
+  }
+</style>
+{% endblock %}
+
 {% block content %}
   <p class="subtitle"><a href="/services">&larr; Services</a></p>
   <h1 id="sd-header">Slot {{ slot_id }}</h1>
@@ -8,7 +48,7 @@
 
   <div id="sd-error"></div>
 
-  <!-- current-state summary tiles -->
+  <!-- current-state summary tiles (kept as-is, above the tabs) -->
   <div class="panel">
     <h2>Current state</h2>
     <div class="tile-grid">
@@ -39,7 +79,7 @@
     </div>
   </div>
 
-  <!-- tier-1 component scores -->
+  <!-- tier-1 component scores (kept as-is, above the tabs) -->
   <div class="panel">
     <h2>Tier-1 component scores</h2>
     <div class="tile-grid" id="sd-tier1-grid">
@@ -47,54 +87,84 @@
     </div>
   </div>
 
-  <!-- charts -->
-  <div class="panel">
-    <h2>Inbound packets / sec &mdash; last {{ config.DASHBOARD_TIMESERIES_WINDOW_SECONDS }}s</h2>
-    <div class="chart-box"><canvas id="chart-pkts"></canvas></div>
-  </div>
-  <div class="panel">
-    <h2>Detection scores &mdash; last {{ config.DASHBOARD_TIMESERIES_WINDOW_SECONDS }}s</h2>
-    <div class="chart-box"><canvas id="chart-scores"></canvas></div>
-  </div>
-  <div class="panel">
-    <h2>Phase &mdash; last {{ config.DASHBOARD_TIMESERIES_WINDOW_SECONDS }}s
-      <span class="clock">(0 warmup &middot; 1 normal &middot; 2 suspicious &middot; 3 attack)</span></h2>
-    <div class="chart-box"><canvas id="chart-phase"></canvas></div>
+  <!-- ===== tab bar ===== -->
+  <div class="tab-bar" id="sd-tabbar">
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="protocol">Protocol</button>
+    <button data-tab="distribution">Distribution</button>
+    <button data-tab="detection">Detection</button>
   </div>
 
-  <!-- features -->
-  <div class="panel">
-    <h2>Computed features</h2>
-    <div class="kv-grid" id="sd-features">
-      <div class="k">loading…</div><div class="v">—</div>
+  <!-- ===== Overview tab ===== -->
+  <div class="tab-content active" id="tab-overview">
+    <div class="chart-grid" id="grid-overview"></div>
+  </div>
+
+  <!-- ===== Protocol tab (one sub-group shown per slot proto_kind) ===== -->
+  <div class="tab-content" id="tab-protocol">
+    <div class="proto-empty" id="proto-pending">Resolving slot protocol…</div>
+    <div class="proto-group" id="proto-tcp">
+      <div class="chart-grid" id="grid-proto-tcp"></div>
+    </div>
+    <div class="proto-group" id="proto-udp">
+      <div class="chart-grid" id="grid-proto-udp"></div>
+    </div>
+    <div class="proto-group" id="proto-icmp">
+      <div class="chart-grid" id="grid-proto-icmp"></div>
+    </div>
+    <div class="proto-group" id="proto-other">
+      <div class="chart-grid" id="grid-proto-other"></div>
     </div>
   </div>
 
-  <!-- raw counters (collapsible) -->
-  <div class="panel">
-    <h2>Raw counters</h2>
-    <details>
-      <summary>show all raw fields</summary>
-      <div class="kv-grid" id="sd-raw" style="margin-top:12px;">
+  <!-- ===== Distribution tab ===== -->
+  <div class="tab-content" id="tab-distribution">
+    <div class="chart-grid" id="grid-distribution"></div>
+    <div class="panel" style="margin-top:16px;">
+      <h2>Computed features</h2>
+      <div class="kv-grid" id="sd-features">
         <div class="k">loading…</div><div class="v">—</div>
       </div>
-    </details>
+    </div>
+  </div>
+
+  <!-- ===== Detection tab ===== -->
+  <div class="tab-content" id="tab-detection">
+    <div class="chart-grid" id="grid-detection"></div>
+    <div class="panel" style="margin-top:16px;">
+      <h2>Raw counters</h2>
+      <details>
+        <summary>show all raw fields</summary>
+        <div class="kv-grid" id="sd-raw" style="margin-top:12px;">
+          <div class="k">loading…</div><div class="v">—</div>
+        </div>
+      </details>
+    </div>
   </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-  const SLOT_ID = {{ slot_id }};
+(function () {
+  "use strict";
+
+  const SLOT_ID   = {{ slot_id }};
   const TS_WINDOW = {{ config.DASHBOARD_TIMESERIES_WINDOW_SECONDS }};
 
-  const PHASE_COLOR = {
-    WARMUP:     "#8b949e",
-    NORMAL:     "#3fb950",
-    SUSPICIOUS: "#d29922",
-    ATTACK:     "#f85149",
+  // ---- module state ----
+  let latestTs   = null;   // last /timeseries response
+  let protoGroup = null;   // 'tcp' | 'udp' | 'icmp' | 'other' | null
+  let activeTab  = "overview";
+  const charts   = {};     // canvasId -> Chart instance (lazy-created)
+
+  const PHASE_LINE_COLOR = { 0: "#8b949e", 1: "#3fb950",
+                             2: "#d29922", 3: "#f85149" };
+  const PROTO_FALLBACK = {
+    1: "TCP", 2: "UDP", 3: "ICMP", 4: "CATCHALL_TCP", 5: "CATCHALL_UDP",
+    6: "CATCHALL_ICMP", 7: "CATCHALL_OTHER",
   };
 
-  // ---- raw / feature field groupings ----
+  // ---- raw / feature / tier-1 field groupings (unchanged) ----
   const RAW_FIELDS = [
     "inbound_pkts","inbound_bytes","off_proto_pkts","ip_frag_pkts",
     "ttl_sum","ttl_sum_sq","out_pkts","out_bytes",
@@ -119,6 +189,201 @@
     ["tier0_score","Tier-0"],["tier1_final_score","Tier-1 final"],
   ];
 
+  // ===================================================================
+  // Chart specifications — single source of truth for every chart.
+  //   tab        : which tab the chart lives on
+  //   grid       : container element id the chart panel is appended to
+  //   protoGroup : (protocol tab only) which proto group it belongs to
+  //   conditional: 'proto-score' (tcp/udp/icmp only) | 'other' (other only)
+  // ===================================================================
+  const CHART_SPECS = [
+    // ---- Overview (always visible) ----
+    { canvas:"c-pps", grid:"grid-overview", tab:"overview",
+      title:"Inbound packets / sec", yLabel:"pkts/s",
+      datasets:[{label:"inbound pkts/s", field:"inbound_pkts", color:"#58a6ff"}] },
+    { canvas:"c-bps", grid:"grid-overview", tab:"overview",
+      title:"Inbound bytes / sec", yLabel:"bytes/s",
+      datasets:[{label:"inbound bytes/s", field:"inbound_bytes", color:"#79c0ff"}] },
+    { canvas:"c-fps", grid:"grid-overview", tab:"overview",
+      title:"Unique flows", yLabel:"flows",
+      datasets:[{label:"unique flows", field:"unique_flows", color:"#a5d6ff"}] },
+    { canvas:"c-out-pkts", grid:"grid-overview", tab:"overview",
+      title:"Outbound packets / sec", yLabel:"pkts/s",
+      datasets:[{label:"outbound pkts/s", field:"out_pkts", color:"#6e7681"}] },
+    { canvas:"c-out-bytes", grid:"grid-overview", tab:"overview",
+      title:"Outbound bytes / sec", yLabel:"bytes/s",
+      datasets:[{label:"outbound bytes/s", field:"out_bytes", color:"#6e7681"}] },
+    { canvas:"c-ip-frag", grid:"grid-overview", tab:"overview",
+      title:"IP fragment packets / sec", yLabel:"pkts/s",
+      datasets:[{label:"ip frag pkts/s", field:"ip_frag_pkts", color:"#f0883e"}] },
+
+    // ---- Protocol: TCP (proto_kind 1, 4) ----
+    { canvas:"c-syn", grid:"grid-proto-tcp", tab:"protocol", protoGroup:"tcp",
+      title:"SYN packets / sec", yLabel:"pkts/s",
+      datasets:[{label:"syn_pkts", field:"syn_pkts", color:"#f85149"}] },
+    { canvas:"c-syn-ack", grid:"grid-proto-tcp", tab:"protocol", protoGroup:"tcp",
+      title:"SYN-ACK packets / sec", yLabel:"pkts/s",
+      datasets:[{label:"syn_ack_pkts", field:"syn_ack_pkts", color:"#ffa657"}] },
+    { canvas:"c-fin-ack", grid:"grid-proto-tcp", tab:"protocol", protoGroup:"tcp",
+      title:"FIN-ACK packets / sec", yLabel:"pkts/s",
+      datasets:[{label:"fin_ack_pkts", field:"fin_ack_pkts", color:"#ffa657"}] },
+    { canvas:"c-rst", grid:"grid-proto-tcp", tab:"protocol", protoGroup:"tcp",
+      title:"RST packets / sec", yLabel:"pkts/s",
+      datasets:[{label:"rst_pkts", field:"rst_pkts", color:"#ff7b72"}] },
+    { canvas:"c-ack-data", grid:"grid-proto-tcp", tab:"protocol", protoGroup:"tcp",
+      title:"ACK-with-data packets / sec", yLabel:"pkts/s",
+      datasets:[{label:"ack_data_pkts", field:"ack_data_pkts", color:"#ffa657"}] },
+    { canvas:"c-empty-ack", grid:"grid-proto-tcp", tab:"protocol", protoGroup:"tcp",
+      title:"Empty-ACK packets / sec", yLabel:"pkts/s",
+      datasets:[{label:"empty_ack_pkts", field:"empty_ack_pkts", color:"#ffa657"}] },
+    { canvas:"c-zero-win", grid:"grid-proto-tcp", tab:"protocol", protoGroup:"tcp",
+      title:"Zero-window packets / sec", yLabel:"pkts/s",
+      datasets:[{label:"zero_window_pkts", field:"zero_window_pkts", color:"#ffa657"}] },
+
+    // ---- Protocol: UDP (proto_kind 2, 5) ----
+    { canvas:"c-udp-pkts", grid:"grid-proto-udp", tab:"protocol", protoGroup:"udp",
+      title:"UDP packets / sec", yLabel:"pkts/s",
+      datasets:[{label:"udp_pkts", field:"udp_pkts", color:"#d2a8ff"}] },
+    { canvas:"c-udp-bytes", grid:"grid-proto-udp", tab:"protocol", protoGroup:"udp",
+      title:"UDP bytes / sec", yLabel:"bytes/s",
+      datasets:[{label:"udp_bytes", field:"udp_bytes", color:"#d2a8ff"}] },
+
+    // ---- Protocol: ICMP (proto_kind 3, 6) ----
+    { canvas:"c-icmp", grid:"grid-proto-icmp", tab:"protocol", protoGroup:"icmp",
+      title:"ICMP packets / sec", yLabel:"pkts/s",
+      datasets:[{label:"icmp_pkts", field:"icmp_pkts", color:"#56d364"}] },
+
+    // ---- Protocol: Other (proto_kind 7) ----
+    { canvas:"c-off-proto", grid:"grid-proto-other", tab:"protocol", protoGroup:"other",
+      title:"Off-protocol packets / sec", yLabel:"pkts/s",
+      datasets:[{label:"off_proto_pkts", field:"off_proto_pkts", color:"#f0883e"}] },
+    { canvas:"c-proto-frag", grid:"grid-proto-other", tab:"protocol", protoGroup:"other",
+      title:"IP fragment packets / sec", yLabel:"pkts/s",
+      datasets:[{label:"ip_frag_pkts", field:"ip_frag_pkts", color:"#f0883e"}] },
+
+    // ---- Distribution (always visible) ----
+    { canvas:"c-uniq-src", grid:"grid-distribution", tab:"distribution",
+      title:"Unique source IPs", yLabel:"src IPs",
+      datasets:[{label:"unique_src_ips", field:"unique_src_ips", color:"#a5d6ff"}] },
+    { canvas:"c-top1-share", grid:"grid-distribution", tab:"distribution",
+      title:"/24 top-1 share", yLabel:"share", yMin:0, yMax:1, yDecimals:3,
+      datasets:[{label:"src_24_top1_share", field:"src_24_top1_share", color:"#a5d6ff"}] },
+    { canvas:"c-entropy", grid:"grid-distribution", tab:"distribution",
+      title:"/24 source entropy", yLabel:"entropy",
+      datasets:[{label:"src_24_entropy", field:"src_24_entropy", color:"#a5d6ff"}] },
+    { canvas:"c-ttl-mean", grid:"grid-distribution", tab:"distribution",
+      title:"TTL mean", yLabel:"ttl",
+      datasets:[{label:"ttl_mean", field:"ttl_mean", color:"#a5d6ff"}] },
+    { canvas:"c-ttl-stddev", grid:"grid-distribution", tab:"distribution",
+      title:"TTL stddev", yLabel:"ttl σ",
+      datasets:[{label:"ttl_stddev", field:"ttl_stddev", color:"#a5d6ff"}] },
+
+    // ---- Detection (always visible, two charts conditional on proto) ----
+    { canvas:"c-scores", grid:"grid-detection", tab:"detection",
+      title:"Detection scores — Tier-0 vs Tier-1 final", yLabel:"score [0..1]",
+      yMin:0, yMax:1, datasets:[
+        {label:"Tier-0", field:"tier0_score", color:"#d29922"},
+        {label:"Tier-1 final", field:"tier1_final_score", color:"#f85149"},
+      ] },
+    { canvas:"c-components", grid:"grid-detection", tab:"detection",
+      title:"Tier-1 components — distribution & L3", yLabel:"score [0..1]",
+      yMin:0, yMax:1, datasets:[
+        {label:"tier1_dist_score", field:"tier1_dist_score", color:"#a5d6ff"},
+        {label:"tier1_l3_score", field:"tier1_l3_score", color:"#56d364"},
+      ] },
+    { canvas:"c-proto-score", grid:"grid-detection", tab:"detection",
+      conditional:"proto-score",
+      title:"Tier-1 per-protocol score", yLabel:"score [0..1]",
+      yMin:0, yMax:1, datasets:[{
+        labelByProto:{ tcp:"tier1_tcp_score", udp:"tier1_udp_score",
+                       icmp:"tier1_icmp_score" },
+        fieldByProto:{ tcp:"tier1_tcp_score", udp:"tier1_udp_score",
+                       icmp:"tier1_icmp_score" },
+        color:"#ffa657" }] },
+    { canvas:"c-offproto-score", grid:"grid-detection", tab:"detection",
+      conditional:"other",
+      title:"Tier-1 off-protocol score", yLabel:"score [0..1]",
+      yMin:0, yMax:1, datasets:[
+        {label:"tier1_offproto_score", field:"tier1_offproto_score", color:"#f0883e"}] },
+    { canvas:"c-bw-z", grid:"grid-detection", tab:"detection",
+      title:"Bandwidth z-scores (pps / bps)", yLabel:"z-score",
+      yBeginAtZero:false, datasets:[
+        {label:"bw_pps_z_last", field:"bw_pps_z_last", color:"#58a6ff"},
+        {label:"bw_bps_z_last", field:"bw_bps_z_last", color:"#79c0ff"},
+      ] },
+    { canvas:"c-phase", grid:"grid-detection", tab:"detection",
+      title:"Phase (0 warmup · 1 normal · 2 suspicious · 3 attack)",
+      yLabel:"phase", stepped:true, phase:true, yMin:0, yMax:3, agg:"max",
+      datasets:[{label:"phase", field:"phase", color:"#3fb950"}] },
+  ];
+
+  // ---- helpers ----
+  function hexA(hex, a) {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+  }
+  function shortTs(iso) {
+    const d = new Date(iso);
+    if (isNaN(d)) return iso;
+    return d.toLocaleTimeString("en-US", { hour12: false });
+  }
+  // compact large axis numbers: 8000 -> 8K, 9000000 -> 9M, 1.2e9 -> 1.2G
+  function compactNum(v) {
+    v = Number(v);
+    if (!isFinite(v)) return v;
+    const a = Math.abs(v);
+    if (a >= 1e9) return (v / 1e9).toFixed(a >= 1e10 ? 0 : 1) + "G";
+    if (a >= 1e6) return (v / 1e6).toFixed(a >= 1e7 ? 0 : 1) + "M";
+    if (a >= 1e3) return (v / 1e3).toFixed(a >= 1e4 ? 0 : 1) + "K";
+    return String(v);
+  }
+  function roundSmart(v) {
+    const a = Math.abs(v);
+    if (a >= 100) return Math.round(v);
+    if (a >= 1)   return Math.round(v * 100) / 100;
+    return Math.round(v * 10000) / 10000;
+  }
+
+  // Aggregate the raw 1-second samples into ~MAX_POINTS display buckets so
+  // the charts read cleanly instead of showing every noisy 1s sample (the
+  // way vendor dashboards roll traffic up). Rates are averaged within a
+  // bucket; phase takes the max (worst) so attack spikes are never smoothed
+  // away. Scales naturally if the window grows (1h -> ~1 point/min).
+  const MAX_POINTS = 60;
+
+  function bucketRanges(n) {
+    const size = Math.max(1, Math.ceil(n / MAX_POINTS));
+    const ranges = [];
+    for (let i = 0; i < n; i += size) ranges.push([i, Math.min(i + size, n)]);
+    return ranges;
+  }
+  function aggregate(arr, ranges, mode) {
+    return ranges.map(([a, b]) => {
+      if (mode === "max") {
+        let m = -Infinity;
+        for (let i = a; i < b; i++) {
+          const v = Number(arr[i]) || 0;
+          if (v > m) m = v;
+        }
+        return m === -Infinity ? 0 : m;
+      }
+      let s = 0;
+      for (let i = a; i < b; i++) s += Number(arr[i]) || 0;
+      return roundSmart(s / (b - a));
+    });
+  }
+  function protoGroupOf(pk) {
+    pk = Number(pk);
+    if (pk === 1 || pk === 4) return "tcp";
+    if (pk === 2 || pk === 5) return "udp";
+    if (pk === 3 || pk === 6) return "icmp";
+    if (pk === 7) return "other";
+    return null;
+  }
+  function protoLabel(kind, kindStr) {
+    if (kindStr) return kindStr;
+    return PROTO_FALLBACK[kind] || ("proto " + kind);
+  }
   function kvHTML(obj, fields, fmt) {
     return fields.map(f => {
       let v = obj[f];
@@ -128,73 +393,180 @@
     }).join("");
   }
 
-  // ---- chart setup ----
-  const chartOpts = (yLabel) => ({
-    responsive: true, maintainAspectRatio: false,
-    animation: false,
-    scales: {
-      x: { ticks: { color: "#8b949e", maxRotation: 0, autoSkip: true,
-                    maxTicksLimit: 8 },
-           grid: { color: "#21262d" } },
-      y: { title: { display: true, text: yLabel, color: "#8b949e" },
-           ticks: { color: "#8b949e" }, grid: { color: "#21262d" },
-           beginAtZero: true },
-    },
-    plugins: { legend: { labels: { color: "#c9d1d9" } } },
-  });
-
-  const chartPkts = new Chart(document.getElementById("chart-pkts"), {
-    type: "line",
-    data: { labels: [], datasets: [{
-      label: "inbound pkts/s", data: [],
-      borderColor: "#58a6ff", backgroundColor: "rgba(88,166,255,.15)",
-      borderWidth: 2, pointRadius: 0, fill: true, tension: 0.2,
-    }]},
-    options: chartOpts("packets / sec"),
-  });
-
-  const chartScores = new Chart(document.getElementById("chart-scores"), {
-    type: "line",
-    data: { labels: [], datasets: [
-      { label: "Tier-0", data: [], borderColor: "#d29922",
-        borderWidth: 2, pointRadius: 0, tension: 0.2 },
-      { label: "Tier-1 final", data: [], borderColor: "#f85149",
-        borderWidth: 2, pointRadius: 0, tension: 0.2 },
-    ]},
-    options: (() => { const o = chartOpts("score [0..1]");
-                      o.scales.y.max = 1; return o; })(),
-  });
-
-  const chartPhase = new Chart(document.getElementById("chart-phase"), {
-    type: "line",
-    data: { labels: [], datasets: [{
-      label: "phase", data: [],
-      borderColor: "#3fb950", borderWidth: 2, pointRadius: 0,
-      stepped: true,
-    }]},
-    options: (() => {
-      const o = chartOpts("phase");
-      o.scales.y.min = 0; o.scales.y.max = 3;
+  // ---- chart options (base style preserved from the old template) ----
+  function chartOpts(yLabel) {
+    return {
+      responsive: true, maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: "index", intersect: false },
+      // NOTE: parsing must stay enabled. The timeseries API gives us
+      // plain number arrays + a separate `labels` array; `parsing:false`
+      // would make Chart.js expect pre-built {x,y} objects and silently
+      // render nothing (this is why charts looked empty in every state,
+      // WARMUP included). normalized:true is kept — our series are
+      // index-aligned and equal-length, which is exactly its use case.
+      scales: {
+        x: { ticks: { color: "#8b949e", maxRotation: 0, autoSkip: true,
+                      maxTicksLimit: 6 },
+             grid: { color: "#21262d" } },
+        y: { title: { display: true, text: yLabel, color: "#8b949e" },
+             ticks: { color: "#8b949e" }, grid: { color: "#21262d" },
+             beginAtZero: true },
+      },
+      plugins: { legend: { labels: { color: "#c9d1d9" } } },
+    };
+  }
+  function buildOpts(spec) {
+    const o = chartOpts(spec.yLabel);
+    if (spec.yMin !== undefined) o.scales.y.min = spec.yMin;
+    if (spec.yMax !== undefined) o.scales.y.max = spec.yMax;
+    if (spec.yBeginAtZero === false) o.scales.y.beginAtZero = false;
+    if (spec.yDecimals !== undefined) {
+      const d = spec.yDecimals;
+      o.scales.y.ticks.callback = (v) => Number(v).toFixed(d);
+    } else if (spec.phase) {
       o.scales.y.ticks.stepSize = 1;
       o.scales.y.ticks.callback = (v) => PHASE_NAMES[v] || v;
-      return o;
-    })(),
-  });
-
-  function shortTs(iso) {
-    const d = new Date(iso);
-    if (isNaN(d)) return iso;
-    return d.toLocaleTimeString("en-US", { hour12: false });
+    } else {
+      // compact large counts on the y-axis: 8000 -> 8K, 9e6 -> 9M
+      o.scales.y.ticks.callback = (v) => compactNum(v);
+    }
+    return o;
   }
 
+  // ---- DOM: build one .panel + canvas per spec, into its grid ----
+  function buildChartDom() {
+    CHART_SPECS.forEach(spec => {
+      const grid = document.getElementById(spec.grid);
+      if (!grid) return;
+      const panel = document.createElement("div");
+      panel.className = "panel";
+      panel.id = "panel-" + spec.canvas;
+      const h2 = document.createElement("h2");
+      h2.textContent = spec.title;
+      const box = document.createElement("div");
+      box.className = "chart-box";
+      const cv = document.createElement("canvas");
+      cv.id = spec.canvas;
+      box.appendChild(cv);
+      panel.appendChild(h2);
+      panel.appendChild(box);
+      grid.appendChild(panel);
+    });
+  }
+
+  // ---- lazy chart creation: build the Chart only on first render ----
+  function ensureChart(spec) {
+    if (charts[spec.canvas]) return charts[spec.canvas];
+    const single = spec.datasets.length === 1;
+    const datasets = spec.datasets.map(ds => {
+      const d = {
+        label: ds.label || (ds.labelByProto ? ds.labelByProto[protoGroup] : ""),
+        data: [],
+        borderColor: ds.color,
+        backgroundColor: single ? hexA(ds.color, 0.12) : "transparent",
+        borderWidth: 2, pointRadius: 0, pointHoverRadius: 3,
+        fill: single, tension: spec.stepped ? 0 : 0.3,
+        stepped: !!spec.stepped,
+      };
+      if (spec.phase) {
+        d.segment = {
+          borderColor: (ctx) =>
+            PHASE_LINE_COLOR[ctx.p0.parsed.y] ?? ds.color,
+        };
+      }
+      return d;
+    });
+    const opts = buildOpts(spec);
+    // single-series charts: the panel title already names the metric,
+    // so the floating legend is just noise — hide it (vendor-style).
+    if (single) opts.plugins.legend.display = false;
+    const ch = new Chart(document.getElementById(spec.canvas), {
+      type: "line",
+      data: { labels: [], datasets },
+      options: opts,
+      normalized: true,
+    });
+    charts[spec.canvas] = ch;
+    return ch;
+  }
+
+  function dsField(ds) {
+    return ds.field || (ds.fieldByProto ? ds.fieldByProto[protoGroup] : null);
+  }
+
+  // ---- visibility: protocol sub-groups + conditional detection charts ----
+  function isSpecVisible(spec) {
+    if (spec.protoGroup) return spec.protoGroup === protoGroup;
+    if (spec.conditional === "proto-score")
+      return protoGroup === "tcp" || protoGroup === "udp"
+          || protoGroup === "icmp";
+    if (spec.conditional === "other") return protoGroup === "other";
+    return true;
+  }
+  function applyProtocolVisibility() {
+    const pending = document.getElementById("proto-pending");
+    ["tcp", "udp", "icmp", "other"].forEach(g => {
+      document.getElementById("proto-" + g)
+        .classList.toggle("active", g === protoGroup);
+    });
+    pending.style.display = protoGroup ? "none" : "block";
+  }
+  function applyDetectionVisibility() {
+    const ps = document.getElementById("panel-c-proto-score");
+    const os = document.getElementById("panel-c-offproto-score");
+    if (ps) ps.style.display =
+      (protoGroup === "tcp" || protoGroup === "udp" || protoGroup === "icmp")
+        ? "" : "none";
+    if (os) os.style.display = (protoGroup === "other") ? "" : "none";
+  }
+
+  // ---- render: update only the active tab's charts (lazy-created) ----
+  function renderTab(tab) {
+    if (tab === "protocol")  applyProtocolVisibility();
+    if (tab === "detection") applyDetectionVisibility();
+    if (!latestTs) return;
+    // bucket raw 1s samples down to ~MAX_POINTS so the lines read cleanly
+    const ranges = bucketRanges(latestTs.timestamps.length);
+    const labels = ranges.map(([a]) => shortTs(latestTs.timestamps[a]));
+    CHART_SPECS.forEach(spec => {
+      if (spec.tab !== tab) return;
+      if (!isSpecVisible(spec)) return;   // hidden -> no Chart object created
+      const ch = ensureChart(spec);
+      ch.data.labels = labels;
+      spec.datasets.forEach((ds, i) => {
+        const f = dsField(ds);
+        ch.data.datasets[i].data = (f && latestTs[f])
+          ? aggregate(latestTs[f], ranges, spec.agg || "avg")
+          : [];
+      });
+      ch.update("none");
+    });
+  }
+
+  function switchTab(tab) {
+    activeTab = tab;
+    document.querySelectorAll("#sd-tabbar button").forEach(b =>
+      b.classList.toggle("active", b.dataset.tab === tab));
+    document.querySelectorAll(".tab-content").forEach(tc =>
+      tc.classList.toggle("active", tc.id === "tab-" + tab));
+    renderTab(tab);
+  }
+
+  // ===================================================================
+  // data refresh — keeps the existing two API calls + error handling
+  // ===================================================================
   async function refreshDetail() {
-    // ---- latest snapshot ----
+    // ---- latest snapshot: /api/services/<id> ----
     try {
       const s = await getJSON(`/api/services/${SLOT_ID}`);
       document.getElementById("sd-error").innerHTML = "";
 
-      const proto = proto_label(s.proto_kind, s.proto_kind_str);
+      protoGroup = protoGroupOf(s.proto_kind);
+
+      const proto = protoLabel(s.proto_kind, s.proto_kind_str);
       document.getElementById("sd-header").textContent =
+        s.display_title ||
         `${s.target_ip_str || "?"}:${s.port}  ·  ${proto}`;
       document.getElementById("sd-subtitle").innerHTML =
         `slot ${s.slot_id} · profile <code>${s.profile_name || "—"}</code>` +
@@ -205,9 +577,9 @@
       phTile.className = "tile " + phStr.toLowerCase();
       document.getElementById("t-phase").textContent = phStr;
       document.getElementById("t-tier0").textContent =
-        (Number(s.tier0_score)||0).toFixed(3);
+        (Number(s.tier0_score) || 0).toFixed(3);
       document.getElementById("t-tier1").textContent =
-        (Number(s.tier1_final_score)||0).toFixed(3);
+        (Number(s.tier1_final_score) || 0).toFixed(3);
       document.getElementById("t-consec").textContent =
         fmtNum(s.consecutive_attack_windows);
       document.getElementById("t-warmup").textContent =
@@ -220,20 +592,24 @@
         TIER1_FIELDS.map(([f, label]) => `
           <div class="tile">
             <div class="label">${label}</div>
-            <div class="value">${(Number(s[f])||0).toFixed(3)}</div>
+            <div class="value">${(Number(s[f]) || 0).toFixed(3)}</div>
           </div>`).join("");
 
-      // features
+      // computed features (now inside the Distribution tab)
       document.getElementById("sd-features").innerHTML =
         kvHTML(s, FEATURE_FIELDS, (f, v) =>
           (typeof v === "number") ? v.toFixed(4) : (v ?? "—"));
 
-      // raw counters — peak_pps fields use the *_display variant
+      // raw counters (now inside the Detection tab)
       document.getElementById("sd-raw").innerHTML =
         kvHTML(s, RAW_FIELDS) +
-        ["win_10s_peak_pps","win_60s_peak_pps","win_300s_peak_pps"]
+        ["win_10s_peak_pps", "win_60s_peak_pps", "win_300s_peak_pps"]
           .map(f => `<div class="k">${f}</div>` +
                     `<div class="v">${s[f + "_display"] ?? "—"}</div>`).join("");
+
+      // proto known now -> refresh proto/detection panel visibility
+      applyProtocolVisibility();
+      applyDetectionVisibility();
 
       setClock(s.timestamp_dt, true);
     } catch (e) {
@@ -241,39 +617,23 @@
       setClock(null, false);
     }
 
-    // ---- time series ----
+    // ---- time series: /api/services/<id>/timeseries ----
     try {
-      const ts = await getJSON(
+      latestTs = await getJSON(
         `/api/services/${SLOT_ID}/timeseries?window=${TS_WINDOW}`);
-      const labels = ts.timestamps.map(shortTs);
-
-      chartPkts.data.labels = labels;
-      chartPkts.data.datasets[0].data = ts.inbound_pkts;
-      chartPkts.update();
-
-      chartScores.data.labels = labels;
-      chartScores.data.datasets[0].data = ts.tier0_score;
-      chartScores.data.datasets[1].data = ts.tier1_final_score;
-      chartScores.update();
-
-      chartPhase.data.labels = labels;
-      chartPhase.data.datasets[0].data = ts.phase;
-      chartPhase.update();
+      renderTab(activeTab);   // update only the visible tab
     } catch (e) {
       showError("sd-error", "timeseries: " + e.message);
     }
   }
 
-  function proto_label(kind, kindStr) {
-    if (kindStr) return kindStr;
-    return PROTO_FALLBACK[kind] || ("proto " + kind);
-  }
-  const PROTO_FALLBACK = {
-    1:"TCP",2:"UDP",3:"ICMP",4:"CATCHALL_TCP",5:"CATCHALL_UDP",
-    6:"CATCHALL_ICMP",7:"CATCHALL_OTHER",
-  };
+  // ---- wire up ----
+  buildChartDom();
+  document.querySelectorAll("#sd-tabbar button").forEach(b =>
+    b.addEventListener("click", () => switchTab(b.dataset.tab)));
 
   refreshDetail();
   setInterval(refreshDetail, REFRESH_MS);
+})();
 </script>
 {% endblock %}

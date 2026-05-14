@@ -577,6 +577,17 @@ int service_registry_load(struct service_registry *reg, const char *path) {
         cJSON_Delete(root); free(buf); return SERVICE_REGISTRY_ERR_VALIDATE;
     }
 
+    /* --- 1b. learning_mode (optional top-level flag) --- */
+    const cJSON *lm = cJSON_GetObjectItemCaseSensitive(root, "learning_mode");
+    if (lm == NULL) {
+        reg->learning_mode = false;  /* default = production mode */
+    } else if (cJSON_IsBool(lm)) {
+        reg->learning_mode = cJSON_IsTrue(lm) ? true : false;
+    } else {
+        registry_log("ERROR", "%s: 'learning_mode' must be boolean if present", path);
+        cJSON_Delete(root); free(buf); return SERVICE_REGISTRY_ERR_PARSE;
+    }
+
     /* --- 2. protected_ips --- */
     const cJSON *pips = cJSON_GetObjectItemCaseSensitive(root, "protected_ips");
     if (!cJSON_IsArray(pips)) {
@@ -1192,6 +1203,9 @@ void service_registry_log_summary(const struct service_registry *reg) {
     fprintf(stderr, "[service_registry]   reload_count:   %u\n",
             reg->reload_count);
     fprintf(stderr, "[service_registry]   loaded_at:      %s\n", ts);
+    fprintf(stderr, "[service_registry]   learning_mode:  %s\n",
+            reg->learning_mode ? "ENABLED (no phase transitions)"
+                               : "disabled");
 }
 
 const char *service_proto_kind_name(uint8_t k) {
