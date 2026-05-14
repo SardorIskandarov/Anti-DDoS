@@ -52,6 +52,46 @@ FLASK_PORT = 5000
 FLASK_DEBUG = False
 
 # ============================================================================
+# P11/P12 — PER-SERVICE COLLECTOR CONFIGURATION
+#
+# Added for the per-service architecture (P0-P10). The legacy constants
+# above are PRESERVED unchanged — the legacy web.py / database.py still
+# import them. The new collector (collector.py rewritten in P12) reads
+# only the constants in this section plus the legacy CH_* credentials.
+# ============================================================================
+
+# Unix-domain socket the C engine emits binary wire-protocol messages on.
+# Same path as the legacy SOCK_PATH — the engine's hotpath connects here
+# as a CLIENT, so the collector binds it as a SERVER (see collector.py).
+ENGINE_SOCKET_PATH = SOCK_PATH
+
+# Wire protocol v1 constants — must match l2fwd_service_wire.h byte-for-byte.
+WIRE_MAGIC        = b'L2FW'
+WIRE_VERSION      = 0x01
+WIRE_MSGTYPE_SNAP = 0x01
+WIRE_MSG_SIZE     = 416
+WIRE_HEADER_SIZE  = 32
+WIRE_PAYLOAD_SIZE = 380
+WIRE_FOOTER_SIZE  = 4
+
+# Collector runtime tuning.
+COLLECTOR_QUEUE_MAX_SIZE  = 10000   # bounded queue; drop-oldest under backpressure
+COLLECTOR_BATCH_SIZE      = 100     # rows per ClickHouse INSERT
+COLLECTOR_BATCH_TIMEOUT_S = 1.0     # flush a partial batch after N seconds
+COLLECTOR_RECONNECT_DELAY_S = 1.0   # wait between socket reconnect attempts
+COLLECTOR_LOG_LEVEL       = "INFO"
+COLLECTOR_STATS_INTERVAL_S = 10     # periodic stats log cadence
+
+# New per-service table names (created by scripts/migrate_clickhouse_schema.py).
+TABLE_SERVICE_STATS       = "service_stats"
+TABLE_PHASE_TRANSITIONS   = "service_phase_transitions"
+TABLE_TEMPORAL_AGGREGATES = "service_temporal_aggregates"
+TABLE_REGISTRY_SNAPSHOTS  = "service_registry_snapshots"
+
+# Legacy table preserved (renamed, never dropped) by the migration.
+TABLE_TRAFFIC_STATS_LEGACY = "traffic_stats_legacy"
+
+# ============================================================================
 # TARGET IP / SUBNET FILTER
 # Only dst_ip addresses falling within these networks are processed.
 # Entries can be single IPs ("1.2.3.4") or CIDR subnets ("1.2.3.0/24").

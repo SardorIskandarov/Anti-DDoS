@@ -1,35 +1,38 @@
-from flask import Flask, render_template, jsonify
-import threading
-import config
-# import database
-import collector
-import shared_state
-import web
+#!/usr/bin/env python3
+"""
+main.py — Anti-DDoS per-service collector entrypoint (P12).
+
+The legacy main.py launched the CSV collector thread, the temporal
+collector thread, and a blocking Flask web server. P7 retired the
+legacy per-IP engine path, and P11/P12 replaced the collector with the
+binary per-service collector.
+
+This entrypoint now simply runs the new collector (collector.main()),
+which manages its own reader / writer / stats threads and blocks until
+SIGTERM / SIGINT. It returns 0 on a clean shutdown so systemd sees a
+successful exit.
+
+The Flask dashboard (web.py) is intentionally NOT launched here: it
+reads the legacy shared_state buffers that the new collector no longer
+populates, and it is slated for a full rewrite in P14. Re-add the web
+launch in P14 once the dashboard consumes the new ClickHouse tables.
+
+Run:
+    python3 ddos_monitor/main.py
+    # or, from inside ddos_monitor/:
+    python3 main.py
+"""
+
+import os
+import sys
+
+# Make the flat ddos_monitor modules (config, wire_parser, collector)
+# importable regardless of the current working directory — consistent
+# with the legacy package's `import config` convention.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from collector import main  # noqa: E402  (import after sys.path tweak)
 
 
-
-def main():
-    """Main entry point."""
-    print("=" * 70)
-    print(" DDoS Detection System with Behavioral Anomaly Detection Engine")
-    print("=" * 70)
-
-    # Start collector thread
-    collector_thread = threading.Thread(target=collector.dpdk_collector_thread, daemon=True)
-    collector_thread.start()
-    print("[Main] Collector thread started")
-
-    # Start the dedicated temporal-records collector thread. Reads from
-    # the TEMPORAL_SOCK_PATH socket (separate from the IP socket) and
-    # persists TEMP records to dst_ip_temporal_stats. Daemon thread so
-    # the process exits cleanly when the main thread does.
-    temporal_collector_thread = threading.Thread(
-        target=collector.dpdk_temporal_collector_thread, daemon=True)
-    temporal_collector_thread.start()
-    print("[Main] Temporal collector thread started")
-
-    web.start_server()
-
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    sys.exit(main())
