@@ -1,0 +1,7 @@
+[Unit]
+Description=Anti-DDoS Per-Service Detection System
+Wants=anti-ddos-collector.service anti-ddos-engine.service anti-ddos-dashboard.service
+After=anti-ddos-collector.service anti-ddos-engine.service anti-ddos-dashboard.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,27 @@
+[Unit]
+Description=Anti-DDoS DPDK L2 Forward Engine (P0..P10)
+Documentation=file:///home/user_1/Music/Anti-DDoS/docs/architecture_status.md
+After=anti-ddos-collector.service anti-ddos-dpdk-setup.service
+Requires=anti-ddos-collector.service anti-ddos-dpdk-setup.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/home/user_1/Music/Anti-DDoS
+ExecStartPre=/bin/cp /home/user_1/Music/Anti-DDoS/service_registry/services.json /tmp/svc.json
+# Wait up to 10s for the collector's socket to appear before launching engine
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 20); do [ -S /tmp/ddos_stats_socket ] && exit 0; sleep 0.5; done; echo "collector socket not found"; exit 1'
+ExecStart=/home/user_1/Music/Anti-DDoS/build/l2fwd -l 0-1 -n 4 -- -q 1 -p 0x3 -P --no-mac-updating --services-json=/tmp/svc.json
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=anti-ddos-engine
+
+# Engine needs hugepages + raw NIC access; sandboxing would break DPDK
+NoNewPrivileges=no
+PrivateTmp=no
+
+[Install]
+WantedBy=anti-ddos.target

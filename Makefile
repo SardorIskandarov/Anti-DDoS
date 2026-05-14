@@ -50,6 +50,15 @@ help:
 	@echo "  make logs-collector    tail just the collector log"
 	@echo "  make logs-dashboard    tail just the dashboard log"
 	@echo "  make clean             remove old log files"
+	@echo ""
+	@echo "Systemd (production deployment):"
+	@echo "  sudo make install-systemd     install systemd units (one-time)"
+	@echo "  sudo make systemd-enable      enable auto-start on boot"
+	@echo "  sudo systemctl start anti-ddos.target"
+	@echo "  make systemd-status           check status of all 3 services"
+	@echo "  make systemd-logs             tail journalctl for all 3"
+	@echo "  make systemd-restart          restart all 3 services in order"
+	@echo "  sudo make uninstall-systemd   remove systemd integration"
 
 run:
 	@echo "============================================"
@@ -189,3 +198,110 @@ clean: stop
 	@-sudo rm -f $(COLLECTOR_LOG) $(DASHBOARD_LOG) $(ENGINE_LOG)
 	@-sudo rm -f $(COLLECTOR_PIDFILE) $(DASHBOARD_PIDFILE) $(ENGINE_PIDFILE)
 	@echo "✓ Logs and PID files cleaned."
+
+# ====== systemd integration ======
+SYSTEMD_DIR := $(PROJECT_ROOT)/systemd
+SYSTEMD_UNITS := anti-ddos-collector.service anti-ddos-engine.service anti-ddos-dashboard.service anti-ddos-dpdk-setup.service anti-ddos.target
+SYSTEMD_INSTALL_DIR := /etc/systemd/system
+
+install-systemd:
+	@echo "Installing systemd units to $(SYSTEMD_INSTALL_DIR) ..."
+	@for unit in $(SYSTEMD_UNITS); do \
+		sudo cp $(SYSTEMD_DIR)/$$unit $(SYSTEMD_INSTALL_DIR)/$$unit; \
+		echo "  ✓ $$unit"; \
+	done
+	@sudo chmod +x $(SYSTEMD_DIR)/dpdk-setup.sh
+	@echo "  ✓ dpdk-setup.sh marked executable"
+	@sudo systemctl daemon-reload
+	@echo ""
+	@echo "✓ Systemd units installed."
+	@echo ""
+	@echo "To start the whole stack:"
+	@echo "  sudo systemctl start anti-ddos.target"
+	@echo ""
+	@echo "To enable auto-start on boot:"
+	@echo "  sudo make systemd-enable"
+	@echo ""
+	@echo "After enable+reboot, the full stack auto-starts."
+
+uninstall-systemd:
+	@echo "Stopping and removing systemd units ..."
+	@-sudo systemctl stop anti-ddos.target 2>/dev/null
+	@-sudo systemctl stop anti-ddos-engine.service 2>/dev/null
+	@-sudo systemctl stop anti-ddos-collector.service 2>/dev/null
+	@-sudo systemctl stop anti-ddos-dashboard.service 2>/dev/null
+	@-sudo systemctl stop anti-ddos-dpdk-setup.service 2>/dev/null
+	@-sudo systemctl disable anti-ddos.target 2>/dev/null
+	@-sudo systemctl disable anti-ddos-engine.service 2>/dev/null
+	@-sudo systemctl disable anti-ddos-collector.service 2>/dev/null
+	@-sudo systemctl disable anti-ddos-dashboard.service 2>/dev/null
+	@-sudo systemctl disable anti-ddos-dpdk-setup.service 2>/dev/null
+	@for unit in $(SYSTEMD_UNITS); do \
+		sudo rm -f $(SYSTEMD_INSTALL_DIR)/$$unit; \
+		echo "  ✓ removed $$unit"; \
+	done
+	@sudo systemctl daemon-reload
+	@echo "✓ All systemd units removed. Data preserved."
+
+systemd-start:
+	@sudo systemctl start anti-ddos.target
+	@sleep 3
+	@$(MAKE) systemd-status
+
+systemd-stop:
+	@sudo systemctl stop anti-ddos.target
+
+systemd-restart:
+	@sudo systemctl restart anti-ddos-collector.service
+	@sleep 2
+	@sudo systemctl restart anti-ddos-engine.service
+	@sleep 2
+	@sudo systemctl restart anti-ddos-dashboard.service
+
+systemd-status:
+	@echo "============================================"
+	@echo "Anti-DDoS systemd status"
+	@echo "============================================"
+	@printf "Collector:  "
+	@systemctl is-active anti-ddos-collector.service || true
+	@printf "Engine:     "
+	@systemctl is-active anti-ddos-engine.service || true
+	@printf "Dashboard:  "
+	@systemctl is-active anti-ddos-dashboard.service || true
+	@echo ""
+	@echo "Detail (most recent state lines):"
+	@-systemctl --no-pager --lines=0 status anti-ddos-collector.service | head -5
+	@-systemctl --no-pager --lines=0 status anti-ddos-engine.service | head -5
+	@-systemctl --no-pager --lines=0 status anti-ddos-dashboard.service | head -5
+
+systemd-logs:
+	@journalctl -u anti-ddos-collector.service -u anti-ddos-engine.service -u anti-ddos-dashboard.service -f
+
+systemd-logs-collector:
+	@journalctl -u anti-ddos-collector.service -f
+
+systemd-logs-engine:
+	@journalctl -u anti-ddos-engine.service -f
+
+systemd-logs-dashboard:
+	@journalctl -u anti-ddos-dashboard.service -f
+
+systemd-enable:
+	@sudo systemctl enable anti-ddos.target
+	@sudo systemctl enable anti-ddos-collector.service
+	@sudo systemctl enable anti-ddos-engine.service
+	@sudo systemctl enable anti-ddos-dashboard.service
+	@sudo systemctl enable anti-ddos-dpdk-setup.service
+	@echo "✓ Services enabled for auto-start on boot."
+
+systemd-disable:
+	@sudo systemctl disable anti-ddos.target
+	@sudo systemctl disable anti-ddos-collector.service
+	@sudo systemctl disable anti-ddos-engine.service
+	@sudo systemctl disable anti-ddos-dashboard.service
+	@sudo systemctl disable anti-ddos-dpdk-setup.service
+	@echo "✓ Services disabled (will not auto-start on boot)."
+
+.PHONY: install-systemd uninstall-systemd systemd-start systemd-stop systemd-restart \
+        systemd-status systemd-logs systemd-logs-collector systemd-logs-engine \
+        systemd-logs-dashboard systemd-enable systemd-disable
