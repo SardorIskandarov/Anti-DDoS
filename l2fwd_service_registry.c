@@ -672,9 +672,6 @@ int service_registry_load(struct service_registry *reg, const char *path) {
     }
     uint64_t now = (uint64_t)time(NULL);
     {
-        /* Track which protected_ips got a catchall assignment, for rule 4. */
-        bool seen[SERVICE_REGISTRY_MAX_PROTECTED_IPS] = {false};
-
         const cJSON *entry = NULL;
         cJSON_ArrayForEach(entry, ca) {
             const char *ip_str = entry->string;
@@ -689,14 +686,15 @@ int service_registry_load(struct service_registry *reg, const char *path) {
                              path, ip_str);
                 cJSON_Delete(root); free(buf); return SERVICE_REGISTRY_ERR_PARSE;
             }
-            int p_idx_ip = find_protected_ip_index(reg, ip);
-            if (p_idx_ip < 0) {
+            /* Typo guard: an IP under catchall_assignments must be one of
+             * the declared protected_ips. (Kept — this is unrelated to
+             * the now-removed "every IP must have catchalls" rule.) */
+            if (find_protected_ip_index(reg, ip) < 0) {
                 registry_log("ERROR",
                              "%s: catchall_assignments has IP '%s' not in protected_ips",
                              path, ip_str);
                 cJSON_Delete(root); free(buf); return SERVICE_REGISTRY_ERR_VALIDATE;
             }
-            seen[p_idx_ip] = true;
 
             if (!cJSON_IsObject(entry)) {
                 registry_log("ERROR", "%s: catchall_assignments[%s] not an object",
@@ -713,9 +711,18 @@ int service_registry_load(struct service_registry *reg, const char *path) {
                 {"other", SERVICE_PROTO_CATCHALL_OTHER},
             };
             for (size_t ci = 0; ci < sizeof(cmap)/sizeof(cmap[0]); ci++) {
+                /* Each of tcp/udp/icmp/other is OPTIONAL. An absent key
+                 * simply means "do not create that catchall slot" — it
+                 * is NOT an error. Only keys actually present are parsed
+                 * and validated; this is strictly more permissive than
+                 * before, so every previously valid config still loads. */
+                if (cJSON_GetObjectItemCaseSensitive(entry, cmap[ci].key) == NULL)
+                    continue;
+
                 char pname[SERVICE_REGISTRY_PROFILE_NAME_MAX];
                 char ctx[80];
                 snprintf(ctx, sizeof(ctx), "catchall_assignments[%s]", ip_str);
+                /* Key present -> it must still be a valid string profile name. */
                 if (json_get_string(entry, cmap[ci].key, pname, sizeof(pname), ctx)
                     != SERVICE_REGISTRY_OK) {
                     cJSON_Delete(root); free(buf); return SERVICE_REGISTRY_ERR_PARSE;
@@ -739,18 +746,13 @@ int service_registry_load(struct service_registry *reg, const char *path) {
                 reg->n_catchalls++;
             }
         }
-        /* Rule 4: every protected IP must have an entry. */
-        for (size_t i = 0; i < reg->n_protected_ips; i++) {
-            if (!seen[i]) {
-                /* Format the IP back for the error message. */
-                uint32_t ip = reg->protected_ips[i];
-                registry_log("ERROR",
-                             "%s: protected_ip %u.%u.%u.%u has no catchall_assignments",
-                             path, (ip >> 24) & 0xff, (ip >> 16) & 0xff,
-                             (ip >> 8) & 0xff, ip & 0xff);
-                cJSON_Delete(root); free(buf); return SERVICE_REGISTRY_ERR_VALIDATE;
-            }
-        }
+        /* Rule 4 (REMOVED): catchall_assignments is now fully optional.
+         * An IP may declare any subset of {tcp,udp,icmp,other}, or omit
+         * itself entirely (e.g. an IP that only has named services in
+         * services[]). An IP with neither catchalls nor services is
+         * harmless — it simply never matches a packet, which then gets
+         * l2-forwarded but not counted. Unknown-IP typos are still
+         * caught above by the find_protected_ip_index() guard. */
     }
 
     /* --- 5. services --- */
@@ -1015,29 +1017,12 @@ int service_registry_validate(const struct service_registry *reg,
         }
     }
 
-    /* Rules 4 + 5: every protected IP has exactly the 4 catchall kinds. */
-    for (size_t i = 0; i < reg->n_protected_ips; i++) {
-        uint32_t ip = reg->protected_ips[i];
-        bool present[4] = {false, false, false, false};
-        for (size_t s = 0; s < reg->n_slots; s++) {
-            if (reg->slots[s].key.target_ip != ip) continue;
-            uint8_t k = reg->slots[s].key.proto_kind;
-            if (k == SERVICE_PROTO_CATCHALL_TCP)   present[0] = true;
-            if (k == SERVICE_PROTO_CATCHALL_UDP)   present[1] = true;
-            if (k == SERVICE_PROTO_CATCHALL_ICMP)  present[2] = true;
-            if (k == SERVICE_PROTO_CATCHALL_OTHER) present[3] = true;
-        }
-        const char *names[4] = {"TCP", "UDP", "ICMP", "OTHER"};
-        for (int kk = 0; kk < 4; kk++) {
-            if (!present[kk]) {
-                err_append(&e,
-                           "[rule 4/5] protected_ip %u.%u.%u.%u missing "
-                           "catchall '%s'",
-                           (ip >> 24) & 0xff, (ip >> 16) & 0xff,
-                           (ip >> 8) & 0xff, ip & 0xff, names[kk]);
-            }
-        }
-    }
+    /* Rules 4 + 5 (REMOVED): catchall_assignments is now fully optional —
+     * an IP may declare any subset of {tcp,udp,icmp,other}, or none at
+     * all. This defensive re-check used to demand all four kinds per IP;
+     * it is dropped to match the relaxed parse loop. The per-slot checks
+     * above still validate every catchall slot that DOES exist — we just
+     * no longer require that all four exist. */
 
     /* Rule 12: weight non-negativity + probability bounds per profile. */
     for (size_t i = 0; i < reg->n_profiles; i++) {
@@ -1192,8 +1177,8 @@ void service_registry_log_summary(const struct service_registry *reg) {
             reg->n_protected_ips);
     fprintf(stderr, "[service_registry]   profiles:       %zu\n",
             reg->n_profiles);
-    fprintf(stderr, "[service_registry]   catchalls:      %zu (across %zu IPs × 4 each)\n",
-            reg->n_catchalls, reg->n_protected_ips);
+    fprintf(stderr, "[service_registry]   catchalls:      %zu (configured)\n",
+            reg->n_catchalls);
     fprintf(stderr, "[service_registry]   services:       %zu\n",
             reg->n_services);
     fprintf(stderr, "[service_registry]   total slots:    %zu / %d\n",

@@ -200,13 +200,17 @@ def api_overview():
         latest_ts = latest[0][0] if latest and latest[0][0] else None
 
         recent = config.DASHBOARD_OVERVIEW_RECENT_SECONDS
+        # Freshness gate for the per-slot views below: a slot must have
+        # emitted a heartbeat within DASHBOARD_SLOT_FRESHNESS_SECONDS to
+        # count. Excludes slots retired by a registry reconfiguration.
+        fresh = config.DASHBOARD_SLOT_FRESHNESS_SECONDS
         phase_counts_rows = ch.execute(f"""
             SELECT phase_str, count() AS n
             FROM (
                 SELECT slot_id,
                        argMax(phase_str, timestamp_ns) AS phase_str
                 FROM {config.TABLE_SERVICE_STATS}
-                WHERE timestamp_dt >= now() - INTERVAL {recent} SECOND
+                WHERE inserted_at >= now() - INTERVAL {fresh} SECOND
                 GROUP BY slot_id
             )
             GROUP BY phase_str
@@ -233,7 +237,7 @@ def api_overview():
                        argMax(tier1_final_score, timestamp_ns) AS tier1_final_score,
                        argMax(tier0_score, timestamp_ns)       AS tier0_score
                 FROM {config.TABLE_SERVICE_STATS}
-                WHERE timestamp_dt >= now() - INTERVAL 60 SECOND
+                WHERE inserted_at >= now() - INTERVAL {fresh} SECOND
                 GROUP BY slot_id
             )
             WHERE phase_str != 'WARMUP'
@@ -269,6 +273,12 @@ def api_services():
     if ch is None:
         return jsonify({'error': 'clickhouse unavailable'}), 503
     try:
+        # Freshness gate: only slots that emitted a heartbeat within the
+        # last DASHBOARD_SLOT_FRESHNESS_SECONDS are "active". Filtering on
+        # inserted_at (collector insert time) excludes slots retired by a
+        # registry reconfiguration, whose last rows linger in ClickHouse
+        # until the 30-day TTL expires.
+        fresh = config.DASHBOARD_SLOT_FRESHNESS_SECONDS
         rows = ch.execute(f"""
             SELECT slot_id,
                    argMax(target_ip_str, timestamp_ns)  AS target_ip,
@@ -287,7 +297,7 @@ def api_services():
                    argMax(win_10s_peak_pps, timestamp_ns) AS peak_pps_10s,
                    max(timestamp_dt)                    AS latest_ts
             FROM {config.TABLE_SERVICE_STATS}
-            WHERE timestamp_dt >= now() - INTERVAL 1 HOUR
+            WHERE inserted_at >= now() - INTERVAL {fresh} SECOND
             GROUP BY slot_id
             ORDER BY target_ip, port, proto_kind
         """)

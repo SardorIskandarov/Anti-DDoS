@@ -27,8 +27,11 @@
 #include "l2fwd_service_registry.h"
 #include "cJSON.h"
 
+/* Stable known-good fixture: the preserved 11-IP / 44-slot / 12-profile
+ * phase-0 registry. Deliberately decoupled from the live operational
+ * service_registry/services.json, which changes with production config. */
 #define SERVICES_JSON_PATH \
-    "/home/user_1/Music/Anti-DDoS/service_registry/services.json"
+    "/home/user_1/Music/Anti-DDoS/service_registry/services_v1_phase0_backup.json"
 
 /* --------------------------------------------------------------- */
 /* Tiny assertion framework                                          */
@@ -98,9 +101,14 @@ static void mut_bad_version(cJSON *root) {
     cJSON_SetNumberValue(v, 99);
 }
 
-static void mut_remove_catchall(cJSON *root) {
+/* Sparse catchall_assignments: drop ONLY the TCP catchall key for
+ * 213.230.125.50 (udp/icmp/other stay). Used by the POSITIVE
+ * sparse_remove_one_catchall_test below — under the relaxed engine
+ * contract this is a valid config, not a load error. */
+static void mut_remove_one_catchall(cJSON *root) {
     cJSON *ca = cJSON_GetObjectItem(root, "catchall_assignments");
-    cJSON_DeleteItemFromObject(ca, "213.230.125.50");
+    cJSON *entry = cJSON_GetObjectItem(ca, "213.230.125.50");
+    cJSON_DeleteItemFromObject(entry, "tcp");
 }
 
 static void mut_duplicate_service(cJSON *root) {
@@ -253,19 +261,178 @@ static int negative_test(const char *label,
     return 0;
 }
 
+/* --------------------------------------------------------------- */
+/* Sparse catchall_assignments contract (relaxed validation).        */
+/*                                                                   */
+/* The engine no longer requires every protected IP to carry all     */
+/* four {tcp,udp,icmp,other} catchalls. catchall_assignments[ip] may  */
+/* hold any subset — or the IP may have no entry at all if it only    */
+/* has named services. These two positive tests pin that contract.   */
+/* --------------------------------------------------------------- */
+
+/* Write a cJSON tree to disk; returns 0 on success. */
+static int write_json_root(const char *dst_path, cJSON *root) {
+    char *out = cJSON_Print(root);
+    if (!out) return -1;
+    FILE *of = fopen(dst_path, "wb");
+    if (!of) { free(out); return -1; }
+    fputs(out, of);
+    fclose(of);
+    free(out);
+    return 0;
+}
+
+/* Sparse catchall_assignments: removing ONE catchall key from an IP's
+ * entry must SUCCEED and produce baseline-1 slots. The removed
+ * (ip, proto) catchall no longer resolves; the IP's sibling catchalls
+ * are unaffected. (Before the relaxation this was a hard load error.) */
+static int sparse_remove_one_catchall_test(size_t baseline_n_slots) {
+    fprintf(stderr,
+        "\n=== POSITIVE: sparse catchall — drop one (ip,proto), expect N-1 ===\n");
+    char path[64];
+    snprintf(path, sizeof(path), "/tmp/test_registry_sparse1_%d.json", (int)getpid());
+    if (write_mutated_json(SERVICES_JSON_PATH, path, mut_remove_one_catchall) != 0) {
+        fprintf(stderr, "  [FAIL] could not write mutated JSON\n");
+        g_fail++;
+        return 1;
+    }
+
+    static struct service_registry reg;
+    service_registry_init(&reg);
+    int rc = service_registry_load(&reg, path);
+    CHECK(rc == SERVICE_REGISTRY_OK,
+          "load SUCCEEDED with a sparse catchall entry (rc=%d)", rc);
+    if (rc == SERVICE_REGISTRY_OK) {
+        CHECK(reg.n_slots == baseline_n_slots - 1,
+              "n_slots=%zu (expect baseline-1 = %zu)",
+              reg.n_slots, baseline_n_slots - 1);
+
+        uint32_t ip50 = mk_ip(213, 230, 125, 50);
+        const struct service_descriptor *d;
+        d = service_registry_lookup_catchall(&reg, ip50, SERVICE_PROTO_CATCHALL_TCP);
+        CHECK(d == NULL,
+              "lookup_catchall(213.230.125.50, TCP) NULL — removed catchall is gone");
+        d = service_registry_lookup_catchall(&reg, ip50, SERVICE_PROTO_CATCHALL_UDP);
+        CHECK(d != NULL,
+              "lookup_catchall(213.230.125.50, UDP) non-NULL — sibling catchall intact");
+        d = service_registry_lookup_catchall(&reg, ip50, SERVICE_PROTO_CATCHALL_ICMP);
+        CHECK(d != NULL,
+              "lookup_catchall(213.230.125.50, ICMP) non-NULL — sibling catchall intact");
+        d = service_registry_lookup_catchall(&reg, ip50, SERVICE_PROTO_CATCHALL_OTHER);
+        CHECK(d != NULL,
+              "lookup_catchall(213.230.125.50, OTHER) non-NULL — sibling catchall intact");
+    }
+    service_registry_destroy(&reg);
+    unlink(path);
+    return 0;
+}
+
+/* Most-extreme sparse case: a protected IP with NO catchall_assignments
+ * entry at all, only a named service. Load must succeed with exactly the
+ * one named-service slot and zero catchalls. The profile is lifted
+ * verbatim from the backup fixture so we don't hand-roll one. */
+static int sparse_no_catchall_test(void) {
+    fprintf(stderr,
+        "\n=== POSITIVE: sparse catchall — IP with only a named service ===\n");
+
+    /* Read the backup fixture and copy out a known-good profile. */
+    FILE *fp = fopen(SERVICES_JSON_PATH, "rb");
+    if (!fp) { fprintf(stderr, "  [FAIL] open backup fixture\n"); g_fail++; return 1; }
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    rewind(fp);
+    char *buf = malloc((size_t)sz + 1);
+    if (!buf || fread(buf, 1, (size_t)sz, fp) != (size_t)sz) {
+        fclose(fp); free(buf);
+        fprintf(stderr, "  [FAIL] read backup fixture\n"); g_fail++; return 1;
+    }
+    fclose(fp);
+    buf[sz] = '\0';
+    cJSON *backup = cJSON_Parse(buf);
+    free(buf);
+    if (!backup) { fprintf(stderr, "  [FAIL] parse backup fixture\n"); g_fail++; return 1; }
+    cJSON *generic = cJSON_GetObjectItem(
+        cJSON_GetObjectItem(backup, "profiles"), "catchall_generic_default");
+    cJSON *profile_copy = cJSON_Duplicate(generic, 1);
+    cJSON_Delete(backup);
+    if (!profile_copy) {
+        fprintf(stderr, "  [FAIL] copy profile from backup\n"); g_fail++; return 1;
+    }
+
+    /* Build a synthetic registry: 1 protected IP, empty
+     * catchall_assignments{}, and a single named TCP service. */
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "version", 1);
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddStringToObject(meta, "comment", "synthetic sparse-catchall test fixture");
+    cJSON_AddItemToObject(root, "metadata", meta);
+    cJSON *pips = cJSON_CreateArray();
+    cJSON_AddItemToArray(pips, cJSON_CreateString("1.2.3.4"));
+    cJSON_AddItemToObject(root, "protected_ips", pips);
+    cJSON *profiles = cJSON_CreateObject();
+    cJSON_AddItemToObject(profiles, "default", profile_copy);
+    cJSON_AddItemToObject(root, "profiles", profiles);
+    cJSON_AddItemToObject(root, "catchall_assignments", cJSON_CreateObject()); /* {} */
+    cJSON *svcs = cJSON_CreateArray();
+    cJSON *svc = cJSON_CreateObject();
+    cJSON_AddStringToObject(svc, "name", "svc_1.2.3.4_tcp443");
+    cJSON_AddStringToObject(svc, "target_ip", "1.2.3.4");
+    cJSON_AddStringToObject(svc, "proto", "TCP");
+    cJSON_AddNumberToObject(svc, "port", 443);
+    cJSON_AddStringToObject(svc, "profile", "default");
+    cJSON_AddBoolToObject(svc, "detection_enabled", 0);
+    cJSON_AddItemToArray(svcs, svc);
+    cJSON_AddItemToObject(root, "services", svcs);
+
+    char path[64];
+    snprintf(path, sizeof(path), "/tmp/test_registry_sparse0_%d.json", (int)getpid());
+    int wrc = write_json_root(path, root);
+    cJSON_Delete(root);
+    if (wrc != 0) {
+        fprintf(stderr, "  [FAIL] write synthetic JSON\n"); g_fail++; return 1;
+    }
+
+    static struct service_registry reg;
+    service_registry_init(&reg);
+    int rc = service_registry_load(&reg, path);
+    CHECK(rc == SERVICE_REGISTRY_OK,
+          "load SUCCEEDED for an IP with no catchall entry (rc=%d)", rc);
+    if (rc == SERVICE_REGISTRY_OK) {
+        CHECK(reg.n_slots == 1,     "n_slots=%zu (expect 1)", reg.n_slots);
+        CHECK(reg.n_catchalls == 0, "n_catchalls=%zu (expect 0)", reg.n_catchalls);
+        CHECK(reg.n_services == 1,  "n_services=%zu (expect 1)", reg.n_services);
+
+        uint32_t ip = mk_ip(1, 2, 3, 4);
+        const struct service_descriptor *d =
+            service_registry_lookup_exact(&reg, ip, 443, SERVICE_PROTO_TCP);
+        CHECK(d != NULL,
+              "lookup_exact(1.2.3.4, 443, TCP) non-NULL — named service slot exists");
+        d = service_registry_lookup_catchall(&reg, ip, SERVICE_PROTO_CATCHALL_TCP);
+        CHECK(d == NULL,
+              "lookup_catchall(1.2.3.4, TCP) NULL — no catchall was configured");
+    }
+    service_registry_destroy(&reg);
+    unlink(path);
+    return 0;
+}
+
 int main(void) {
     static struct service_registry reg;  /* ~250 KB; use static to avoid stack */
 
     fprintf(stderr, "\n*** service_registry P2 test harness ***\n");
 
     positive_test(&reg);
+    size_t baseline_n_slots = reg.n_slots;   /* 44 for the phase-0 backup */
 
     negative_test("bad_version (version=99)",            mut_bad_version,             true);
-    negative_test("missing catchall_assignments entry",  mut_remove_catchall,         true);
     negative_test("duplicate (target_ip, port, proto)",  mut_duplicate_service,       true);
     negative_test("unknown profile in catchall",         mut_unknown_profile_in_catchall, true);
     negative_test("profile missing tier0 section",       mut_remove_tier0,            true);
     negative_test("untouched services.json (round-trip)", mut_empty_services_noop,    false);
+
+    /* Sparse catchall_assignments contract — see comment block above. */
+    sparse_remove_one_catchall_test(baseline_n_slots);
+    sparse_no_catchall_test();
 
     fprintf(stderr, "\n=== SUMMARY: %d PASS, %d FAIL ===\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;

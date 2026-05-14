@@ -2,9 +2,9 @@
   "version": 1,
   "learning_mode": true,
   "metadata": {
-    "last_modified": "2026-05-14T14:13:59Z",
-    "modified_by": "operator_strict_15_services_v1",
-    "comment": "STRICT 15 services. 6 named + 9 catchalls. No ghost slots — engine now supports sparse catchall_assignments (p14.6). learning_mode ENABLED. Collecting baseline data for 5-7 days before threshold tuning with A10 labels."
+    "last_modified": "2026-05-14T13:26:13Z",
+    "modified_by": "operator_real_services_v1_learning_mode",
+    "comment": "REAL production services — 14 IPs, 6 named services, 56 structural catchalls. learning_mode ENABLED: counters/baselines update but phase transitions are suppressed. Collecting baseline data for 5-7 days before threshold tuning with A10 labels as ground truth."
   },
   "protected_ips": [
     "89.249.62.54",
@@ -103,32 +103,89 @@
     }
   },
   "catchall_assignments": {
+    "89.249.62.54": {
+      "tcp": "catchall_generic_default",
+      "udp": "catchall_generic_default",
+      "icmp": "catchall_generic_default",
+      "other": "catchall_generic_default"
+    },
+    "213.230.125.50": {
+      "tcp": "catchall_generic_default",
+      "udp": "catchall_generic_default",
+      "icmp": "catchall_generic_default",
+      "other": "catchall_generic_default"
+    },
     "185.203.236.181": {
-      "tcp": "catchall_generic_default"
+      "tcp": "catchall_generic_default",
+      "udp": "catchall_generic_default",
+      "icmp": "catchall_generic_default",
+      "other": "catchall_generic_default"
     },
     "45.150.25.116": {
-      "udp": "catchall_generic_default"
+      "tcp": "catchall_generic_default",
+      "udp": "catchall_generic_default",
+      "icmp": "catchall_generic_default",
+      "other": "catchall_generic_default"
     },
     "89.249.62.39": {
-      "udp": "catchall_generic_default"
+      "tcp": "catchall_generic_default",
+      "udp": "catchall_generic_default",
+      "icmp": "catchall_generic_default",
+      "other": "catchall_generic_default"
     },
     "89.249.62.46": {
-      "udp": "catchall_generic_default"
+      "tcp": "catchall_generic_default",
+      "udp": "catchall_generic_default",
+      "icmp": "catchall_generic_default",
+      "other": "catchall_generic_default"
     },
     "89.249.62.50": {
-      "icmp": "catchall_generic_default"
+      "tcp": "catchall_generic_default",
+      "udp": "catchall_generic_default",
+      "icmp": "catchall_generic_default",
+      "other": "catchall_generic_default"
     },
-    "45.150.25.170": {
-      "udp": "catchall_generic_default"
+    "45.150.25.250": {
+      "tcp": "catchall_generic_default",
+      "udp": "catchall_generic_default",
+      "icmp": "catchall_generic_default",
+      "other": "catchall_generic_default"
     },
     "94.141.85.150": {
-      "icmp": "catchall_generic_default"
+      "tcp": "catchall_generic_default",
+      "udp": "catchall_generic_default",
+      "icmp": "catchall_generic_default",
+      "other": "catchall_generic_default"
     },
     "185.203.236.198": {
-      "icmp": "catchall_generic_default"
+      "tcp": "catchall_generic_default",
+      "udp": "catchall_generic_default",
+      "icmp": "catchall_generic_default",
+      "other": "catchall_generic_default"
+    },
+    "94.141.85.244": {
+      "tcp": "catchall_generic_default",
+      "udp": "catchall_generic_default",
+      "icmp": "catchall_generic_default",
+      "other": "catchall_generic_default"
+    },
+    "45.150.25.170": {
+      "tcp": "catchall_generic_default",
+      "udp": "catchall_generic_default",
+      "icmp": "catchall_generic_default",
+      "other": "catchall_generic_default"
+    },
+    "94.141.85.147": {
+      "tcp": "catchall_generic_default",
+      "udp": "catchall_generic_default",
+      "icmp": "catchall_generic_default",
+      "other": "catchall_generic_default"
     },
     "45.150.25.171": {
-      "tcp": "catchall_generic_default"
+      "tcp": "catchall_generic_default",
+      "udp": "catchall_generic_default",
+      "icmp": "catchall_generic_default",
+      "other": "catchall_generic_default"
     }
   },
   "services": [

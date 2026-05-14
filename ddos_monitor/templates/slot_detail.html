@@ -159,10 +159,6 @@
 
   const PHASE_LINE_COLOR = { 0: "#8b949e", 1: "#3fb950",
                              2: "#d29922", 3: "#f85149" };
-  const PROTO_FALLBACK = {
-    1: "TCP", 2: "UDP", 3: "ICMP", 4: "CATCHALL_TCP", 5: "CATCHALL_UDP",
-    6: "CATCHALL_ICMP", 7: "CATCHALL_OTHER",
-  };
 
   // ---- raw / feature / tier-1 field groupings (unchanged) ----
   const RAW_FIELDS = [
@@ -380,10 +376,6 @@
     if (pk === 7) return "other";
     return null;
   }
-  function protoLabel(kind, kindStr) {
-    if (kindStr) return kindStr;
-    return PROTO_FALLBACK[kind] || ("proto " + kind);
-  }
   function kvHTML(obj, fields, fmt) {
     return fields.map(f => {
       let v = obj[f];
@@ -564,13 +556,12 @@
 
       protoGroup = protoGroupOf(s.proto_kind);
 
-      const proto = protoLabel(s.proto_kind, s.proto_kind_str);
       document.getElementById("sd-header").textContent =
         s.display_title ||
-        `${s.target_ip_str || "?"}:${s.port}  ·  ${proto}`;
+        `${s.target_ip_str || "?"}:${fmtPort(s.port, s.is_catchall)}` +
+        `  ·  ${fmtProto(s.proto_kind_str)}`;
       document.getElementById("sd-subtitle").innerHTML =
-        `slot ${s.slot_id} · profile <code>${s.profile_name || "—"}</code>` +
-        (s.is_catchall ? ' · <span class="clock">catchall</span>' : '');
+        `slot ${s.slot_id} · profile <code>${s.profile_name || "—"}</code>`;
 
       const phStr = (s.phase_str || PHASE_NAMES[s.phase] || "UNKNOWN").toUpperCase();
       const phTile = document.getElementById("t-phase-tile");

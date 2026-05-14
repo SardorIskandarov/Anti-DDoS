@@ -238,6 +238,22 @@
       if (isNaN(d)) return iso;
       return d.toLocaleString("en-US", { hour12: false });
     }
+    // Catchall slots carry port=0 and proto_kind_str="CATCHALL_<PROTO>" in
+    // the raw API. These two display helpers present them cleanly in the UI
+    // (port "Any", proto "<PROTO>") without touching the underlying data.
+    function fmtPort(port, isCatchall) {
+      return isCatchall ? "Any" : String(port);
+    }
+    function fmtProto(protoKindStr) {
+      if (!protoKindStr) return "?";
+      switch (protoKindStr) {
+        case "CATCHALL_TCP":   return "TCP";
+        case "CATCHALL_UDP":   return "UDP";
+        case "CATCHALL_ICMP":  return "ICMP";
+        case "CATCHALL_OTHER": return "Other";
+        default:               return protoKindStr;
+      }
+    }
     function setClock(iso, ok) {
       const el = document.getElementById("topclock");
       if (!el) return;

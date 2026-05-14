@@ -37,8 +37,10 @@
 #include "l2fwd_service_temporal_state.h"
 #include "l2fwd_service_reload.h"
 
+/* Stable known-good fixture: the preserved 11-IP / 44-slot phase-0
+ * registry. Decoupled from the live operational services.json. */
 #define SOURCE_JSON \
-    "/home/user_1/Music/Anti-DDoS/service_registry/services.json"
+    "/home/user_1/Music/Anti-DDoS/service_registry/services_v1_phase0_backup.json"
 
 /* The test mutates this file in place to simulate a corrupt-config push.
  * Path includes the PID so concurrent runs do not collide. */

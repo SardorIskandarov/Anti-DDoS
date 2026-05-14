@@ -84,8 +84,8 @@
         <tr class="clickable" onclick="location.href='/services/${s.slot_id}'">
           <td class="mono">${s.slot_id}</td>
           <td class="mono">${s.target_ip}</td>
-          <td class="mono num">${s.port}</td>
-          <td>${s.proto_kind}${s.is_catchall ? ' <span class="clock">(catchall)</span>' : ''}</td>
+          <td class="mono num">${fmtPort(s.port, s.is_catchall)}</td>
+          <td>${fmtProto(s.proto_kind)}</td>
           <td>${phasePill(s.phase)}</td>
           <td>${scoreBar(s.tier1_final_score)}</td>
           <td>${scoreBar(s.tier0_score)}</td>

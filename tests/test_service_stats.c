@@ -27,8 +27,10 @@
 #include "l2fwd_service_registry.h"
 #include "l2fwd_service_stats.h"
 
+/* Stable known-good fixture: the preserved 11-IP / 44-slot phase-0
+ * registry. Decoupled from the live operational services.json. */
 #define SERVICES_JSON_PATH \
-    "/home/user_1/Music/Anti-DDoS/service_registry/services.json"
+    "/home/user_1/Music/Anti-DDoS/service_registry/services_v1_phase0_backup.json"
 
 /* -------------------------------------------------------------------------
  * Tiny assertion framework

@@ -436,5 +436,12 @@ DASHBOARD_REFRESH_SECONDS           = 1     # browser auto-refresh interval
 DASHBOARD_TIMESERIES_WINDOW_SECONDS = 300   # 5-min window for slot-detail charts
 DASHBOARD_ALERTS_LIMIT              = 100   # max rows on the Alerts tab
 DASHBOARD_OVERVIEW_RECENT_SECONDS   = 60    # "recent activity" window on Overview
+
+# Slots whose last heartbeat is older than this are considered
+# dormant and excluded from the dashboard's services view.
+# Default 60s allows for brief network blips while still hiding
+# slots that were retired (e.g., after registry reconfiguration).
+DASHBOARD_SLOT_FRESHNESS_SECONDS    = 60
+
 SERVICES_JSON_PATH                  = "/tmp/svc.json"  # live registry for Registry tab
 
