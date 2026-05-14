@@ -308,14 +308,32 @@ int service_hotpath_process_packet(struct rte_mbuf *m, unsigned int port_id)
     struct rte_ether_hdr *eth =
         rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
     uint16_t ether_type = rte_be_to_cpu_16(eth->ether_type);
+    /* --- VLAN unwrap (802.1Q, ether_type 0x8100) ---
+     * Mirrored traffic from a trunk port arrives with a VLAN tag wrapping
+     * the inner IPv4 frame. We skip the 4-byte tag and re-read the inner
+     * ether_type. P7-original assumed untagged frames. */
+    size_t l2_hdr_bytes = sizeof(struct rte_ether_hdr);
+    if (ether_type == 0x8100) {
+        /* The VLAN TCI is 2 bytes (PCP|DEI|VID); inner ether_type is the
+         * next 2 bytes. The whole shim is 4 bytes total. */
+        struct rte_vlan_hdr {
+            uint16_t vlan_tci;
+            uint16_t inner_type;
+        } __attribute__((packed));
+        struct rte_vlan_hdr *vh =
+            (struct rte_vlan_hdr *)((char *)eth + sizeof(struct rte_ether_hdr));
+        ether_type   = rte_be_to_cpu_16(vh->inner_type);
+        l2_hdr_bytes += 4;
+    }
+
     if (ether_type != RTE_ETHER_TYPE_IPV4) {
-        /* IPv6 / VLAN / MPLS dropped silently in P7. */
+        /* IPv6 / MPLS / unknown dropped silently. */
         return -1;
     }
 
     /* --- IPv4 header --- */
     struct rte_ipv4_hdr *ip4 =
-        (struct rte_ipv4_hdr *)((char *)eth + sizeof(struct rte_ether_hdr));
+        (struct rte_ipv4_hdr *)((char *)eth + l2_hdr_bytes);
     uint8_t  l4_proto  = ip4->next_proto_id;
     uint32_t src_ip    = rte_be_to_cpu_32(ip4->src_addr);
     uint32_t dst_ip    = rte_be_to_cpu_32(ip4->dst_addr);
@@ -527,6 +545,7 @@ int service_hotpath_process_packet(struct rte_mbuf *m, unsigned int port_id)
 void service_hotpath_tick(void)
 {
     if (!g_arr || !g_arr->slots) return;
+
 
     /* P8 step 1: derive features from this window's raw counters.
      * MUST run before the per-window reset below — the raw counters
