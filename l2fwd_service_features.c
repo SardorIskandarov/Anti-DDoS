@@ -30,6 +30,19 @@
  * inspectable. */
 #define SERVICE_FEATURES_DEFAULT_ALPHA 0.05
 
+/* Change 3: EWMA robustness tunables.
+ *  - VARIANCE_CEILING: winsorize each diff to +/- C*stddev (profile-driven;
+ *    this is the fallback when the profile is missing or unset).
+ *  - MIN_STDDEV_REL/ABS: scale-free min-stddev floor so z-scores can't go
+ *    numb. pps/bps/fps live on wildly different scales, so the floor is a
+ *    fraction of |mean|, with a tiny absolute backstop for mean ~= 0.
+ *  - WINSOR_MIN_SAMPLES: below this sample count there is no usable baseline
+ *    to clamp against, so winsorization is skipped. */
+#define SERVICE_FEATURES_DEFAULT_VARIANCE_CEILING  3.0
+#define EWMA_MIN_STDDEV_REL                        0.01   /* stddev >= 1% of |mean| */
+#define EWMA_MIN_STDDEV_ABS                        1e-6   /* mean~=0 backstop        */
+#define EWMA_WINSOR_MIN_SAMPLES                    8u     /* skip winsor below this  */
+
 /* The detection_phase enum values that the temporal aggregator counts
  * as ATTACK / SUSPICIOUS seconds. Defined in l2fwd_service_detection.h;
  * mirrored here as literals to keep this TU decoupled from the
@@ -195,7 +208,8 @@ void service_cm_src_24_reset(struct service_cm_src_24 *cm) {
  * ------------------------------------------------------------------------- */
 
 void service_ewma_update(struct service_ewma_state *state,
-                          double x, double alpha)
+                          double x, double alpha,
+                          double variance_ceiling_factor)
 {
     if (!state) return;
     if (!state->initialized) {
@@ -204,9 +218,31 @@ void service_ewma_update(struct service_ewma_state *state,
         state->initialized = true;
     } else {
         double diff = x - state->mean;
+
+        /* Change 3: winsorize the diff to +/- C*stddev, but only once a
+         * usable baseline exists (enough samples AND a positive stddev) —
+         * before that there is nothing to clamp against. The SAME clamped
+         * diff feeds BOTH the mean and the variance term, so a lone spike
+         * can neither yank the mean nor inflate variance via the diff^2
+         * term. C <= 0 disables winsorization. */
+        double stddev = (state->variance > 0.0) ? sqrt(state->variance) : 0.0;
+        if (state->sample_count >= EWMA_WINSOR_MIN_SAMPLES &&
+            variance_ceiling_factor > 0.0 && stddev > 0.0) {
+            double clamp = variance_ceiling_factor * stddev;
+            if      (diff >  clamp) diff =  clamp;
+            else if (diff < -clamp) diff = -clamp;
+        }
+
         state->mean    += alpha * diff;
         state->variance = (1.0 - alpha) *
                           (state->variance + alpha * diff * diff);
+
+        /* Change 3: scale-free min-stddev floor so z-scores can't collapse
+         * to numbness — a relative fraction of |mean| with a tiny absolute
+         * backstop for mean ~= 0. */
+        double floor = EWMA_MIN_STDDEV_REL * fabs(state->mean);
+        if (floor < EWMA_MIN_STDDEV_ABS) floor = EWMA_MIN_STDDEV_ABS;
+        if (state->variance < floor * floor) state->variance = floor * floor;
     }
     state->sample_count++;
 }
@@ -304,6 +340,16 @@ static double pick_alpha(const struct service_stats *slot) {
     return SERVICE_FEATURES_DEFAULT_ALPHA;
 }
 
+/* Returns the EWMA winsorization clamp factor (C) for this slot, mirroring
+ * pick_alpha. Defaults to SERVICE_FEATURES_DEFAULT_VARIANCE_CEILING when the
+ * profile is missing or its variance_ceiling_factor is non-positive. */
+static double pick_variance_ceiling(const struct service_stats *slot) {
+    if (slot && slot->profile && slot->profile->variance_ceiling_factor > 0.0) {
+        return slot->profile->variance_ceiling_factor;
+    }
+    return SERVICE_FEATURES_DEFAULT_VARIANCE_CEILING;
+}
+
 /* Estimate the proto-specific "flow cardinality" used for the fps
  * derived feature. Returns 0.0 when the slot kind has no flow HLL. */
 static double estimate_flows_for_kind(const struct service_stats *slot) {
@@ -333,7 +379,7 @@ static double estimate_flows_for_kind(const struct service_stats *slot) {
  * leak into any other TU that includes this file (it doesn't, but
  * defensive hygiene). */
 #define MAYBE_EWMA(state, x) do { \
-    if (!frozen) service_ewma_update((state), (x), alpha); \
+    if (!frozen) service_ewma_update((state), (x), alpha, vcf); \
 } while (0)
 
 void service_features_compute_one(struct service_stats *slot) {
@@ -345,6 +391,7 @@ void service_features_compute_one(struct service_stats *slot) {
      * persistent baseline state. */
     const bool   frozen = service_scoring_is_frozen(slot);
     const double alpha  = pick_alpha(slot);
+    const double vcf    = pick_variance_ceiling(slot);   /* Change 3 clamp factor */
 
     uint64_t inbound_pkts  = slot->common.inbound_pkts;
     uint64_t inbound_bytes = slot->common.inbound_bytes;

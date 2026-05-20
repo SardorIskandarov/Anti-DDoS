@@ -2,6 +2,11 @@
 {% block title %}Slot {{ slot_id }}{% endblock %}
 
 {% block head_extra %}
+{# Locally hosted ApexCharts — replaces Chart.js for this page only.
+   Gives every chart a built-in zoom/pan/reset toolbar (fortigate-style)
+   without a CDN dependency. ~520 KB, loaded synchronously so it's ready
+   before the IIFE in {% block scripts %} runs. #}
+<script src="/static/apexcharts.min.js"></script>
 <style>
   /* ---- per-page tab bar (scoped, does not touch global nav.tabs) ---- */
   .tab-bar {
@@ -30,6 +35,40 @@
   .chart-grid .panel { margin-bottom: 0; }
   /* analysis charts, not sparklines — override base.html's 240px box */
   .chart-grid .chart-box { height: 320px; }
+
+  /* ---- "Live traffic" hero tiles (PPS / BPS / FPS) ---- */
+  .tile.traffic { border-left: 3px solid var(--accent); }
+  .tile.traffic .value { font-size: 30px; color: var(--accent); }
+
+  /* ---- window selector (presets + custom seconds) ---- */
+  .window-toolbar {
+    display: flex; align-items: center; gap: 6px;
+    margin: 0 0 14px 0; flex-wrap: wrap;
+  }
+  .window-toolbar .window-label {
+    color: var(--text-dim); font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.6px; margin-right: 4px; font-weight: 600;
+  }
+  .window-toolbar button {
+    background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--text-dim); cursor: pointer;
+    padding: 5px 12px; border-radius: 4px;
+    font-size: 12px; font-family: inherit;
+  }
+  .window-toolbar button:hover { color: var(--text); border-color: var(--accent); }
+  .window-toolbar button.active {
+    background: var(--accent); color: var(--bg);
+    border-color: var(--accent); font-weight: 600;
+  }
+  .window-toolbar .window-custom {
+    display: flex; align-items: center; gap: 6px; margin-left: 8px;
+    color: var(--text-dim); font-size: 12px;
+  }
+  .window-toolbar .window-custom input {
+    background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 4px; padding: 4px 8px;
+    font-size: 12px; width: 90px; font-family: inherit;
+  }
 
   /* ---- protocol sub-panels ---- */
   .proto-group { display: none; }
@@ -79,12 +118,54 @@
     </div>
   </div>
 
+  <!-- live traffic hero tiles — most recent 1-second window per the engine -->
+  <div class="panel">
+    <h2>Live traffic</h2>
+    <div class="tile-grid">
+      <div class="tile traffic">
+        <div class="label">Packets / sec</div>
+        <div class="value" id="t-pps">—</div>
+      </div>
+      <div class="tile traffic">
+        <div class="label">Bytes / sec</div>
+        <div class="value" id="t-bps">—</div>
+      </div>
+      <div class="tile traffic">
+        <div class="label">Flows / sec</div>
+        <div class="value" id="t-fps">—</div>
+      </div>
+      <div class="tile traffic">
+        <div class="label">Unique source IPs</div>
+        <div class="value" id="t-src-ips">—</div>
+      </div>
+      <div class="tile traffic">
+        <div class="label">Unique dst ports</div>
+        <div class="value" id="t-dst-ports">—</div>
+      </div>
+    </div>
+  </div>
+
   <!-- tier-1 component scores (kept as-is, above the tabs) -->
   <div class="panel">
     <h2>Tier-1 component scores</h2>
     <div class="tile-grid" id="sd-tier1-grid">
       <div class="tile"><div class="label">loading…</div><div class="value">—</div></div>
     </div>
+  </div>
+
+  <!-- ===== window selector — applies to every chart on this page ===== -->
+  <div class="window-toolbar" id="sd-window">
+    <span class="window-label">Window</span>
+    <button data-window="60">1m</button>
+    <button data-window="300">5m</button>
+    <button data-window="900">15m</button>
+    <button data-window="3600">1h</button>
+    <button data-window="21600">6h</button>
+    <button data-window="86400">24h</button>
+    <label class="window-custom">Custom
+      <input id="window-custom" type="number" min="10" max="86400"
+             step="10" placeholder="seconds">
+    </label>
   </div>
 
   <!-- ===== tab bar ===== -->
@@ -149,7 +230,11 @@
   "use strict";
 
   const SLOT_ID   = {{ slot_id }};
-  const TS_WINDOW = {{ config.DASHBOARD_TIMESERIES_WINDOW_SECONDS }};
+  // Mutable so the window-toolbar can retune it at runtime. Backend
+  // accepts 10..86400 seconds (see api_slot_timeseries clamp in web.py).
+  let TS_WINDOW = {{ config.DASHBOARD_TIMESERIES_WINDOW_SECONDS }};
+  const TS_WINDOW_MIN = 10;
+  const TS_WINDOW_MAX = 86400;
 
   // ---- module state ----
   let latestTs   = null;   // last /timeseries response
@@ -157,8 +242,11 @@
   let activeTab  = "overview";
   const charts   = {};     // canvasId -> Chart instance (lazy-created)
 
-  const PHASE_LINE_COLOR = { 0: "#8b949e", 1: "#3fb950",
-                             2: "#d29922", 3: "#f85149" };
+  // Charts the user has zoomed/panned into. We skip data updates for
+  // these on each refresh tick so a 1-second auto-refresh doesn't keep
+  // yanking them back to the live window. Cleared when the user clicks
+  // the chart's "reset zoom" button (beforeResetZoom event).
+  const zoomedCharts = new Set();
 
   // ---- raw / feature / tier-1 field groupings (unchanged) ----
   const RAW_FIELDS = [
@@ -314,15 +402,6 @@
   ];
 
   // ---- helpers ----
-  function hexA(hex, a) {
-    const n = parseInt(hex.slice(1), 16);
-    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
-  }
-  function shortTs(iso) {
-    const d = new Date(iso);
-    if (isNaN(d)) return iso;
-    return d.toLocaleTimeString("en-US", { hour12: false });
-  }
   // compact large axis numbers: 8000 -> 8K, 9000000 -> 9M, 1.2e9 -> 1.2G
   function compactNum(v) {
     v = Number(v);
@@ -385,48 +464,98 @@
     }).join("");
   }
 
-  // ---- chart options (base style preserved from the old template) ----
-  function chartOpts(yLabel) {
-    return {
-      responsive: true, maintainAspectRatio: false,
-      animation: false,
-      interaction: { mode: "index", intersect: false },
-      // NOTE: parsing must stay enabled. The timeseries API gives us
-      // plain number arrays + a separate `labels` array; `parsing:false`
-      // would make Chart.js expect pre-built {x,y} objects and silently
-      // render nothing (this is why charts looked empty in every state,
-      // WARMUP included). normalized:true is kept — our series are
-      // index-aligned and equal-length, which is exactly its use case.
-      scales: {
-        x: { ticks: { color: "#8b949e", maxRotation: 0, autoSkip: true,
-                      maxTicksLimit: 6 },
-             grid: { color: "#21262d" } },
-        y: { title: { display: true, text: yLabel, color: "#8b949e" },
-             ticks: { color: "#8b949e" }, grid: { color: "#21262d" },
-             beginAtZero: true },
-      },
-      plugins: { legend: { labels: { color: "#c9d1d9" } } },
-    };
-  }
+  // ---- ApexCharts options builder ----
+  // Each spec becomes one ApexCharts config: dark theme, datetime x-axis,
+  // built-in zoom/pan/reset toolbar (top-right), no animations (so 1Hz
+  // refresh feels instant), and a `events.zoomed` hook that tracks
+  // user-zoomed charts so the refresh loop leaves them alone.
   function buildOpts(spec) {
-    const o = chartOpts(spec.yLabel);
-    if (spec.yMin !== undefined) o.scales.y.min = spec.yMin;
-    if (spec.yMax !== undefined) o.scales.y.max = spec.yMax;
-    if (spec.yBeginAtZero === false) o.scales.y.beginAtZero = false;
+    const single = spec.datasets.length === 1;
+    const colors = spec.datasets.map(d => d.color);
+    const o = {
+      chart: {
+        type: single ? "area" : "line",
+        height: "100%",
+        background: "transparent",
+        foreColor: "#8b949e",
+        fontFamily: "inherit",
+        animations: { enabled: false, dynamicAnimation: { enabled: false } },
+        toolbar: {
+          show: true,
+          autoSelected: "zoom",
+          tools: {
+            download: false, selection: true, zoom: true,
+            zoomin: true, zoomout: true, pan: true, reset: true,
+          },
+        },
+        zoom: { enabled: true, type: "x", autoScaleYaxis: true },
+        redrawOnParentResize: true,
+        events: {
+          zoomed: function (chartCtx, { xaxis }) {
+            // Treat any zoom/pan with bounded x range as "user zoomed".
+            // ApexCharts also fires zoomed when programmatic updates resize
+            // the chart; the bounded-range check filters those out.
+            if (xaxis && (xaxis.min || xaxis.max)) {
+              zoomedCharts.add(spec.canvas);
+            }
+          },
+          beforeResetZoom: function () { zoomedCharts.delete(spec.canvas); },
+        },
+      },
+      theme: { mode: "dark" },
+      colors: colors,
+      series: spec.datasets.map(d => ({
+        name: d.label || (d.labelByProto ? d.labelByProto[protoGroup] : ""),
+        data: [],
+      })),
+      stroke: { curve: spec.stepped ? "stepline" : "smooth", width: 2 },
+      fill: single
+        ? { type: "gradient", gradient: { shadeIntensity: 1,
+                                          opacityFrom: 0.25, opacityTo: 0 } }
+        : { type: "solid", opacity: 0 },
+      markers: { size: 0, hover: { size: 4 } },
+      dataLabels: { enabled: false },
+      legend: {
+        show: !single, position: "top", horizontalAlign: "right",
+        labels: { colors: "#c9d1d9" },
+      },
+      tooltip: {
+        theme: "dark", shared: true,
+        x: { format: "HH:mm:ss" },
+      },
+      grid: { borderColor: "#21262d", strokeDashArray: 0 },
+      xaxis: {
+        type: "datetime",
+        labels: {
+          datetimeUTC: false,
+          format: "HH:mm:ss",
+          style: { colors: "#8b949e" },
+        },
+        axisBorder: { color: "#21262d" },
+        axisTicks: { color: "#21262d" },
+      },
+      yaxis: {
+        labels: { style: { colors: "#8b949e" }, formatter: compactNum },
+        axisBorder: { color: "#21262d" },
+      },
+      noData: { text: "No data yet", style: { color: "#8b949e" } },
+    };
+    if (spec.yMin !== undefined) o.yaxis.min = spec.yMin;
+    if (spec.yMax !== undefined) o.yaxis.max = spec.yMax;
     if (spec.yDecimals !== undefined) {
       const d = spec.yDecimals;
-      o.scales.y.ticks.callback = (v) => Number(v).toFixed(d);
-    } else if (spec.phase) {
-      o.scales.y.ticks.stepSize = 1;
-      o.scales.y.ticks.callback = (v) => PHASE_NAMES[v] || v;
-    } else {
-      // compact large counts on the y-axis: 8000 -> 8K, 9e6 -> 9M
-      o.scales.y.ticks.callback = (v) => compactNum(v);
+      o.yaxis.labels.formatter = (v) => Number(v).toFixed(d);
+    }
+    if (spec.phase) {
+      o.yaxis.min = 0; o.yaxis.max = 3; o.yaxis.tickAmount = 3;
+      o.yaxis.labels.formatter = (v) => PHASE_NAMES[Math.round(v)] || "";
     }
     return o;
   }
 
-  // ---- DOM: build one .panel + canvas per spec, into its grid ----
+  // ---- DOM: build one .panel + render-target div per spec, into its grid.
+  // ApexCharts renders into a <div> (Chart.js used <canvas>); the `canvas`
+  // field in CHART_SPECS still names the element id for backwards-compat.
   function buildChartDom() {
     CHART_SPECS.forEach(spec => {
       const grid = document.getElementById(spec.grid);
@@ -438,47 +567,23 @@
       h2.textContent = spec.title;
       const box = document.createElement("div");
       box.className = "chart-box";
-      const cv = document.createElement("canvas");
-      cv.id = spec.canvas;
-      box.appendChild(cv);
+      const target = document.createElement("div");
+      target.id = spec.canvas;
+      target.style.height = "100%";
+      box.appendChild(target);
       panel.appendChild(h2);
       panel.appendChild(box);
       grid.appendChild(panel);
     });
   }
 
-  // ---- lazy chart creation: build the Chart only on first render ----
+  // ---- lazy chart creation: build the ApexCharts instance on first render
+  // (and never for charts that are filtered out by protoGroup / conditional).
   function ensureChart(spec) {
     if (charts[spec.canvas]) return charts[spec.canvas];
-    const single = spec.datasets.length === 1;
-    const datasets = spec.datasets.map(ds => {
-      const d = {
-        label: ds.label || (ds.labelByProto ? ds.labelByProto[protoGroup] : ""),
-        data: [],
-        borderColor: ds.color,
-        backgroundColor: single ? hexA(ds.color, 0.12) : "transparent",
-        borderWidth: 2, pointRadius: 0, pointHoverRadius: 3,
-        fill: single, tension: spec.stepped ? 0 : 0.3,
-        stepped: !!spec.stepped,
-      };
-      if (spec.phase) {
-        d.segment = {
-          borderColor: (ctx) =>
-            PHASE_LINE_COLOR[ctx.p0.parsed.y] ?? ds.color,
-        };
-      }
-      return d;
-    });
     const opts = buildOpts(spec);
-    // single-series charts: the panel title already names the metric,
-    // so the floating legend is just noise — hide it (vendor-style).
-    if (single) opts.plugins.legend.display = false;
-    const ch = new Chart(document.getElementById(spec.canvas), {
-      type: "line",
-      data: { labels: [], datasets },
-      options: opts,
-      normalized: true,
-    });
+    const ch = new ApexCharts(document.getElementById(spec.canvas), opts);
+    ch.render();
     charts[spec.canvas] = ch;
     return ch;
   }
@@ -513,26 +618,34 @@
     if (os) os.style.display = (protoGroup === "other") ? "" : "none";
   }
 
-  // ---- render: update only the active tab's charts (lazy-created) ----
+  // ---- render: update only the active tab's charts (lazy-created).
+  // Data is emitted as [timestamp_ms, value] tuples so ApexCharts can drive
+  // a real datetime x-axis (toolbar zoom/pan/reset show absolute times).
+  // We still downsample to ~MAX_POINTS for a clean default view; the user
+  // can then zoom into any sub-window. Charts the user has zoomed into are
+  // intentionally skipped — see the zoomedCharts set above.
   function renderTab(tab) {
     if (tab === "protocol")  applyProtocolVisibility();
     if (tab === "detection") applyDetectionVisibility();
     if (!latestTs) return;
-    // bucket raw 1s samples down to ~MAX_POINTS so the lines read cleanly
     const ranges = bucketRanges(latestTs.timestamps.length);
-    const labels = ranges.map(([a]) => shortTs(latestTs.timestamps[a]));
+    const ts_ms  = ranges.map(([a]) => new Date(latestTs.timestamps[a]).getTime());
     CHART_SPECS.forEach(spec => {
       if (spec.tab !== tab) return;
       if (!isSpecVisible(spec)) return;   // hidden -> no Chart object created
       const ch = ensureChart(spec);
-      ch.data.labels = labels;
-      spec.datasets.forEach((ds, i) => {
+      if (zoomedCharts.has(spec.canvas)) return;   // user is zoomed in
+      const newSeries = spec.datasets.map(ds => {
         const f = dsField(ds);
-        ch.data.datasets[i].data = (f && latestTs[f])
+        const vals = (f && latestTs[f])
           ? aggregate(latestTs[f], ranges, spec.agg || "avg")
           : [];
+        return {
+          name: ds.label || (ds.labelByProto ? ds.labelByProto[protoGroup] : ""),
+          data: vals.map((v, i) => [ts_ms[i], v]),
+        };
       });
-      ch.update("none");
+      ch.updateSeries(newSeries, false);   // false = no animation
     });
   }
 
@@ -578,6 +691,26 @@
       document.getElementById("t-freeze").textContent =
         `${fmtNum(s.baseline_freeze_remaining)} / ${fmtNum(s.thaw_cooldown_remaining)}`;
 
+      // Live-traffic hero tiles: latest 1-second window from the engine.
+      // inbound_pkts / inbound_bytes / unique_flows are per-1s-window
+      // values, so they directly represent current PPS / BPS / FPS.
+      document.getElementById("t-pps").textContent =
+        compactNum(Number(s.inbound_pkts) || 0);
+      document.getElementById("t-bps").textContent =
+        fmtBytes(Number(s.inbound_bytes) || 0) + "/s";
+      document.getElementById("t-fps").textContent =
+        compactNum(Math.round(Number(s.unique_flows) || 0));
+      document.getElementById("t-src-ips").textContent =
+        compactNum(Math.round(Number(s.unique_src_ips) || 0));
+      // unique_dst_ports is not yet emitted by the per-service wire
+      // protocol — named-service slots have exactly one port anyway, so
+      // "1" is the right default. The day the engine starts shipping a
+      // real dst-port HLL, this tile will pick it up automatically.
+      document.getElementById("t-dst-ports").textContent =
+        (s.unique_dst_ports == null)
+          ? "1"
+          : compactNum(Math.round(Number(s.unique_dst_ports) || 0));
+
       // tier-1 component grid
       document.getElementById("sd-tier1-grid").innerHTML =
         TIER1_FIELDS.map(([f, label]) => `
@@ -618,13 +751,53 @@
     }
   }
 
+  // ---- window selector wireup ----
+  // Mark whichever preset button matches the current TS_WINDOW (if any).
+  // No match (custom value) -> all preset buttons inactive; the input
+  // displays the active value.
+  function syncWindowButtons() {
+    document.querySelectorAll("#sd-window button[data-window]").forEach(b =>
+      b.classList.toggle("active", Number(b.dataset.window) === TS_WINDOW));
+    const ci = document.getElementById("window-custom");
+    if (ci && document.activeElement !== ci) ci.value = TS_WINDOW;
+  }
+  // Refresh cadence scales with window: hammering ClickHouse with a 24-hour
+  // query every 1s would cripple it. ≤5m → REFRESH_MS (1s); ≤1h → 10s; >1h → 60s.
+  let refreshTimer = null;
+  function startRefresh() {
+    if (refreshTimer) clearInterval(refreshTimer);
+    let intervalMs;
+    if      (TS_WINDOW <=  300) intervalMs = REFRESH_MS;
+    else if (TS_WINDOW <= 3600) intervalMs = 10 * 1000;
+    else                        intervalMs = 60 * 1000;
+    refreshTimer = setInterval(refreshDetail, intervalMs);
+  }
+  // Apply a new window: clamp, sync UI, reset any chart-level zoom (the
+  // visible range itself just changed), refetch, restart the timer.
+  function setWindow(seconds) {
+    const next = Math.max(TS_WINDOW_MIN, Math.min(Number(seconds), TS_WINDOW_MAX));
+    if (!Number.isFinite(next) || next === TS_WINDOW) { syncWindowButtons(); return; }
+    TS_WINDOW = next;
+    zoomedCharts.clear();
+    syncWindowButtons();
+    refreshDetail();
+    startRefresh();
+  }
+
   // ---- wire up ----
   buildChartDom();
   document.querySelectorAll("#sd-tabbar button").forEach(b =>
     b.addEventListener("click", () => switchTab(b.dataset.tab)));
+  document.querySelectorAll("#sd-window button[data-window]").forEach(b =>
+    b.addEventListener("click", () => setWindow(Number(b.dataset.window))));
+  document.getElementById("window-custom").addEventListener("change", (e) => {
+    const v = parseInt(e.target.value, 10);
+    if (Number.isFinite(v)) setWindow(v);
+  });
+  syncWindowButtons();
 
   refreshDetail();
-  setInterval(refreshDetail, REFRESH_MS);
+  startRefresh();
 })();
 </script>
 {% endblock %}

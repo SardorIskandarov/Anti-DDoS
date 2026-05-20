@@ -44,6 +44,27 @@
 #define SCORING_DEFAULT_FREEZE_WINDOWS          60   /* baseline freeze ticks   */
 #define SCORING_DEFAULT_THAW_WINDOWS            30   /* post-attack cautious    */
 
+/* Tier-0 gate: burst channels scored by EWMA z-score (change 2). */
+#define SCORING_BURST_Z_THRESHOLD          15.0
+
+/* Tier-0 weighted-risk fusion weights (change 1). */
+#define SCORING_T0_W_PPS                    2.5
+#define SCORING_T0_W_BPS                    1.5
+#define SCORING_T0_W_FPS                    0.5
+#define SCORING_T0_W_BURST_PPS              0.8
+#define SCORING_T0_W_BURST_BPS              0.6
+#define SCORING_T0_W_BURST_FPS              0.3
+
+/* R0 >= this opens the gate (Tier-0 Suspicious-or-Attack). Max
+ * achievable R0 with the weights above is 6.2, so keep this below
+ * that. The attack-level label is observability only in a gated
+ * design — Tier-1 decides severity. */
+#define SCORING_T0_GATE_RISK_THRESHOLD      5.0
+#define SCORING_T0_ATTACK_RISK_THRESHOLD    6.0
+
+/* Change 4: N consecutive Tier-0 gate-opens before Tier-1 runs. */
+#define SCORING_GATE_PERSISTENCE_WINDOWS    3u
+
 /* Volume gate: don't score a slot until we've seen at least this many
  * inbound packets in the current window. Prevents single-packet false
  * positives on quiet services. */
@@ -159,6 +180,15 @@ void service_scoring_cusum_reset(struct service_cusum_state *state) {
  * Tier-0: volumetric ramp detection across 6 channels
  * ------------------------------------------------------------------------- */
 
+/* CHANGE 2: burst risk via EWMA z-score, NOT CUSUM. */
+static double burst_z_risk(const struct service_ewma_state *ewma_burst,
+                           double z_last)
+{
+    double z = service_ewma_z_score(ewma_burst, z_last);
+    double r = fabs(z) / SCORING_BURST_Z_THRESHOLD;
+    return (r > 1.0) ? 1.0 : r;
+}
+
 double service_scoring_tier0_evaluate(struct service_stats *slot)
 {
     if (!slot || !slot->detection_state) return 0.0;
@@ -167,66 +197,74 @@ double service_scoring_tier0_evaluate(struct service_stats *slot)
     const double k = SCORING_DEFAULT_TIER0_K;
     const double h = SCORING_DEFAULT_TIER0_H;
 
-    int    breaches = 0;
-    double max_S    = 0.0;
+    /* CHANGE 4: under the full ATTACK-freeze the CUSUM accumulators are
+     * HELD — we do not call service_scoring_cusum_update, so S_plus/S_minus/
+     * last_value are left exactly as they were and resume on thaw. R0 is
+     * recomputed from the frozen S_plus (no accumulator mutation). The
+     * EWMA-only freeze does NOT freeze CUSUM: CUSUM is what detects the
+     * ramp, so it must stay live there. */
+    const bool cusum_frozen = service_scoring_cusum_is_frozen(slot);
 
-    /* --- pps --- */
+    /* --- CHANGE 1: CUSUM only on pps, bps, fps --- */
+    double r_pps = 0.0, r_bps = 0.0, r_fps = 0.0;
     {
-        double x      = (double)slot->common.inbound_pkts;
-        double mean   = slot->common_ewma.pps.mean;
-        double stddev = stddev_of(&slot->common_ewma.pps);
-        if (service_scoring_cusum_update(&det->cusum_pps, x, mean, stddev, k, h))
-            breaches++;
-        if (det->cusum_pps.S_plus > max_S) max_S = det->cusum_pps.S_plus;
-        det->last_tier0_risk_pps = fmin(1.0, det->cusum_pps.S_plus / h);
-    }
-    /* --- bps --- */
-    {
-        double x      = (double)slot->common.inbound_bytes * 8.0;
-        double mean   = slot->common_ewma.bps.mean;
-        double stddev = stddev_of(&slot->common_ewma.bps);
-        if (service_scoring_cusum_update(&det->cusum_bps, x, mean, stddev, k, h))
-            breaches++;
-        if (det->cusum_bps.S_plus > max_S) max_S = det->cusum_bps.S_plus;
-        det->last_tier0_risk_bps = fmin(1.0, det->cusum_bps.S_plus / h);
-    }
-    /* --- fps (flows per second; estimated from the HLL) --- */
-    {
-        double x      = service_hll_estimate(&slot->common.unique_flows);
-        double mean   = slot->common_ewma.fps.mean;
-        double stddev = stddev_of(&slot->common_ewma.fps);
-        if (service_scoring_cusum_update(&det->cusum_fps, x, mean, stddev, k, h))
-            breaches++;
-        if (det->cusum_fps.S_plus > max_S) max_S = det->cusum_fps.S_plus;
-        det->last_tier0_risk_fps = fmin(1.0, det->cusum_fps.S_plus / h);
-    }
-    /* --- burst variants: z_last is already standardised; mean=0, std=1 --- */
-    {
-        double x = slot->common.bw_pps.z_last;
-        if (service_scoring_cusum_update(&det->cusum_burst_pps, x, 0.0, 1.0, k, h))
-            breaches++;
-        det->last_tier0_risk_burst_pps =
-            fmin(1.0, det->cusum_burst_pps.S_plus / h);
+        if (!cusum_frozen) {
+            double x      = (double)slot->common.inbound_pkts;
+            double mean   = slot->common_ewma.pps.mean;
+            double stddev = stddev_of(&slot->common_ewma.pps);
+            if (service_scoring_cusum_update(&det->cusum_pps, x, mean, stddev, k, h))
+                r_pps = fmin(1.0, det->cusum_pps.S_plus / h);
+        } else {
+            r_pps = fmin(1.0, det->cusum_pps.S_plus / h);   /* held value */
+        }
+        det->last_tier0_risk_pps = r_pps;
     }
     {
-        double x = slot->common.bw_bps.z_last;
-        if (service_scoring_cusum_update(&det->cusum_burst_bps, x, 0.0, 1.0, k, h))
-            breaches++;
-        det->last_tier0_risk_burst_bps =
-            fmin(1.0, det->cusum_burst_bps.S_plus / h);
+        if (!cusum_frozen) {
+            double x      = (double)slot->common.inbound_bytes * 8.0;
+            double mean   = slot->common_ewma.bps.mean;
+            double stddev = stddev_of(&slot->common_ewma.bps);
+            if (service_scoring_cusum_update(&det->cusum_bps, x, mean, stddev, k, h))
+                r_bps = fmin(1.0, det->cusum_bps.S_plus / h);
+        } else {
+            r_bps = fmin(1.0, det->cusum_bps.S_plus / h);   /* held value */
+        }
+        det->last_tier0_risk_bps = r_bps;
     }
     {
-        double x = slot->common.bw_fps.z_last;
-        if (service_scoring_cusum_update(&det->cusum_burst_fps, x, 0.0, 1.0, k, h))
-            breaches++;
-        det->last_tier0_risk_burst_fps =
-            fmin(1.0, det->cusum_burst_fps.S_plus / h);
+        if (!cusum_frozen) {
+            double x      = service_hll_estimate(&slot->common.unique_flows);
+            double mean   = slot->common_ewma.fps.mean;
+            double stddev = stddev_of(&slot->common_ewma.fps);
+            if (service_scoring_cusum_update(&det->cusum_fps, x, mean, stddev, k, h))
+                r_fps = fmin(1.0, det->cusum_fps.S_plus / h);
+        } else {
+            r_fps = fmin(1.0, det->cusum_fps.S_plus / h);   /* held value */
+        }
+        det->last_tier0_risk_fps = r_fps;
     }
 
-    /* Composite Tier-0 score: how many channels breached, scaled by the
-     * worst S_plus / h ratio. Capped at 1.0. */
-    double score = ((double)breaches / 6.0) * fmin(1.0, max_S / h);
-    return fmin(1.0, score);
+    /* --- CHANGE 2: burst channels by z-score (NO CUSUM) --- */
+    double r_bpps = burst_z_risk(&slot->common_ewma.burst_pps,
+                                 slot->common.bw_pps.z_last);
+    double r_bbps = burst_z_risk(&slot->common_ewma.burst_bps,
+                                 slot->common.bw_bps.z_last);
+    double r_bfps = burst_z_risk(&slot->common_ewma.burst_fps,
+                                 slot->common.bw_fps.z_last);
+    det->last_tier0_risk_burst_pps = r_bpps;
+    det->last_tier0_risk_burst_bps = r_bbps;
+    det->last_tier0_risk_burst_fps = r_bfps;
+
+    /* --- Weighted composite risk (restores the per-IP design) --- */
+    double R0 = SCORING_T0_W_PPS       * r_pps
+              + SCORING_T0_W_BPS       * r_bps
+              + SCORING_T0_W_FPS       * r_fps
+              + SCORING_T0_W_BURST_PPS * r_bpps
+              + SCORING_T0_W_BURST_BPS * r_bbps
+              + SCORING_T0_W_BURST_FPS * r_bfps;
+
+    det->last_tier0_score = R0;
+    return R0;
 }
 
 /* -------------------------------------------------------------------------
@@ -483,6 +521,47 @@ double service_scoring_combine(struct service_stats *slot)
 }
 
 /* -------------------------------------------------------------------------
+ * Phase-machine helpers
+ * ------------------------------------------------------------------------- */
+
+/* EWMA-only-freeze duration (Change 2). Profile-driven; falls back to the
+ * legacy freeze-window default when the profile is missing or unset. */
+static uint32_t pick_ewma_freeze_windows(const struct l2_profile *p) {
+    if (p && p->baseline_freeze_windows > 0) return p->baseline_freeze_windows;
+    return SCORING_DEFAULT_FREEZE_WINDOWS;
+}
+
+/* Number of consecutive NORMAL windows required to release the full
+ * ATTACK-freeze (Change 4). Profile-driven with the same fallback rule. */
+static uint32_t pick_thaw_windows(const struct l2_profile *p) {
+    if (p && p->thaw_cooldown_windows > 0) return p->thaw_cooldown_windows;
+    return SCORING_DEFAULT_THAW_WINDOWS;
+}
+
+/* CHANGE 1: absolute volumetric floor. Reads the SAME raw window inputs as
+ * Tier-0 — never the EWMA/CUSUM baseline — so it fires even when the
+ * baseline is cold or poisoned. A profile threshold of 0.0 disables that
+ * channel (0 is "off", not a real floor). Breach if ANY enabled channel
+ * meets-or-exceeds its threshold. */
+static bool tier0_absolute_breach(const struct service_stats *slot,
+                                  const struct l2_profile *p)
+{
+    if (!slot || !p) return false;
+
+    double pps = (double)slot->common.inbound_pkts;
+    double bps = (double)slot->common.inbound_bytes * 8.0;
+    double fps = service_hll_estimate(&slot->common.unique_flows);
+
+    if (p->absolute_pps_threshold > 0.0 && pps >= p->absolute_pps_threshold)
+        return true;
+    if (p->absolute_bps_threshold > 0.0 && bps >= p->absolute_bps_threshold)
+        return true;
+    if (p->absolute_fps_threshold > 0.0 && fps >= p->absolute_fps_threshold)
+        return true;
+    return false;
+}
+
+/* -------------------------------------------------------------------------
  * Phase machine
  * ------------------------------------------------------------------------- */
 
@@ -490,123 +569,167 @@ void service_scoring_update_phase(struct service_stats *slot)
 {
     if (!slot || !slot->detection_state) return;
     struct service_detection_state *det = det_of(slot);
+    const struct l2_profile *prof = det->profile;
 
-    /* Always evaluate both tiers so the dashboard has consistent scores.
-     * Tier-0 is a no-op when the EWMA hasn't built a baseline yet
-     * (stddev < ε); same for Tier-1's z-score-based channels. */
-    double t0 = service_scoring_tier0_evaluate(slot);
-    double t1 = service_scoring_combine(slot);
-    det->last_tier0_score     = t0;
-    det->last_attack_evidence = fmax(t0, t1);
+    /* 1. Tier-0 weighted risk. Honors the CUSUM freeze internally. */
+    double R0 = service_scoring_tier0_evaluate(slot);
 
-    /* Learning mode: the Tier-0 / Tier-1 scores above are still computed
-     * and cached (we want that data in ClickHouse for threshold tuning),
-     * but the slot's phase is frozen at its initial value — no
-     * WARMUP->NORMAL, no NORMAL->SUSPICIOUS->ATTACK, no recovery, and
-     * therefore no rows written to service_phase_transitions. EWMA
-     * baselines are untouched here regardless (they update in the
-     * feature-extraction layer). windows_seen still advances so the tick
-     * counter stays meaningful. Used for the 5-7 day data-collection
-     * period before detection thresholds are tuned. */
+    /* 2. Absolute volumetric floor (Change 1). Provenance flag is written
+     *    every window so it is visible in learning/warmup modes too. */
+    bool abs_breach = tier0_absolute_breach(slot, prof);
+    det->last_absolute_floor_fired = abs_breach;
+
+    /* 3. Tier-0 3-level state + gate-fire signal (gate opens on Suspicious
+     *    OR Attack risk). */
+    int t0_state;
+    if      (R0 >= SCORING_T0_ATTACK_RISK_THRESHOLD) t0_state = SERVICE_DET_PHASE_ATTACK;
+    else if (R0 >= SCORING_T0_GATE_RISK_THRESHOLD)   t0_state = SERVICE_DET_PHASE_SUSPICIOUS;
+    else                                             t0_state = SERVICE_DET_PHASE_NORMAL;
+    bool t0_fired = (t0_state != SERVICE_DET_PHASE_NORMAL);
+
+    /* 4. Learning mode: compute + cache Tier-1 for the dashboard, but never
+     *    transition (flag from step 2 is already set). */
     const struct service_registry *reg = service_registry_get_global();
     if (reg && reg->learning_mode) {
+        (void)service_scoring_combine(slot);
+        det->last_attack_evidence = R0;
         det->windows_seen++;
         return;
     }
 
     uint8_t old_phase = det->phase;
 
-    /* Decrement countdowns regardless of phase (the freeze/thaw counters
-     * are independent of the phase machine — they can outlast a single
-     * NORMAL→ATTACK→NORMAL cycle for protective effect). */
-    if (det->baseline_freeze_remaining > 0) det->baseline_freeze_remaining--;
-    if (det->thaw_cooldown_remaining   > 0) det->thaw_cooldown_remaining--;
+    /* 5. Tick the freeze countdown. ewma_freeze_remaining is the authoritative
+     *    EWMA-only countdown; the wire-facing baseline_freeze_remaining /
+     *    thaw_cooldown_remaining are DERIVED at the end of this window. */
+    if (det->ewma_freeze_remaining > 0) det->ewma_freeze_remaining--;
 
+    /* 6. Warmup: hold phase, keep Tier-1 scores live for the dashboard. */
     if (det->warmup_remaining > 0) {
         det->warmup_remaining--;
         det->warmup_windows_completed++;
-        if (det->warmup_remaining == 0 &&
-            det->phase == SERVICE_DET_PHASE_WARMUP) {
+        (void)service_scoring_combine(slot);
+        det->last_attack_evidence = R0;
+        if (det->warmup_remaining == 0 && det->phase == SERVICE_DET_PHASE_WARMUP)
             det->phase = SERVICE_DET_PHASE_NORMAL;
-        }
+        goto wire_and_log;
+    }
+
+    /* Default to the prior phase: if any future code path reaches a reader
+     * without assigning, the slot safely holds its phase (a no-op) rather
+     * than reading an indeterminate value. */
+    uint8_t new_phase = old_phase;
+
+    if (abs_breach) {
+        /* 7. CHANGE 1: absolute floor forces ATTACK now — bypass the
+         *    persistence gate and the Tier-1 decision entirely. Still call
+         *    combine() so the per-channel sub-scores populate for the
+         *    dashboard, but the phase is ATTACK regardless of T1. */
+        (void)service_scoring_combine(slot);
+        /* Evidence stays the honest Tier-0 number even though the phase is forced
+         * ATTACK. On a poisoned/cold baseline R0 may read low while the absolute
+         * floor fires — that is expected; provenance is last_absolute_floor_fired,
+         * surfaced first-class on the dashboard in a later change. */
+        det->last_attack_evidence = R0;
+        new_phase = SERVICE_DET_PHASE_ATTACK;
+        /* Absolute-breach windows intentionally seed the Tier-1 gate streak: if
+         * this attack later decays below the absolute floor but stays elevated,
+         * the normal persistence gate is already warm and Tier-1 takes over
+         * seamlessly instead of restarting the streak from zero. */
+        if (det->consecutive_attack_windows < 0xFFFFFFFFu)
+            det->consecutive_attack_windows++;
     } else {
-        double score = det->last_attack_evidence;
-
-        switch (det->phase) {
-        case SERVICE_DET_PHASE_WARMUP:
-            /* Belt-and-braces — warmup_remaining hit 0 above without us
-             * flipping the phase. Same transition happens here. */
-            det->phase = SERVICE_DET_PHASE_NORMAL;
-            break;
-
-        case SERVICE_DET_PHASE_NORMAL:
-            if (score > SCORING_DEFAULT_SUSPICIOUS_THRESHOLD) {
-                det->phase                     = SERVICE_DET_PHASE_SUSPICIOUS;
-                det->consecutive_attack_windows = 1;
-            }
-            break;
-
-        case SERVICE_DET_PHASE_SUSPICIOUS:
-            if (score > SCORING_DEFAULT_ATTACK_THRESHOLD) {
+        /* 8. Persistence gate BETWEEN the tiers, then the Tier-1 cascade. */
+        if (t0_fired) {
+            if (det->consecutive_attack_windows < 0xFFFFFFFFu)
                 det->consecutive_attack_windows++;
-                if (det->consecutive_attack_windows >=
-                    SCORING_DEFAULT_PERSISTENCE_WINDOWS) {
-                    det->phase                     = SERVICE_DET_PHASE_ATTACK;
-                    det->baseline_freeze_remaining = SCORING_DEFAULT_FREEZE_WINDOWS;
-                    /* Reset the counter so ATTACK→NORMAL recovery has a
-                     * deterministic countdown starting from the
-                     * RECOVERY_WINDOWS_ATK value seeded below. */
-                    det->consecutive_attack_windows =
-                        SCORING_DEFAULT_RECOVERY_WINDOWS_ATK;
-                }
-            } else if (score < SCORING_DEFAULT_RECOVERY_THRESHOLD) {
-                if (det->consecutive_attack_windows > 0)
-                    det->consecutive_attack_windows--;
-                if (det->consecutive_attack_windows == 0)
-                    det->phase = SERVICE_DET_PHASE_NORMAL;
-            }
-            /* score in middle band (recovery..suspicious) → hold steady. */
-            break;
+        } else {
+            det->consecutive_attack_windows = 0;
+        }
+        bool gate_open =
+            (det->consecutive_attack_windows >= SCORING_GATE_PERSISTENCE_WINDOWS);
 
-        case SERVICE_DET_PHASE_ATTACK:
-            if (score < SCORING_DEFAULT_RECOVERY_THRESHOLD) {
-                if (det->consecutive_attack_windows > 0)
-                    det->consecutive_attack_windows--;
-                if (det->consecutive_attack_windows == 0) {
-                    det->phase = SERVICE_DET_PHASE_NORMAL;
-                    det->thaw_cooldown_remaining = SCORING_DEFAULT_THAW_WINDOWS;
-                }
-            } else {
-                /* Still attacked. Re-seed the recovery counter — every
-                 * elevated window resets the path back to NORMAL. */
-                det->consecutive_attack_windows =
-                    SCORING_DEFAULT_RECOVERY_WINDOWS_ATK;
-            }
-            break;
+        if (!gate_open) {
+            new_phase = SERVICE_DET_PHASE_NORMAL;
+            det->last_tier1_evaluated = false;
+            det->last_attack_evidence = R0;
+        } else {
+            double T1 = service_scoring_combine(slot);
+            det->last_attack_evidence = T1;
+            if      (T1 >= SCORING_DEFAULT_ATTACK_THRESHOLD)     new_phase = SERVICE_DET_PHASE_ATTACK;
+            else if (T1 >= SCORING_DEFAULT_SUSPICIOUS_THRESHOLD) new_phase = SERVICE_DET_PHASE_SUSPICIOUS;
+            else                                                 new_phase = SERVICE_DET_PHASE_NORMAL; /* veto */
+        }
 
-        default:
-            break;
+        /* CHANGE 2: the instant Tier-0 fires, arm the EWMA-only freeze —
+         *  protect the baseline from ramp poisoning before Tier-1 confirms. */
+        if (t0_fired) {
+            uint32_t fw = pick_ewma_freeze_windows(prof);
+            if (det->ewma_freeze_remaining < fw)
+                det->ewma_freeze_remaining = fw;
         }
     }
 
-    /* Log phase transitions. Both warmup completion and steady-state
-     * transitions feed through here. */
+    det->phase = new_phase;
+
+    /* 9. CHANGE 4: full-freeze (EWMA+CUSUM) arm/release bookkeeping.
+     *    Entering/holding ATTACK (via Tier-1 OR the absolute floor) arms the
+     *    full freeze and resets the recovery streak. The freeze releases
+     *    ONLY after thaw_count consecutive NORMAL windows; any non-NORMAL
+     *    window resets the streak (sustained calm required). */
+    if (new_phase == SERVICE_DET_PHASE_ATTACK) {
+        det->attack_freeze_active       = true;
+        det->consecutive_normal_windows = 0;
+    } else if (det->attack_freeze_active) {
+        if (new_phase == SERVICE_DET_PHASE_NORMAL) {
+            det->consecutive_normal_windows++;
+            if (det->consecutive_normal_windows >= pick_thaw_windows(prof)) {
+                det->attack_freeze_active       = false;
+                det->consecutive_normal_windows = 0;
+            }
+        } else {
+            det->consecutive_normal_windows = 0;   /* SUSPICIOUS resets recovery */
+        }
+    }
+
+wire_and_log:
+    /* Derive the serialized freeze fields (wire serializer untouched).
+     *  baseline_freeze_remaining: >0 means "baseline currently protected" —
+     *  the EWMA-freeze countdown, or a sentinel while the full freeze holds
+     *  with the countdown already drained. thaw_cooldown_remaining: clean
+     *  windows still needed to release the full freeze (0 when not freezing). */
+    det->baseline_freeze_remaining = service_scoring_is_frozen(slot)
+        ? (det->ewma_freeze_remaining > 0 ? det->ewma_freeze_remaining : 1u)
+        : 0u;
+    if (det->attack_freeze_active) {
+        uint32_t thaw = pick_thaw_windows(prof);
+        det->thaw_cooldown_remaining =
+            (thaw > det->consecutive_normal_windows)
+                ? (thaw - det->consecutive_normal_windows) : 0u;
+    } else {
+        det->thaw_cooldown_remaining = 0u;
+    }
+
+    /* 10. Transition logging. */
     if (det->phase != old_phase) {
         det->prev_phase = old_phase;
         det->last_phase_change_window = det->windows_seen;
         fprintf(stderr,
             "[scoring] slot ip=%u port=%u proto=%u phase: %s -> %s "
-            "(t0=%.3f t1=%.3f evidence=%.3f)\n",
+            "(R0=%.3f gate_streak=%u/%u t1=%.3f abs_floor=%d freeze=%c/%c)\n",
             (unsigned)slot->key.target_ip,
             (unsigned)slot->key.port,
             (unsigned)slot->proto_kind,
             service_detection_phase_name(old_phase),
             service_detection_phase_name(det->phase),
             det->last_tier0_score,
+            (unsigned)det->consecutive_attack_windows,
+            (unsigned)SCORING_GATE_PERSISTENCE_WINDOWS,
             det->last_tier1_final_score,
-            det->last_attack_evidence);
+            (int)det->last_absolute_floor_fired,
+            det->attack_freeze_active   ? 'A' : '-',
+            det->ewma_freeze_remaining  ? 'E' : '-');
     }
-
     det->windows_seen++;
 }
 
@@ -614,7 +737,16 @@ bool service_scoring_is_frozen(const struct service_stats *slot)
 {
     if (!slot || !slot->detection_state) return false;
     const struct service_detection_state *det = det_of_const(slot);
-    return det->baseline_freeze_remaining > 0;
+    /* EWMA updates skipped under EITHER freeze scope. */
+    return det->attack_freeze_active || det->ewma_freeze_remaining > 0;
+}
+
+bool service_scoring_cusum_is_frozen(const struct service_stats *slot)
+{
+    if (!slot || !slot->detection_state) return false;
+    const struct service_detection_state *det = det_of_const(slot);
+    /* CUSUM held only under the full ATTACK-freeze. */
+    return det->attack_freeze_active;
 }
 
 /* -------------------------------------------------------------------------

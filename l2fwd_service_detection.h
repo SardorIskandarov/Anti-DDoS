@@ -95,6 +95,15 @@ struct service_detection_state {
     uint32_t baseline_freeze_remaining;      /**< >0 means EWMA frozen        */
     uint32_t thaw_cooldown_remaining;        /**< post-attack cautious window */
 
+    /* Baseline-poisoning hardening — two distinct freeze scopes.
+     * baseline_freeze_remaining / thaw_cooldown_remaining above are now
+     * DERIVED each window from the state below purely for the wire emit
+     * (their serialized meaning is preserved). The authoritative state: */
+    uint32_t ewma_freeze_remaining;       /* Change 2: EWMA-only freeze countdown (Tier-0 fired) */
+    uint32_t consecutive_normal_windows;  /* Change 4: clean windows accumulated toward thaw     */
+    bool     attack_freeze_active;        /* full freeze (EWMA+CUSUM) while in/after ATTACK       */
+    bool     last_absolute_floor_fired;   /* observability: absolute floor forced ATTACK this window */
+
     /* Cached scores (CSV emit consumes these). Cleared each window. */
     double last_tier0_score;
     double last_tier0_risk_pps;

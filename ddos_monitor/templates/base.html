@@ -4,7 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Anti-DDoS{% endblock %} — Per-Service Dashboard</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  {# Chart.js was retired (commit p14.9): slot_detail now uses ApexCharts,
+     loaded locally from /static/apexcharts.min.js inside its own
+     head_extra block so other dashboard pages don't pay the load cost. #}
   {% block head_extra %}{% endblock %}
   <style>
     :root {

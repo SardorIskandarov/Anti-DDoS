@@ -108,24 +108,38 @@ double service_scoring_offproto          (const struct service_stats *slot);
 double service_scoring_combine(struct service_stats *slot);
 
 /* -------------------------------------------------------------------------
- * Phase machine
+ * Phase machine — gated sequential cascade with baseline-poisoning hardening.
  *
- * Runs Tier-0 + Tier-1 + combine on the slot, then advances
- * detection_state->phase based on the resulting attack_evidence
- * (= max(t0, t1_final)). Counts down warmup_remaining,
- * baseline_freeze_remaining, thaw_cooldown_remaining each tick.
+ * Tier-0 weighted risk R0 is always computed (CUSUM on pps/bps/fps + burst
+ * z-scores), honoring the CUSUM freeze.
  *
- * Transitions (all configurable via SCORING_DEFAULT_* in the .c):
+ * An absolute volumetric floor (profile->absolute_{pps,bps,fps}_threshold,
+ * baseline-INDEPENDENT — it reads raw counters, never the EWMA/CUSUM
+ * baseline) forces ATTACK immediately, bypassing the gate and Tier-1.
  *
- *     WARMUP     -> NORMAL       after profile->warmup_windows elapse
- *     NORMAL     -> SUSPICIOUS   when score > SUSPICIOUS_THRESHOLD
- *     SUSPICIOUS -> ATTACK       when score > ATTACK_THRESHOLD for
- *                                PERSISTENCE_WINDOWS consecutive ticks
- *     SUSPICIOUS -> NORMAL       when score < RECOVERY_THRESHOLD for
- *                                RECOVERY_WINDOWS_SUSP consecutive ticks
- *     ATTACK     -> NORMAL       when score < RECOVERY_THRESHOLD for
- *                                RECOVERY_WINDOWS_ATK consecutive ticks
- *                                (sets thaw_cooldown_remaining on exit)
+ * Otherwise the tiers run sequentially: a persistence gate must open first
+ * (consecutive Tier-0 fires >= SCORING_GATE_PERSISTENCE_WINDOWS); only then
+ * does Tier-1 (service_scoring_combine) run, and its combined score decides
+ * the phase IMMEDIATELY — T1 >= ATTACK_THRESHOLD -> ATTACK, >=
+ * SUSPICIOUS_THRESHOLD -> SUSPICIOUS, else NORMAL (veto). There is no
+ * multi-window NORMAL->SUSPICIOUS->ATTACK ladder.
+ *
+ * learning_mode and warmup compute + cache Tier-1 for the dashboard but
+ * never transition the phase.
+ *
+ * Two distinct freeze scopes guard the baseline:
+ *   - EWMA-only freeze (ewma_freeze_remaining): armed the instant Tier-0
+ *     fires, it protects the baseline from slow ramp poisoning while CUSUM
+ *     stays live (CUSUM is what detects the ramp).
+ *   - Full ATTACK-freeze (attack_freeze_active): armed on entering ATTACK
+ *     (via Tier-1 OR the absolute floor), it holds BOTH EWMA and CUSUM at
+ *     their last clean values. Released only after thaw_cooldown_windows
+ *     consecutive NORMAL windows; any non-NORMAL window resets that streak.
+ *
+ * baseline_freeze_remaining / thaw_cooldown_remaining are DERIVED each
+ * window from the authoritative freeze state purely for the wire serializer
+ * (their serialized meaning is preserved); they are not independent
+ * countdowns.
  *
  * Logs every phase transition to stderr. Always increments windows_seen.
  * ------------------------------------------------------------------------- */
@@ -140,9 +154,15 @@ void service_scoring_evaluate_all(struct service_stats_array *arr);
  * Helpers
  * ------------------------------------------------------------------------- */
 
-/** True if the slot is currently in baseline-freeze (mid-ATTACK).
- *  Read by service_features_compute_one to skip EWMA updates. */
+/** "Should EWMA updates be skipped this window?" — TRUE under either the
+ *  full ATTACK-freeze OR the EWMA-only freeze (Tier-0 fired). Read by
+ *  service_features_compute_one to skip EWMA updates. */
 bool service_scoring_is_frozen(const struct service_stats *slot);
+
+/** "Should Tier-0 CUSUM updates be skipped this window?" — TRUE only under
+ *  the full ATTACK-freeze. The EWMA-only freeze leaves CUSUM live (CUSUM is
+ *  what detects the ramp). Read inside service_scoring_tier0_evaluate. */
+bool service_scoring_cusum_is_frozen(const struct service_stats *slot);
 
 /** Diagnostic: log per-slot summary (phase, all sub-scores) to stderr. */
 void service_scoring_log_slot(const struct service_stats *slot);

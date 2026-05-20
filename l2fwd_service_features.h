@@ -110,7 +110,8 @@ void service_cm_src_24_reset  (struct service_cm_src_24   *cm);
  * variance=0, initialized=true. sample_count always increments.
  * ------------------------------------------------------------------------- */
 
-void   service_ewma_update (struct service_ewma_state *state, double x, double alpha);
+void   service_ewma_update (struct service_ewma_state *state, double x,
+                            double alpha, double variance_ceiling_factor);
 double service_ewma_z_score(const struct service_ewma_state *state, double x);
 
 /* -------------------------------------------------------------------------

@@ -374,7 +374,7 @@ def api_slot_timeseries(slot_id):
     try:
         window = safe_int(request.args.get(
             'window', config.DASHBOARD_TIMESERIES_WINDOW_SECONDS))
-        window = max(10, min(window, 3600))  # clamp 10s..1h
+        window = max(10, min(window, 86400))  # clamp 10s..24h
         rows = ch.execute(f"""
             SELECT timestamp_dt,
                    inbound_pkts,

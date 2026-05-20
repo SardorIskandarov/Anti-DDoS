@@ -156,14 +156,19 @@ static void test_ewma_mean(void) {
     struct service_ewma_state s;
     memset(&s, 0, sizeof(s));
     for (int i = 0; i < 200; i++) {
-        service_ewma_update(&s, 100.0, 0.1);
+        service_ewma_update(&s, 100.0, 0.1, 0.0);   /* C=0 -> winsor disabled */
     }
     fprintf(stderr, "  mean=%.4f variance=%.6f count=%u\n",
             s.mean, s.variance, (unsigned)s.sample_count);
     CHECK(fabs(s.mean - 100.0) < 0.01,
           "mean ≈ 100 after 200 identical samples (got %.4f)", s.mean);
-    CHECK(s.variance < 1e-9,
-          "variance ≈ 0 for constant input (got %.6f)", s.variance);
+    /* Hardening change: variance no longer decays to ~0 on constant input.
+     * The min-stddev floor (intentional anti-poisoning behavior) pins it to
+     * (EWMA_MIN_STDDEV_REL*|mean|)^2 = (0.01*100)^2 = 1.0 so z-scores can
+     * never go numb against a flat baseline. */
+    CHECK(fabs(s.variance - 1.0) < 1e-6,
+          "variance floored to (0.01*mean)^2 = 1.0 (min-stddev floor) (got %.6f)",
+          s.variance);
     CHECK(s.sample_count == 200, "sample_count = 200");
 }
 
@@ -182,7 +187,7 @@ static void test_ewma_zscore(void) {
         double u1 = ((double)rand_r(&seed) + 1.0) / ((double)RAND_MAX + 2.0);
         double u2 = ((double)rand_r(&seed) + 1.0) / ((double)RAND_MAX + 2.0);
         double z  = sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2);
-        service_ewma_update(&s, 100.0 + 5.0 * z, 0.05);
+        service_ewma_update(&s, 100.0 + 5.0 * z, 0.05, 0.0);   /* C=0 -> winsor disabled */
     }
     double mean_warm = s.mean;
     double std_warm  = sqrt(s.variance);
@@ -193,8 +198,47 @@ static void test_ewma_zscore(void) {
     double outlier   = mean_warm + 3.0 * std_warm;
     double z_outlier = service_ewma_z_score(&s, outlier);
     fprintf(stderr, "  z_score(outlier=%.2f) = %.3f\n", outlier, z_outlier);
+    /* Re-verified under the new min-stddev floor: the relative floor here is
+     * (0.01*~100)^2 = 1.0, well below the warmed ~25 variance, so it does
+     * not bind and the 3σ z-score is unaffected. */
     CHECK(z_outlier > 2.5 && z_outlier < 3.5,
           "z_score on 3σ outlier ≈ 3 (got %.3f)", z_outlier);
+}
+
+/* -------------------------------------------------------------------------
+ * 6b. EWMA winsorization — the clamp bounds a lone spike's influence on
+ *     BOTH the mean and the variance (Change 3 anti-poisoning hardening).
+ * ------------------------------------------------------------------------- */
+static void test_ewma_winsorization(void) {
+    fprintf(stderr, "\n=== POSITIVE: EWMA winsorization clamps a lone spike ===\n");
+    struct service_ewma_state a, b;
+    memset(&a, 0, sizeof(a));
+    memset(&b, 0, sizeof(b));
+
+    /* Warm BOTH identically: 50 steady samples with a REAL ceiling so a
+     * stable baseline (mean≈100, variance at the min-stddev floor) forms. */
+    for (int i = 0; i < 50; i++) {
+        service_ewma_update(&a, 100.0, 0.1, 3.0);
+        service_ewma_update(&b, 100.0, 0.1, 3.0);
+    }
+
+    /* One massive spike: A with winsor ON (C=3.0), B with winsor OFF (C=0). */
+    service_ewma_update(&a, 100000.0, 0.1, 3.0);
+    service_ewma_update(&b, 100000.0, 0.1, 0.0);
+
+    fprintf(stderr,
+            "  A(winsor) mean=%.4f variance=%.4f | B(no winsor) mean=%.4f variance=%.4f\n",
+            a.mean, a.variance, b.mean, b.variance);
+
+    CHECK(fabs(a.mean - 100.0) < fabs(b.mean - 100.0),
+          "winsor limited the mean pull (|A-100|=%.4f < |B-100|=%.4f)",
+          fabs(a.mean - 100.0), fabs(b.mean - 100.0));
+    CHECK(a.variance < b.variance,
+          "winsor limited the diff^2 variance inflation (A=%.4f < B=%.4f)",
+          a.variance, b.variance);
+    CHECK(isfinite(a.mean) && isfinite(a.variance) &&
+          isfinite(b.mean) && isfinite(b.variance),
+          "all mean/variance values remain finite (no NaN/inf)");
 }
 
 /* -------------------------------------------------------------------------
@@ -386,7 +430,7 @@ static void test_null_handling(void) {
     CHECK(service_cm_src_24_entropy(NULL) == 0.0,
           "cm_24_entropy(NULL) returns 0");
 
-    service_ewma_update(NULL, 0.0, 0.0);    CHECK(true, "ewma_update(NULL) safe");
+    service_ewma_update(NULL, 0.0, 0.0, 0.0);    CHECK(true, "ewma_update(NULL) safe");
     CHECK(service_ewma_z_score(NULL, 0.0) == 0.0,
           "ewma_z_score(NULL) returns 0");
 
@@ -426,6 +470,7 @@ int main(void) {
     test_cm_entropy();
     test_ewma_mean();
     test_ewma_zscore();
+    test_ewma_winsorization();
     test_burst_window();
     test_welford();
     test_compute_one();
