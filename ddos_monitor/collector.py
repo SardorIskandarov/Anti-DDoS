@@ -106,7 +106,7 @@ SERVICE_STATS_COLUMNS = (
     "target_ip", "port", "proto_kind", "is_catchall", "profile_name",
     "phase", "prev_phase", "warmup_remaining",
     "consecutive_attack_windows", "baseline_freeze_remaining",
-    "thaw_cooldown_remaining", "windows_seen",
+    "thaw_cooldown_remaining", "windows_seen", "absolute_floor_fired",
     "inbound_pkts", "inbound_bytes", "off_proto_pkts", "ip_frag_pkts",
     "ttl_sum", "ttl_sum_sq", "out_pkts", "out_bytes",
     "out_tcp_pkts", "out_udp_pkts", "out_icmp_pkts",
@@ -174,6 +174,9 @@ def _to_service_stats_row(m: WireMessage) -> dict:
         "baseline_freeze_remaining": m.baseline_freeze_remaining,
         "thaw_cooldown_remaining": m.thaw_cooldown_remaining,
         "windows_seen": m.windows_seen,
+        # Per-second live-state mirror: 1 only while this 1s window is a floor
+        # breach, 0 otherwise (straight passthrough of the parsed wire flag).
+        "absolute_floor_fired": 1 if m.absolute_floor_fired else 0,
         "inbound_pkts": m.inbound_pkts,
         "inbound_bytes": m.inbound_bytes,
         "off_proto_pkts": m.off_proto_pkts,

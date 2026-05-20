@@ -52,6 +52,9 @@ COLUMN_ROLLBACKS = (
     (config.TABLE_PHASE_TRANSITIONS,
      "ALTER TABLE {db}." + config.TABLE_PHASE_TRANSITIONS +
      " DROP COLUMN IF EXISTS absolute_floor_fired"),
+    (config.TABLE_SERVICE_STATS,
+     "ALTER TABLE {db}." + config.TABLE_SERVICE_STATS +
+     " DROP COLUMN IF EXISTS absolute_floor_fired"),
 )
 
 

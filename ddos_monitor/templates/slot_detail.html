@@ -115,6 +115,10 @@
         <div class="label">Freeze / thaw remaining</div>
         <div class="value" id="t-freeze">—</div>
       </div>
+      <div class="tile">
+        <div class="label">Absolute floor</div>
+        <div class="value" id="t-floor">—</div>
+      </div>
     </div>
   </div>
 
@@ -690,6 +694,17 @@
         fmtNum(s.warmup_remaining);
       document.getElementById("t-freeze").textContent =
         `${fmtNum(s.baseline_freeze_remaining)} / ${fmtNum(s.thaw_cooldown_remaining)}`;
+
+      // Live per-second floor-breach indicator: alarming when the most recent
+      // 1s window crossed the absolute volumetric floor, neutral otherwise.
+      const floorEl = document.getElementById("t-floor");
+      if (s.absolute_floor_fired) {
+        floorEl.textContent = "BREACH";
+        floorEl.style.color = "var(--ph-attack)";
+      } else {
+        floorEl.textContent = "No";
+        floorEl.style.color = "var(--text-dim)";
+      }
 
       // Live-traffic hero tiles: latest 1-second window from the engine.
       // inbound_pkts / inbound_bytes / unique_flows are per-1s-window

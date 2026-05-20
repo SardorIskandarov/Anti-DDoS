@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS {db}.service_stats (
     baseline_freeze_remaining   UInt32,
     thaw_cooldown_remaining     UInt32,
     windows_seen       UInt32,
+    absolute_floor_fired UInt8 DEFAULT 0,
 
     inbound_pkts       UInt64,
     inbound_bytes      UInt64,
@@ -255,6 +256,11 @@ TABLE_SCHEMAS = {
 ADDITIVE_COLUMN_MIGRATIONS = (
     (config.TABLE_PHASE_TRANSITIONS, "absolute_floor_fired",
      "ALTER TABLE {db}." + config.TABLE_PHASE_TRANSITIONS +
+     " ADD COLUMN IF NOT EXISTS absolute_floor_fired UInt8 DEFAULT 0"),
+    # Per-second live-state mirror on service_stats: "this 1s window is a
+    # floor breach right now" (vs the per-transition flag above).
+    (config.TABLE_SERVICE_STATS, "absolute_floor_fired",
+     "ALTER TABLE {db}." + config.TABLE_SERVICE_STATS +
      " ADD COLUMN IF NOT EXISTS absolute_floor_fired UInt8 DEFAULT 0"),
 )
 

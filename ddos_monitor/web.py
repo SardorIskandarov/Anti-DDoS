@@ -358,6 +358,12 @@ def api_service_one(slot_id):
                 result[f + '_display'] = '—'
             else:
                 result[f + '_display'] = fmt_peak_pps(result.get(f))
+        # Live "breaching the absolute floor this second" flag. SELECT * already
+        # carries it once the column exists; normalize to 0/1 (UInt8 precedent,
+        # like is_catchall) and guarantee the key is present even before the
+        # additive column migration has run on this DB.
+        result['absolute_floor_fired'] = (
+            1 if result.get('absolute_floor_fired') else 0)
         result['display_title'] = format_slot_display_title(result)
         return jsonify(result)
     except Exception as e:  # noqa: BLE001
