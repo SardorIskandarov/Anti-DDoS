@@ -81,6 +81,7 @@ void service_detection_state_reset_window(struct service_detection_state *det)
     det->last_tier1_final_score    = 0.0;
     det->last_tier1_evaluated      = false;
     det->last_attack_evidence      = 0.0;
+    det->last_dominant_channel     = 0;     /* DOMINANT_NONE */
 
     det->windows_seen++;
 }

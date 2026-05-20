@@ -65,6 +65,9 @@
 /* Change 4: N consecutive Tier-0 gate-opens before Tier-1 runs. */
 #define SCORING_GATE_PERSISTENCE_WINDOWS    3u
 
+/* Dominant-channel argmax: below this, no channel is meaningful -> NONE. */
+#define SCORING_DOMINANT_FLOOR              0.15
+
 /* Volume gate: don't score a slot until we've seen at least this many
  * inbound packets in the current window. Prevents single-packet false
  * positives on quiet services. */
@@ -470,6 +473,73 @@ double service_scoring_offproto(const struct service_stats *slot)
 }
 
 /* -------------------------------------------------------------------------
+ * Dominant-channel argmax
+ *
+ * Picks the single channel that best explains the current attack shape, as an
+ * argmax across BOTH tiers but ONLY over channels live for this proto_kind.
+ * Each Tier-0 burst channel folds into its base (burst_pps competes as PPS,
+ * etc.) via max(). Below SCORING_DOMINANT_FLOOR -> DOMINANT_NONE. Ties prefer
+ * the lower enum value (Tier-0 volumetric before Tier-1 behavioral): we scan
+ * ascending and only replace on a strictly-greater value.
+ *
+ * Must be called after the last_tier0_risk_* and last_tier1_* caches are set.
+ * ------------------------------------------------------------------------- */
+static uint8_t scoring_compute_dominant(const struct service_detection_state *det,
+                                        uint8_t proto_kind)
+{
+    /* Candidate value per channel, indexed by enum service_dominant_channel.
+     * -1.0 marks a channel that is NOT live for this slot. */
+    double cand[DOMINANT_OFFPROTO + 1];
+    for (int i = 0; i <= DOMINANT_OFFPROTO; i++) cand[i] = -1.0;
+
+    /* Tier-0 volumetric — always live for every proto_kind; fold in burst. */
+    cand[DOMINANT_PPS] = fmax(det->last_tier0_risk_pps, det->last_tier0_risk_burst_pps);
+    cand[DOMINANT_BPS] = fmax(det->last_tier0_risk_bps, det->last_tier0_risk_burst_bps);
+    cand[DOMINANT_FPS] = fmax(det->last_tier0_risk_fps, det->last_tier0_risk_burst_fps);
+
+    /* Universal Tier-1 — live for every proto_kind. */
+    cand[DOMINANT_DIST]     = det->last_tier1_dist_score;
+    cand[DOMINANT_L3]       = det->last_tier1_l3_score;
+    cand[DOMINANT_OFFPROTO] = det->last_tier1_offproto_score;
+
+    /* Proto-family Tier-1 — only the arm(s) live for this slot. A TCP slot
+     * must NEVER report a UDP/ICMP dominant, so non-matching arms stay -1. */
+    switch (proto_kind) {
+    case SERVICE_PROTO_TCP:
+    case SERVICE_PROTO_CATCHALL_TCP:
+        cand[DOMINANT_TCP] = det->last_tier1_tcp_score;
+        break;
+    case SERVICE_PROTO_UDP:
+    case SERVICE_PROTO_CATCHALL_UDP:
+        cand[DOMINANT_UDP] = det->last_tier1_udp_score;
+        break;
+    case SERVICE_PROTO_ICMP:
+    case SERVICE_PROTO_CATCHALL_ICMP:
+        cand[DOMINANT_ICMP] = det->last_tier1_icmp_score;
+        break;
+    case SERVICE_PROTO_CATCHALL_OTHER:
+        cand[DOMINANT_TCP]  = det->last_tier1_tcp_score;
+        cand[DOMINANT_UDP]  = det->last_tier1_udp_score;
+        cand[DOMINANT_ICMP] = det->last_tier1_icmp_score;
+        break;
+    default:
+        break;
+    }
+
+    /* Argmax, ascending scan with strict-greater -> low-enum tie-break. */
+    uint8_t best_ch = DOMINANT_NONE;
+    double  best_v  = 0.0;
+    for (int i = DOMINANT_PPS; i <= DOMINANT_OFFPROTO; i++) {
+        if (cand[i] > best_v) {
+            best_v  = cand[i];
+            best_ch = (uint8_t)i;
+        }
+    }
+
+    return (best_v < SCORING_DOMINANT_FLOOR) ? DOMINANT_NONE : best_ch;
+}
+
+/* -------------------------------------------------------------------------
  * Combine sub-scores into the final Tier-1 score
  * ------------------------------------------------------------------------- */
 
@@ -517,7 +587,29 @@ double service_scoring_combine(struct service_stats *slot)
 
     det->last_tier1_final_score = final_score;
     det->last_tier1_evaluated   = true;
+
+    /* Dominant channel: argmax across both tiers over this slot's live
+     * channels (after all caches above are populated). */
+    det->last_dominant_channel = scoring_compute_dominant(det, slot->proto_kind);
+
     return final_score;
+}
+
+const char *service_scoring_dominant_name(uint8_t dominant)
+{
+    switch (dominant) {
+    case DOMINANT_NONE:     return "NONE";
+    case DOMINANT_PPS:      return "PPS";
+    case DOMINANT_BPS:      return "BPS";
+    case DOMINANT_FPS:      return "FPS";
+    case DOMINANT_TCP:      return "TCP";
+    case DOMINANT_UDP:      return "UDP";
+    case DOMINANT_ICMP:     return "ICMP";
+    case DOMINANT_DIST:     return "DIST";
+    case DOMINANT_L3:       return "L3";
+    case DOMINANT_OFFPROTO: return "OFFPROTO";
+    default:                return "UNKNOWN";
+    }
 }
 
 /* -------------------------------------------------------------------------

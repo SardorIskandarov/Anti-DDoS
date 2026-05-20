@@ -4,7 +4,7 @@
  *
  * See l2fwd_service_wire.h for the locked layout. This module reads from
  * struct service_stats / detection_state / temporal_state / common HLL +
- * CM sketches and produces a 416-byte big-endian message. It never
+ * CM sketches and produces a 468-byte big-endian message (wire v2). It never
  * mutates any of those structures.
  *
  * The CRC32 polynomial is 0xEDB88320 (Ethernet / zlib / PNG). Table-driven
@@ -260,6 +260,22 @@ static void write_scores_section(uint8_t *s,
     service_wire_write_double(s + 56, det->last_tier1_final_score);
 }
 
+/* v2: Tier-0 per-channel risk vector — six doubles, in the order
+ * pps, bps, fps, burst_pps, burst_bps, burst_fps. Values already computed and
+ * cached by service_scoring_tier0_evaluate(). Leaves the section zeroed when
+ * det is NULL (buffer was memset). */
+static void write_tier0risk_section(uint8_t *t,
+                                    const struct service_detection_state *det)
+{
+    if (!det) return;
+    service_wire_write_double(t +  0, det->last_tier0_risk_pps);
+    service_wire_write_double(t +  8, det->last_tier0_risk_bps);
+    service_wire_write_double(t + 16, det->last_tier0_risk_fps);
+    service_wire_write_double(t + 24, det->last_tier0_risk_burst_pps);
+    service_wire_write_double(t + 32, det->last_tier0_risk_burst_bps);
+    service_wire_write_double(t + 40, det->last_tier0_risk_burst_fps);
+}
+
 static void write_temporal_section(uint8_t *tw,
                                     const struct service_temporal_state *tmp)
 {
@@ -333,7 +349,16 @@ int service_wire_serialize_slot(const struct service_stats *slot,
     write_temporal_section(pl + L2FWD_WIRE_PL_TEMPORAL_OFF,
         (const struct service_temporal_state *)slot->temporal_state);
 
-    /* --- Footer: CRC32 over bytes [0..411] --- */
+    /* --- v2 tail: Tier-0 risk vector + dominant channel --- */
+    {
+        const struct service_detection_state *vdet =
+            (const struct service_detection_state *)slot->detection_state;
+        write_tier0risk_section(pl + L2FWD_WIRE_PL_TIER0RISK_OFF, vdet);
+        pl[L2FWD_WIRE_PL_DOMINANT_OFF] = vdet ? vdet->last_dominant_channel : 0u;
+        /* DOMINANT_OFF+1..+3 reserved — already zero from the memset. */
+    }
+
+    /* --- Footer: CRC32 over the header+payload region [0..463] --- */
     uint32_t crc = service_wire_crc32(
         buffer, L2FWD_WIRE_HEADER_SIZE + L2FWD_WIRE_PAYLOAD_SIZE);
     service_wire_write_u32(

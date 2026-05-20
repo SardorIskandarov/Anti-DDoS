@@ -5,28 +5,32 @@
  * @file   l2fwd_service_wire.h
  * @brief  Per-service wire protocol v1 — P10 of the big-bang refactor.
  *
- * Locked binary format for the per-tick socket emit. 416 bytes per
- * message: 32 B header + 380 B payload + 4 B CRC32 footer. All
+ * Locked binary format for the per-tick socket emit. v2 is 468 bytes per
+ * message: 32 B header + 432 B payload + 4 B CRC32 footer. All
  * multi-byte integers are big-endian; doubles are IEEE 754 binary64
  * with their bit pattern emitted big-endian.
  *
- * The Python collector in P12 consumes this exact format. Any change
- * after P10 must bump L2FWD_WIRE_VERSION and ship a paired Python
- * decoder update.
+ * The Python collector consumes this exact format. Any change must bump
+ * L2FWD_WIRE_VERSION and ship a paired Python decoder update.
+ *
+ * v2 (this version) appends a Tier-0 risk vector + dominant-channel section
+ * at the payload tail. Every pre-existing section keeps its exact offset;
+ * the only growth is at the end (and the CRC/footer offset shifts with the
+ * larger payload). buffer[6] bit 0 remains the absolute-floor flag.
  *
  * Header layout (32 B)
  *   off  sz  field
  *    0   4  magic = "L2FW"
- *    4   1  version = 0x01
+ *    4   1  version = 0x02
  *    5   1  msg_type = 0x01 (slot snapshot)
- *    6   2  reserved
+ *    6   1  flags (bit 0 = absolute-floor); 7 reserved
  *    8   8  timestamp_ns (uint64 BE, UNIX epoch ns)
  *   16   2  slot_id (uint16 BE, index into stats array)
- *   18   2  payload_len = 380
+ *   18   2  payload_len = 432
  *   20   8  sequence_num (uint64 BE, monotonic per-process)
  *   28   4  reserved2
  *
- * Payload layout (380 B; section offsets relative to payload start)
+ * Payload layout (432 B; section offsets relative to payload start)
  *     0..15   Identity        (target_ip, port, proto_kind, is_catchall, profile_name)
  *    16..39   Phase state     (phase, prev_phase, counters)
  *    40..119  Raw counters    (common + outbound)
@@ -34,9 +38,11 @@
  *   216..279  Features        (8 doubles)
  *   280..343  Scores          (8 doubles)
  *   344..379  Temporal        (3 windows × 12 B)
+ *   380..427  Tier-0 risk vec (6 doubles: pps,bps,fps,burst_pps,burst_bps,burst_fps)
+ *   428..431  Dominant chan   (1 B enum + 3 B reserved)
  *
  * Footer (4 B)
- *   412..415  crc32 of bytes [0..411] (Ethernet polynomial 0xEDB88320)
+ *   464..467  crc32 of bytes [0..463] (Ethernet polynomial 0xEDB88320)
  */
 
 #include <stdint.h>
@@ -53,12 +59,12 @@ struct service_stats;
 #define L2FWD_WIRE_MAGIC_1      0x32  /* '2' */
 #define L2FWD_WIRE_MAGIC_2      0x46  /* 'F' */
 #define L2FWD_WIRE_MAGIC_3      0x57  /* 'W' */
-#define L2FWD_WIRE_VERSION      0x01
+#define L2FWD_WIRE_VERSION      0x02
 #define L2FWD_WIRE_MSGTYPE_SNAP 0x01
 
-#define L2FWD_WIRE_MSG_SIZE     416
+#define L2FWD_WIRE_MSG_SIZE     468
 #define L2FWD_WIRE_HEADER_SIZE   32
-#define L2FWD_WIRE_PAYLOAD_SIZE 380
+#define L2FWD_WIRE_PAYLOAD_SIZE 432
 #define L2FWD_WIRE_FOOTER_SIZE    4
 
 /* Header flags byte at buffer offset 6 (was reserved). No version bump:
@@ -84,6 +90,11 @@ struct service_stats;
 #define L2FWD_WIRE_PL_SCORES_SIZE    64
 #define L2FWD_WIRE_PL_TEMPORAL_OFF  344
 #define L2FWD_WIRE_PL_TEMPORAL_SIZE  36
+/* v2 tail additions (appended after temporal; existing offsets unchanged). */
+#define L2FWD_WIRE_PL_TIER0RISK_OFF 380
+#define L2FWD_WIRE_PL_TIER0RISK_SIZE 48   /* 6 doubles BE */
+#define L2FWD_WIRE_PL_DOMINANT_OFF  428
+#define L2FWD_WIRE_PL_DOMINANT_SIZE   4   /* 1 B enum + 3 B reserved */
 
 /* Verify error codes returned by service_wire_verify(). */
 #define L2FWD_WIRE_OK              0

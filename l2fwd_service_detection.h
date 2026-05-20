@@ -121,6 +121,7 @@ struct service_detection_state {
     double last_tier1_final_score;
     bool   last_tier1_evaluated;
     double last_attack_evidence;
+    uint8_t last_dominant_channel;           /**< enum service_dominant_channel */
 
     /* Window bookkeeping (independent of slot->window_count). */
     uint64_t windows_seen;

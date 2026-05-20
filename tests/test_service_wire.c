@@ -28,6 +28,7 @@
 #include "l2fwd_service_detection.h"
 #include "l2fwd_service_temporal_state.h"
 #include "l2fwd_service_registry.h"
+#include "l2fwd_service_scoring.h"   /* enum service_dominant_channel (v2 section) */
 
 #define SERVICES_JSON_PATH \
     "/home/user_1/Music/Anti-DDoS/service_registry/services.json"
@@ -166,6 +167,15 @@ static void test_full_slot_roundtrip(void) {
     det.last_tier1_offproto_score   = 0.20;
     det.last_tier1_final_score      = 0.65;
 
+    /* v2 Tier-0 risk vector + dominant channel. */
+    det.last_tier0_risk_pps         = 0.11;
+    det.last_tier0_risk_bps         = 0.22;
+    det.last_tier0_risk_fps         = 0.33;
+    det.last_tier0_risk_burst_pps   = 0.44;
+    det.last_tier0_risk_burst_bps   = 0.55;
+    det.last_tier0_risk_burst_fps   = 0.66;
+    det.last_dominant_channel       = DOMINANT_BPS;
+
     /* Raw counters. */
     slot.common.inbound_pkts   = 1000;
     slot.common.inbound_bytes  = 1500u * 1000u;
@@ -227,7 +237,7 @@ static void test_full_slot_roundtrip(void) {
           "timestamp_ns roundtripped");
     CHECK(service_wire_read_u16(buf + 16) == 42, "slot_id roundtripped");
     CHECK(service_wire_read_u16(buf + 18) == L2FWD_WIRE_PAYLOAD_SIZE,
-          "payload_len = 380");
+          "payload_len = 432");
     CHECK(service_wire_read_u64(buf + 20) == 9001ULL,
           "sequence_num roundtripped");
 
@@ -293,6 +303,24 @@ static void test_full_slot_roundtrip(void) {
           "windows[1].attack_seconds = 7");
     CHECK(service_wire_read_u32(tw + 32) ==    12,
           "windows[2].attack_seconds = 12");
+
+    /* v2 Tier-0 risk vector — six doubles roundtrip bit-exact. */
+    const uint8_t *tr = pl + L2FWD_WIRE_PL_TIER0RISK_OFF;
+    CHECK(service_wire_read_double(tr +  0) == 0.11, "risk_pps = 0.11");
+    CHECK(service_wire_read_double(tr +  8) == 0.22, "risk_bps = 0.22");
+    CHECK(service_wire_read_double(tr + 16) == 0.33, "risk_fps = 0.33");
+    CHECK(service_wire_read_double(tr + 24) == 0.44, "risk_burst_pps = 0.44");
+    CHECK(service_wire_read_double(tr + 32) == 0.55, "risk_burst_bps = 0.55");
+    CHECK(service_wire_read_double(tr + 40) == 0.66, "risk_burst_fps = 0.66");
+
+    /* v2 dominant channel byte + its 3 reserved bytes. */
+    CHECK(pl[L2FWD_WIRE_PL_DOMINANT_OFF] == DOMINANT_BPS,
+          "dominant_channel = DOMINANT_BPS (got %u)",
+          (unsigned)pl[L2FWD_WIRE_PL_DOMINANT_OFF]);
+    CHECK(pl[L2FWD_WIRE_PL_DOMINANT_OFF + 1] == 0 &&
+          pl[L2FWD_WIRE_PL_DOMINANT_OFF + 2] == 0 &&
+          pl[L2FWD_WIRE_PL_DOMINANT_OFF + 3] == 0,
+          "dominant reserved [429..431] = 0");
 }
 
 /* -------------------------------------------------------------------------
@@ -477,7 +505,9 @@ static void test_size_constants(void) {
                     + L2FWD_WIRE_PL_PROTO_SIZE
                     + L2FWD_WIRE_PL_FEATURES_SIZE
                     + L2FWD_WIRE_PL_SCORES_SIZE
-                    + L2FWD_WIRE_PL_TEMPORAL_SIZE;
+                    + L2FWD_WIRE_PL_TEMPORAL_SIZE
+                    + L2FWD_WIRE_PL_TIER0RISK_SIZE
+                    + L2FWD_WIRE_PL_DOMINANT_SIZE;
     CHECK(sum_payload == L2FWD_WIRE_PAYLOAD_SIZE,
           "payload sections sum to PAYLOAD_SIZE (%d, got %d)",
           L2FWD_WIRE_PAYLOAD_SIZE, sum_payload);
@@ -502,6 +532,12 @@ static void test_size_constants(void) {
     CHECK(L2FWD_WIRE_PL_TEMPORAL_OFF ==   L2FWD_WIRE_PL_SCORES_OFF
                                        + L2FWD_WIRE_PL_SCORES_SIZE,
           "temporal off follows scores");
+    CHECK(L2FWD_WIRE_PL_TIER0RISK_OFF ==  L2FWD_WIRE_PL_TEMPORAL_OFF
+                                       + L2FWD_WIRE_PL_TEMPORAL_SIZE,
+          "tier0risk off follows temporal");
+    CHECK(L2FWD_WIRE_PL_DOMINANT_OFF ==   L2FWD_WIRE_PL_TIER0RISK_OFF
+                                       + L2FWD_WIRE_PL_TIER0RISK_SIZE,
+          "dominant off follows tier0risk");
 }
 
 /* -------------------------------------------------------------------------
@@ -538,6 +574,12 @@ static void test_reserved_zero(void) {
     const uint8_t *c = pl + L2FWD_WIRE_PL_COUNTERS_OFF;
     CHECK(c[76] == 0 && c[77] == 0 && c[78] == 0 && c[79] == 0,
           "counters reserved [76..79] = 0");
+
+    /* v2: dominant-channel reserved at payload 429..431. */
+    CHECK(pl[L2FWD_WIRE_PL_DOMINANT_OFF + 1] == 0 &&
+          pl[L2FWD_WIRE_PL_DOMINANT_OFF + 2] == 0 &&
+          pl[L2FWD_WIRE_PL_DOMINANT_OFF + 3] == 0,
+          "dominant reserved [429..431] = 0");
 }
 
 /* -------------------------------------------------------------------------

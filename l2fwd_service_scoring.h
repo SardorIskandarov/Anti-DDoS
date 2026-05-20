@@ -38,6 +38,18 @@ struct service_detection_state;
 struct l2_profile;
 
 /* -------------------------------------------------------------------------
+ * Dominant detection channel — which single channel best explains the
+ * current attack shape. Computed at the end of service_scoring_combine() as
+ * an argmax across the live Tier-0 volumetric risks and Tier-1 behavioral
+ * scores for the slot's proto_kind. Carried to Layer-3 on the wire.
+ * ------------------------------------------------------------------------- */
+enum service_dominant_channel {
+    DOMINANT_NONE = 0, DOMINANT_PPS = 1, DOMINANT_BPS = 2, DOMINANT_FPS = 3,
+    DOMINANT_TCP = 4, DOMINANT_UDP = 5, DOMINANT_ICMP = 6,
+    DOMINANT_DIST = 7, DOMINANT_L3 = 8, DOMINANT_OFFPROTO = 9,
+};
+
+/* -------------------------------------------------------------------------
  * Lifecycle
  * ------------------------------------------------------------------------- */
 
@@ -163,6 +175,11 @@ bool service_scoring_is_frozen(const struct service_stats *slot);
  *  the full ATTACK-freeze. The EWMA-only freeze leaves CUSUM live (CUSUM is
  *  what detects the ramp). Read inside service_scoring_tier0_evaluate. */
 bool service_scoring_cusum_is_frozen(const struct service_stats *slot);
+
+/** Stable string name for an enum service_dominant_channel value
+ *  ("NONE","PPS","BPS","FPS","TCP","UDP","ICMP","DIST","L3","OFFPROTO").
+ *  Mirrors service_detection_phase_name. */
+const char *service_scoring_dominant_name(uint8_t dominant);
 
 /** Diagnostic: log per-slot summary (phase, all sub-scores) to stderr. */
 void service_scoring_log_slot(const struct service_stats *slot);
