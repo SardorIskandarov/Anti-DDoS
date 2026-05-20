@@ -110,7 +110,7 @@ struct service_stats;
  * ------------------------------------------------------------------------- */
 
 /**
- * Serialize one slot into a 416-byte wire buffer.
+ * Serialize one slot into a 468-byte wire buffer.
  *
  * @param slot          source slot (read-only). Must be non-NULL and active.
  * @param slot_id       index into the stats array (placed in header @16).
@@ -121,7 +121,8 @@ struct service_stats;
  * @return  0 on success, -1 if slot/buffer is NULL, -2 if slot is inactive.
  *
  * The buffer is fully overwritten (no partial writes leak old data).
- * The CRC32 footer is computed over the 412-byte header+payload region.
+ * The CRC32 footer is computed over the 464-byte header+payload region
+ * (bytes [0..463]).
  */
 int service_wire_serialize_slot(const struct service_stats *slot,
                                  uint16_t slot_id,

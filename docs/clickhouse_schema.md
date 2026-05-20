@@ -89,6 +89,10 @@ At full capacity (~250 slots) that is ~250 rows/sec ≈ 21.6 M rows/day.
 | `tier0_score` | Float64 | Composite Tier-0 CUSUM risk, [0,1]. |
 | `tier1_tcp_score` ... `tier1_offproto_score` | Float64 | Per-channel Tier-1 sub-scores, [0,1]. |
 | `tier1_final_score` | Float64 | Combined Tier-1 score (weighted MAX of channels), [0,1]. |
+| `tier0_risk_pps` / `tier0_risk_bps` / `tier0_risk_fps` | Float64 | Per-channel Tier-0 volumetric risk this window, [0,1] (wire v2). |
+| `tier0_risk_burst_pps` / `tier0_risk_burst_bps` / `tier0_risk_burst_fps` | Float64 | Per-channel Tier-0 burst-window risk, [0,1] (wire v2). |
+| `dominant_channel` | UInt8 | Argmax detection channel for this window (wire v2). Enum: 0 NONE, 1 PPS, 2 BPS, 3 FPS, 4 TCP, 5 UDP, 6 ICMP, 7 DIST, 8 L3, 9 OFFPROTO. |
+| `dominant_channel_str` | LowCardinality(String) (DEFAULT) | DB-derived name of `dominant_channel` via `multiIf`. Source of truth for the mapping: `service_scoring_dominant_name()` / `enum service_dominant_channel` in `l2fwd_service_scoring.h`. |
 | `win_{10s,60s,300s}_total_pkts` | UInt32 | Rolling-window total packets. |
 | `win_{10s,60s,300s}_peak_pps` | UInt32 | Rolling-window peak pps. |
 | `win_{10s,60s,300s}_attack_seconds` | UInt32 | Seconds spent in ATTACK within the window. |

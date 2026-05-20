@@ -49,6 +49,34 @@ NEW_TABLES = (
 # the tables). Only applied to tables that still exist (a full teardown drops
 # the table anyway; this keeps a column-only rollback clean and ordered).
 COLUMN_ROLLBACKS = (
+    # v2 wire columns (Prompt B2). Reverse of the forward migration order:
+    # dominant_channel_str FIRST (its DEFAULT references dominant_channel), then
+    # dominant_channel, then the six tier0_risk_*. Prepended so the dependency
+    # is respected on drop.
+    (config.TABLE_SERVICE_STATS,
+     "ALTER TABLE {db}." + config.TABLE_SERVICE_STATS +
+     " DROP COLUMN IF EXISTS dominant_channel_str"),
+    (config.TABLE_SERVICE_STATS,
+     "ALTER TABLE {db}." + config.TABLE_SERVICE_STATS +
+     " DROP COLUMN IF EXISTS dominant_channel"),
+    (config.TABLE_SERVICE_STATS,
+     "ALTER TABLE {db}." + config.TABLE_SERVICE_STATS +
+     " DROP COLUMN IF EXISTS tier0_risk_burst_fps"),
+    (config.TABLE_SERVICE_STATS,
+     "ALTER TABLE {db}." + config.TABLE_SERVICE_STATS +
+     " DROP COLUMN IF EXISTS tier0_risk_burst_bps"),
+    (config.TABLE_SERVICE_STATS,
+     "ALTER TABLE {db}." + config.TABLE_SERVICE_STATS +
+     " DROP COLUMN IF EXISTS tier0_risk_burst_pps"),
+    (config.TABLE_SERVICE_STATS,
+     "ALTER TABLE {db}." + config.TABLE_SERVICE_STATS +
+     " DROP COLUMN IF EXISTS tier0_risk_fps"),
+    (config.TABLE_SERVICE_STATS,
+     "ALTER TABLE {db}." + config.TABLE_SERVICE_STATS +
+     " DROP COLUMN IF EXISTS tier0_risk_bps"),
+    (config.TABLE_SERVICE_STATS,
+     "ALTER TABLE {db}." + config.TABLE_SERVICE_STATS +
+     " DROP COLUMN IF EXISTS tier0_risk_pps"),
     (config.TABLE_PHASE_TRANSITIONS,
      "ALTER TABLE {db}." + config.TABLE_PHASE_TRANSITIONS +
      " DROP COLUMN IF EXISTS absolute_floor_fired"),

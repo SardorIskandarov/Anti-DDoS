@@ -231,7 +231,7 @@ static void test_full_slot_roundtrip(void) {
     /* Header. */
     CHECK(buf[0]=='L' && buf[1]=='2' && buf[2]=='F' && buf[3]=='W',
           "magic = 'L2FW'");
-    CHECK(buf[4] == L2FWD_WIRE_VERSION,        "version = 0x01");
+    CHECK(buf[4] == L2FWD_WIRE_VERSION,        "version = 0x02");
     CHECK(buf[5] == L2FWD_WIRE_MSGTYPE_SNAP,   "msg_type = 0x01");
     CHECK(service_wire_read_u64(buf + 8) == 1700000000000000000ULL,
           "timestamp_ns roundtripped");

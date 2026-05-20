@@ -1,6 +1,6 @@
 /**
  * @file   l2fwd_service_wire.c
- * @brief  Per-service wire protocol v1 — P10 implementation.
+ * @brief  Per-service wire protocol v2 — P10 implementation.
  *
  * See l2fwd_service_wire.h for the locked layout. This module reads from
  * struct service_stats / detection_state / temporal_state / common HLL +

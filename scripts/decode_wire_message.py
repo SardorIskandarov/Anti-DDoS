@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Standalone decoder for L2FW wire protocol v1 (P10).
+Standalone decoder for L2FW wire protocol v2 (P10).
 
-Reads 416-byte messages from a file or stdin and prints them as
+Reads 468-byte messages from a file or stdin and prints them as
 human-readable text. Used for engine-side validation of the binary
 emit; the full collector consumer lives under ddos_monitor/ once
 P12 ships.
@@ -27,12 +27,12 @@ from typing import Any, Dict
 
 # Wire-protocol constants — must match l2fwd_service_wire.h byte-for-byte.
 MAGIC    = b"L2FW"
-VERSION  = 0x01
+VERSION  = 0x02
 MSG_TYPE = 0x01
-MSG_SIZE = 416
+MSG_SIZE = 468
 
 HEADER_SIZE  = 32
-PAYLOAD_SIZE = 380
+PAYLOAD_SIZE = 432
 FOOTER_SIZE  = 4
 
 # Payload section offsets (relative to payload start).
@@ -43,6 +43,8 @@ PL_PROTO_OFF     = 120
 PL_FEATURES_OFF  = 216
 PL_SCORES_OFF    = 280
 PL_TEMPORAL_OFF  = 344
+PL_TIER0RISK_OFF = 380   # v2: 6 doubles
+PL_DOMINANT_OFF  = 428   # v2: 1 byte enum + 3 reserved
 
 PHASE_NAMES = {0: "WARMUP", 1: "NORMAL", 2: "SUSPICIOUS", 3: "ATTACK"}
 
@@ -56,9 +58,16 @@ PROTO_KIND_NAMES = {
     7: "CATCHALL_OTHER",
 }
 
+# Dominant-channel ordinals -> names. SOURCE OF TRUTH:
+# service_scoring_dominant_name() / enum service_dominant_channel in
+# l2fwd_service_scoring.h.
+DOMINANT_NAMES = (
+    "NONE", "PPS", "BPS", "FPS", "TCP", "UDP", "ICMP", "DIST", "L3", "OFFPROTO",
+)
+
 
 def decode_message(buf: bytes) -> Dict[str, Any]:
-    """Decode one 416-byte buffer. Raises ValueError on any framing error."""
+    """Decode one 468-byte buffer. Raises ValueError on any framing error."""
     if len(buf) != MSG_SIZE:
         raise ValueError(f"expected {MSG_SIZE} bytes, got {len(buf)}")
 
@@ -80,9 +89,11 @@ def decode_message(buf: bytes) -> Dict[str, Any]:
     if payload_len != PAYLOAD_SIZE:
         raise ValueError(f"unexpected payload_len: {payload_len}")
 
-    # CRC32 check (matches engine's service_wire_crc32).
-    expected_crc = struct.unpack(">I", buf[412:416])[0]
-    actual_crc   = zlib.crc32(buf[0:412])
+    # CRC32 check (matches engine's service_wire_crc32). Footer sits right
+    # after the header+payload region, so derive the offset (464 in v2).
+    crc_region = HEADER_SIZE + PAYLOAD_SIZE
+    expected_crc = struct.unpack(">I", buf[crc_region:crc_region + 4])[0]
+    actual_crc   = zlib.crc32(buf[0:crc_region])
     if expected_crc != actual_crc:
         raise ValueError(
             f"CRC mismatch: expected 0x{expected_crc:08X}, "
@@ -144,6 +155,13 @@ def decode_message(buf: bytes) -> Dict[str, Any]:
             "attack_seconds": attack_sec,
         })
 
+    # Tier-0 risk vector (6 doubles) + dominant channel (v2).
+    tr_off = PL_TIER0RISK_OFF
+    (t0_risk_pps, t0_risk_bps, t0_risk_fps,
+     t0_risk_burst_pps, t0_risk_burst_bps, t0_risk_burst_fps) = struct.unpack(
+        ">dddddd", pl[tr_off:tr_off + 48])
+    dominant_channel = pl[PL_DOMINANT_OFF]   # 3 reserved bytes follow
+
     return {
         "timestamp_ns":      timestamp_ns,
         "slot_id":           slot_id,
@@ -202,6 +220,16 @@ def decode_message(buf: bytes) -> Dict[str, Any]:
         "tier1_offproto_score": t1_off,
         "tier1_final_score": t1_final,
         "temporal_windows":  windows,
+        "tier0_risk_pps":        t0_risk_pps,
+        "tier0_risk_bps":        t0_risk_bps,
+        "tier0_risk_fps":        t0_risk_fps,
+        "tier0_risk_burst_pps":  t0_risk_burst_pps,
+        "tier0_risk_burst_bps":  t0_risk_burst_bps,
+        "tier0_risk_burst_fps":  t0_risk_burst_fps,
+        "dominant_channel":      dominant_channel,
+        "dominant_channel_name":
+            DOMINANT_NAMES[dominant_channel]
+            if dominant_channel < len(DOMINANT_NAMES) else "UNKNOWN",
     }
 
 
@@ -215,7 +243,12 @@ def format_message(m: Dict[str, Any]) -> str:
         f"phase={m['phase_name']:<10s} "
         f"in_pkts={m['inbound_pkts']:>8d} "
         f"t0={m['tier0_score']:.3f} "
-        f"t1={m['tier1_final_score']:.3f}"
+        f"t1={m['tier1_final_score']:.3f} "
+        f"dom={m['dominant_channel_name']:<8s} "
+        f"risk[p/b/f]={m['tier0_risk_pps']:.2f}/"
+        f"{m['tier0_risk_bps']:.2f}/{m['tier0_risk_fps']:.2f} "
+        f"burst[p/b/f]={m['tier0_risk_burst_pps']:.2f}/"
+        f"{m['tier0_risk_burst_bps']:.2f}/{m['tier0_risk_burst_fps']:.2f}"
     )
 
 

@@ -1,7 +1,7 @@
 """
 wire_parser.py — production parser for the L2FW wire protocol v1 (P12).
 
-Parses the 416-byte big-endian binary messages the C engine emits on
+Parses the 468-byte big-endian binary messages the C engine emits on
 ENGINE_SOCKET_PATH. This is the production sibling of the reference
 decoder at scripts/decode_wire_message.py: same byte layout, but it
 returns a typed dataclass, raises specific exceptions instead of
@@ -73,12 +73,26 @@ PROTO_KIND_NAMES = {
 }
 
 
+# Dominant detection channel ordinals -> names. SOURCE OF TRUTH:
+# service_scoring_dominant_name() / enum service_dominant_channel in
+# l2fwd_service_scoring.h — keep this tuple byte-for-byte in step with it.
+DOMINANT_NAMES = (
+    "NONE", "PPS", "BPS", "FPS", "TCP", "UDP", "ICMP", "DIST", "L3", "OFFPROTO",
+)
+
+
 def phase_name(phase: int) -> str:
     return PHASE_NAMES.get(phase, f"UNKNOWN({phase})")
 
 
 def proto_kind_name(kind: int) -> str:
     return PROTO_KIND_NAMES.get(kind, f"UNKNOWN({kind})")
+
+
+def dominant_name(dominant: int) -> str:
+    if 0 <= dominant < len(DOMINANT_NAMES):
+        return DOMINANT_NAMES[dominant]
+    return "UNKNOWN"
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +111,7 @@ class TemporalWindow:
 
 @dataclass
 class WireMessage:
-    """A fully-parsed 416-byte slot snapshot."""
+    """A fully-parsed 468-byte slot snapshot."""
 
     # Header
     timestamp_ns: int
@@ -180,15 +194,25 @@ class WireMessage:
     win_60s: TemporalWindow
     win_300s: TemporalWindow
 
+    # Tier-0 per-channel risk vector (v2) + dominant channel
+    tier0_risk_pps: float
+    tier0_risk_bps: float
+    tier0_risk_fps: float
+    tier0_risk_burst_pps: float
+    tier0_risk_burst_bps: float
+    tier0_risk_burst_fps: float
+    dominant_channel: int
+    dominant_channel_str: str
+
 
 # ---------------------------------------------------------------------------
-# Section offsets — relative to the start of the 416-byte buffer.
+# Section offsets — relative to the start of the 468-byte buffer.
 # Mirrors the L2FWD_WIRE_PL_*_OFF macros (payload starts at byte 32).
 # ---------------------------------------------------------------------------
 
 _HEADER_SIZE = config.WIRE_HEADER_SIZE      # 32
-_PAYLOAD_SIZE = config.WIRE_PAYLOAD_SIZE    # 380
-_MSG_SIZE = config.WIRE_MSG_SIZE            # 416
+_PAYLOAD_SIZE = config.WIRE_PAYLOAD_SIZE    # 432
+_MSG_SIZE = config.WIRE_MSG_SIZE            # 468
 
 # Payload-relative offsets (added to _HEADER_SIZE for absolute positions).
 _PL_IDENTITY = 0
@@ -198,11 +222,13 @@ _PL_PROTO = 120
 _PL_FEATURES = 216
 _PL_SCORES = 280
 _PL_TEMPORAL = 344
+_PL_TIER0RISK = 380   # v2: 6 doubles (pps,bps,fps,burst_pps,burst_bps,burst_fps)
+_PL_DOMINANT = 428    # v2: 1 byte enum + 3 reserved
 
 
 def parse_message(buf: bytes) -> WireMessage:
     """
-    Parse a 416-byte wire message into a WireMessage.
+    Parse a 468-byte wire message into a WireMessage.
 
     Raises a WireParseError subclass on any framing failure:
         BadPayloadLengthError  — wrong size
@@ -227,10 +253,12 @@ def parse_message(buf: bytes) -> WireMessage:
     # --- Header flags byte (offset 6) ---
     absolute_floor_fired = bool(buf[6] & config.WIRE_FLAG_ABSOLUTE_FLOOR)
 
-    # --- CRC32 over bytes [0..411] (matches engine's service_wire_crc32,
-    #     which is the standard zlib/Ethernet CRC) ---
-    expected_crc = struct.unpack(">I", buf[412:416])[0]
-    actual_crc = zlib.crc32(buf[0:412]) & 0xFFFFFFFF
+    # --- CRC32 over the header+payload region (matches engine's
+    #     service_wire_crc32, the standard zlib/Ethernet CRC). Offsets are
+    #     computed from the size constants so they track the format. ---
+    _crc_region = _HEADER_SIZE + _PAYLOAD_SIZE   # 464 in v2
+    expected_crc = struct.unpack(">I", buf[_crc_region:_crc_region + 4])[0]
+    actual_crc = zlib.crc32(buf[0:_crc_region]) & 0xFFFFFFFF
     if expected_crc != actual_crc:
         raise BadCRCError(
             f"CRC mismatch: expected 0x{expected_crc:08X}, "
@@ -309,6 +337,13 @@ def parse_message(buf: bytes) -> WireMessage:
             attack_seconds=attack_seconds,
         ))
 
+    # --- Tier-0 risk vector (48 B = 6 doubles) + dominant channel (v2) ---
+    o = _PL_TIER0RISK
+    (tier0_risk_pps, tier0_risk_bps, tier0_risk_fps,
+     tier0_risk_burst_pps, tier0_risk_burst_bps,
+     tier0_risk_burst_fps) = struct.unpack(">dddddd", pl[o:o + 48])
+    dominant_channel = pl[_PL_DOMINANT]   # 3 reserved bytes follow; skip them
+
     return WireMessage(
         timestamp_ns=timestamp_ns,
         timestamp_unix=timestamp_ns / 1e9,
@@ -373,4 +408,12 @@ def parse_message(buf: bytes) -> WireMessage:
         win_10s=windows[0],
         win_60s=windows[1],
         win_300s=windows[2],
+        tier0_risk_pps=tier0_risk_pps,
+        tier0_risk_bps=tier0_risk_bps,
+        tier0_risk_fps=tier0_risk_fps,
+        tier0_risk_burst_pps=tier0_risk_burst_pps,
+        tier0_risk_burst_bps=tier0_risk_burst_bps,
+        tier0_risk_burst_fps=tier0_risk_burst_fps,
+        dominant_channel=dominant_channel,
+        dominant_channel_str=dominant_name(dominant_channel),
     )

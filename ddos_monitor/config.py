@@ -76,13 +76,13 @@ FLASK_DEBUG = False
 # as a CLIENT, so the collector binds it as a SERVER (see collector.py).
 ENGINE_SOCKET_PATH = SOCK_PATH
 
-# Wire protocol v1 constants — must match l2fwd_service_wire.h byte-for-byte.
+# Wire protocol v2 constants — must match l2fwd_service_wire.h byte-for-byte.
 WIRE_MAGIC        = b'L2FW'
-WIRE_VERSION      = 0x01
+WIRE_VERSION      = 0x02
 WIRE_MSGTYPE_SNAP = 0x01
-WIRE_MSG_SIZE     = 416
+WIRE_MSG_SIZE     = 468
 WIRE_HEADER_SIZE  = 32
-WIRE_PAYLOAD_SIZE = 380
+WIRE_PAYLOAD_SIZE = 432
 WIRE_FOOTER_SIZE  = 4
 
 # Header flags byte at buffer offset 6 (mirrors L2FWD_WIRE_FLAG_* in

@@ -257,3 +257,26 @@ test('service_wire',
   test_wire,
   timeout: 30,
 )
+
+# Test-only helper: emits ONE canonical v2 wire message (the
+# test_full_slot_roundtrip fixture) to stdout as raw bytes, for C->Python
+# wire-equivalence checking. Not a test() target and not installed; links the
+# same sources as test_service_wire so it stays byte-identical to the engine.
+#   Build: ninja -C build dump_wire_sample
+#   Use:   ./build/dump_wire_sample > sample.bin   (binary on stdout)
+dump_wire_sample = executable('dump_wire_sample',
+  sources: [
+    'tests/dump_wire_sample.c',
+    'l2fwd_service_wire.c',
+    'l2fwd_service_features.c',
+    'l2fwd_service_scoring.c',
+    'l2fwd_service_stats.c',
+    'l2fwd_service_detection.c',
+    'l2fwd_service_temporal_state.c',
+    'l2fwd_service_registry.c',
+  ],
+  include_directories: inc_dirs,
+  link_with: cjson_lib,
+  link_args: ['-lm'],
+  install: false,
+)

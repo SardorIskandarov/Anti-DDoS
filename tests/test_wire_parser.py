@@ -6,7 +6,7 @@ Runnable two ways:
     python3 -m pytest tests/test_wire_parser.py -v
     python3 tests/test_wire_parser.py
 
-The harness hand-constructs 416-byte wire messages in pure Python
+The harness hand-constructs 468-byte wire messages in pure Python
 (matching l2fwd_service_wire.c byte-for-byte), so it has no dependency
 on a built C engine or a running ClickHouse. It exercises:
 
@@ -35,6 +35,7 @@ from wire_parser import (  # noqa: E402
     parse_message,
     WireMessage,
     TemporalWindow,
+    DOMINANT_NAMES,
     WireParseError,
     BadMagicError,
     BadVersionError,
@@ -48,12 +49,12 @@ HEADER_SIZE = config.WIRE_HEADER_SIZE   # 32
 
 
 # ===========================================================================
-# Message builder — constructs a valid 416-byte buffer from field values.
+# Message builder — constructs a valid 468-byte buffer from field values.
 # Mirrors the layout in l2fwd_service_wire.c exactly.
 # ===========================================================================
 
 def build_message(**kw):
-    """Build a valid 416-byte wire message. Any field can be overridden via
+    """Build a valid 468-byte wire message. Any field can be overridden via
     kwargs; everything else takes a deterministic default."""
     d = dict(
         # header
@@ -101,6 +102,11 @@ def build_message(**kw):
         win_10s=(10_000, 1200, 2),
         win_60s=(50_000, 1200, 7),
         win_300s=(200_000, 1200, 12),
+        # v2 tail: Tier-0 risk vector (6 doubles) + dominant channel byte
+        tier0_risk_pps=0.0, tier0_risk_bps=0.0, tier0_risk_fps=0.0,
+        tier0_risk_burst_pps=0.0, tier0_risk_burst_bps=0.0,
+        tier0_risk_burst_fps=0.0,
+        dominant_channel=0,
     )
     d.update(kw)
 
@@ -184,9 +190,18 @@ def build_message(**kw):
     for i, win in enumerate((d["win_10s"], d["win_60s"], d["win_300s"])):
         struct.pack_into(">III", buf, pl + 344 + i * 12, *win)
 
-    # ---- footer: CRC32 over bytes [0..411] ----
-    crc = zlib.crc32(bytes(buf[0:412])) & 0xFFFFFFFF
-    struct.pack_into(">I", buf, 412, crc)
+    # ---- v2 tail: Tier-0 risk vector (48 B = 6 doubles) @ pl+380 ----
+    struct.pack_into(">dddddd", buf, pl + 380,
+                     d["tier0_risk_pps"], d["tier0_risk_bps"],
+                     d["tier0_risk_fps"], d["tier0_risk_burst_pps"],
+                     d["tier0_risk_burst_bps"], d["tier0_risk_burst_fps"])
+    # ---- dominant channel byte @ pl+428 (3 reserved bytes follow) ----
+    buf[pl + 428] = d["dominant_channel"]
+
+    # ---- footer: CRC32 over the header+payload region [0:464] ----
+    crc_region = HEADER_SIZE + config.WIRE_PAYLOAD_SIZE   # 464 in v2
+    crc = zlib.crc32(bytes(buf[0:crc_region])) & 0xFFFFFFFF
+    struct.pack_into(">I", buf, crc_region, crc)
 
     return bytes(buf)
 
@@ -319,6 +334,33 @@ def test_parse_known_good_message():
         _eq(win.attack_seconds, atk, f"win_{wsec}s.attack_seconds")
 
 
+def test_tier0_risk_and_dominant():
+    """v2 tail: the six Tier-0 risk doubles round-trip bit-exactly and
+    dominant_channel maps to the enum string."""
+    risks = dict(
+        tier0_risk_pps=0.11, tier0_risk_bps=0.22, tier0_risk_fps=0.33,
+        tier0_risk_burst_pps=0.44, tier0_risk_burst_bps=0.55,
+        tier0_risk_burst_fps=0.66,
+    )
+    m = parse_message(build_message(dominant_channel=2, **risks))   # 2 = BPS
+
+    # Bit-exact: build_message packed these as IEEE-754 BE, parse reads them
+    # back the same way, so exact equality must hold (no tolerance).
+    for name, val in risks.items():
+        got = getattr(m, name)
+        assert got == val, f"{name}: expected {val!r}, got {got!r}"
+
+    _eq(m.dominant_channel, 2, "dominant_channel")
+    _eq(m.dominant_channel_str, "BPS", "dominant_channel_str")
+    _eq(m.dominant_channel_str, DOMINANT_NAMES[2],
+        "dominant_channel_str matches enum mapping")
+
+    # Out-of-range dominant -> UNKNOWN (mirrors service_scoring_dominant_name).
+    m_bad = parse_message(build_message(dominant_channel=200))
+    _eq(m_bad.dominant_channel, 200, "dominant_channel (out of range)")
+    _eq(m_bad.dominant_channel_str, "UNKNOWN", "out-of-range -> UNKNOWN")
+
+
 def test_zeroed_warmup_heartbeat():
     """A near-zero message (WARMUP-slot heartbeat) parses cleanly."""
     buf = build_message(
@@ -406,8 +448,9 @@ def test_bad_payload_length_header_field():
     recompute the CRC to isolate the payload_len check)."""
     buf = bytearray(build_message())
     struct.pack_into(">H", buf, 18, 379)            # wrong payload_len
-    crc = zlib.crc32(bytes(buf[0:412])) & 0xFFFFFFFF  # keep CRC valid
-    struct.pack_into(">I", buf, 412, crc)
+    crc_region = HEADER_SIZE + config.WIRE_PAYLOAD_SIZE  # 464 in v2
+    crc = zlib.crc32(bytes(buf[0:crc_region])) & 0xFFFFFFFF  # keep CRC valid
+    struct.pack_into(">I", buf, crc_region, crc)
     _raises(BadPayloadLengthError, lambda: parse_message(bytes(buf)),
             "header payload_len=379")
 

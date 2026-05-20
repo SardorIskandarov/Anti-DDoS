@@ -122,6 +122,11 @@ SERVICE_STATS_COLUMNS = (
     "win_10s_total_pkts", "win_10s_peak_pps", "win_10s_attack_seconds",
     "win_60s_total_pkts", "win_60s_peak_pps", "win_60s_attack_seconds",
     "win_300s_total_pkts", "win_300s_peak_pps", "win_300s_attack_seconds",
+    # v2 tail. dominant_channel_str is omitted (DB-derived via DEFAULT, like
+    # proto_kind_str / phase_str).
+    "tier0_risk_pps", "tier0_risk_bps", "tier0_risk_fps",
+    "tier0_risk_burst_pps", "tier0_risk_burst_bps", "tier0_risk_burst_fps",
+    "dominant_channel",
 )
 
 PHASE_TRANSITION_COLUMNS = (
@@ -225,6 +230,15 @@ def _to_service_stats_row(m: WireMessage) -> dict:
         "win_300s_total_pkts": m.win_300s.total_pkts,
         "win_300s_peak_pps": m.win_300s.peak_pps,
         "win_300s_attack_seconds": m.win_300s.attack_seconds,
+        # v2 Tier-0 per-channel risk vector + dominant channel. The DB derives
+        # dominant_channel_str from dominant_channel, so it is not inserted.
+        "tier0_risk_pps": m.tier0_risk_pps,
+        "tier0_risk_bps": m.tier0_risk_bps,
+        "tier0_risk_fps": m.tier0_risk_fps,
+        "tier0_risk_burst_pps": m.tier0_risk_burst_pps,
+        "tier0_risk_burst_bps": m.tier0_risk_burst_bps,
+        "tier0_risk_burst_fps": m.tier0_risk_burst_fps,
+        "dominant_channel": m.dominant_channel,
     }
 
 

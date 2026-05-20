@@ -143,6 +143,31 @@ CREATE TABLE IF NOT EXISTS {db}.service_stats (
     tier1_offproto_score Float64,
     tier1_final_score    Float64,
 
+    -- v2: Tier-0 per-channel risk vector + dominant channel. The
+    -- dominant_channel_str multiIf MUST mirror service_scoring_dominant_name()
+    -- / enum service_dominant_channel in l2fwd_service_scoring.h (source of
+    -- truth).
+    tier0_risk_pps        Float64,
+    tier0_risk_bps        Float64,
+    tier0_risk_fps        Float64,
+    tier0_risk_burst_pps  Float64,
+    tier0_risk_burst_bps  Float64,
+    tier0_risk_burst_fps  Float64,
+    dominant_channel      UInt8,
+    dominant_channel_str  LowCardinality(String) DEFAULT
+        multiIf(
+            dominant_channel = 0, 'NONE',
+            dominant_channel = 1, 'PPS',
+            dominant_channel = 2, 'BPS',
+            dominant_channel = 3, 'FPS',
+            dominant_channel = 4, 'TCP',
+            dominant_channel = 5, 'UDP',
+            dominant_channel = 6, 'ICMP',
+            dominant_channel = 7, 'DIST',
+            dominant_channel = 8, 'L3',
+            dominant_channel = 9, 'OFFPROTO',
+            'UNKNOWN'),
+
     win_10s_total_pkts       UInt32,
     win_10s_peak_pps         UInt32,
     win_10s_attack_seconds   UInt32,
@@ -262,6 +287,46 @@ ADDITIVE_COLUMN_MIGRATIONS = (
     (config.TABLE_SERVICE_STATS, "absolute_floor_fired",
      "ALTER TABLE {db}." + config.TABLE_SERVICE_STATS +
      " ADD COLUMN IF NOT EXISTS absolute_floor_fired UInt8 DEFAULT 0"),
+    # v2 wire: Tier-0 per-channel risk vector + dominant channel on
+    # service_stats. dominant_channel MUST precede dominant_channel_str so the
+    # derived column's DEFAULT references an existing column. The multiIf
+    # mirrors service_scoring_dominant_name() in l2fwd_service_scoring.h.
+    (config.TABLE_SERVICE_STATS, "tier0_risk_pps",
+     "ALTER TABLE {db}." + config.TABLE_SERVICE_STATS +
+     " ADD COLUMN IF NOT EXISTS tier0_risk_pps Float64 DEFAULT 0"),
+    (config.TABLE_SERVICE_STATS, "tier0_risk_bps",
+     "ALTER TABLE {db}." + config.TABLE_SERVICE_STATS +
+     " ADD COLUMN IF NOT EXISTS tier0_risk_bps Float64 DEFAULT 0"),
+    (config.TABLE_SERVICE_STATS, "tier0_risk_fps",
+     "ALTER TABLE {db}." + config.TABLE_SERVICE_STATS +
+     " ADD COLUMN IF NOT EXISTS tier0_risk_fps Float64 DEFAULT 0"),
+    (config.TABLE_SERVICE_STATS, "tier0_risk_burst_pps",
+     "ALTER TABLE {db}." + config.TABLE_SERVICE_STATS +
+     " ADD COLUMN IF NOT EXISTS tier0_risk_burst_pps Float64 DEFAULT 0"),
+    (config.TABLE_SERVICE_STATS, "tier0_risk_burst_bps",
+     "ALTER TABLE {db}." + config.TABLE_SERVICE_STATS +
+     " ADD COLUMN IF NOT EXISTS tier0_risk_burst_bps Float64 DEFAULT 0"),
+    (config.TABLE_SERVICE_STATS, "tier0_risk_burst_fps",
+     "ALTER TABLE {db}." + config.TABLE_SERVICE_STATS +
+     " ADD COLUMN IF NOT EXISTS tier0_risk_burst_fps Float64 DEFAULT 0"),
+    (config.TABLE_SERVICE_STATS, "dominant_channel",
+     "ALTER TABLE {db}." + config.TABLE_SERVICE_STATS +
+     " ADD COLUMN IF NOT EXISTS dominant_channel UInt8 DEFAULT 0"),
+    (config.TABLE_SERVICE_STATS, "dominant_channel_str",
+     "ALTER TABLE {db}." + config.TABLE_SERVICE_STATS +
+     " ADD COLUMN IF NOT EXISTS dominant_channel_str LowCardinality(String) DEFAULT "
+     "multiIf("
+     "dominant_channel = 0, 'NONE', "
+     "dominant_channel = 1, 'PPS', "
+     "dominant_channel = 2, 'BPS', "
+     "dominant_channel = 3, 'FPS', "
+     "dominant_channel = 4, 'TCP', "
+     "dominant_channel = 5, 'UDP', "
+     "dominant_channel = 6, 'ICMP', "
+     "dominant_channel = 7, 'DIST', "
+     "dominant_channel = 8, 'L3', "
+     "dominant_channel = 9, 'OFFPROTO', "
+     "'UNKNOWN')"),
 )
 
 

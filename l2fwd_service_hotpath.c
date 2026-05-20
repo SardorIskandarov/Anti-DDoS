@@ -594,7 +594,7 @@ void service_hotpath_tick(void)
 
     /* P10 step 3 (revised P10.5): binary wire-protocol emit.
      *
-     * One 416-byte message per active slot per tick, framed with
+     * One 468-byte message per active slot per tick, framed with
      * magic + version + length + CRC32. Emit unconditionally — every
      * active slot reports its state every second, including WARMUP
      * slots with zero traffic. The dashboard relies on this cadence
@@ -612,7 +612,7 @@ void service_hotpath_tick(void)
              * cadence to confirm liveness. The previous "skip if WARMUP
              * AND idle" filter suppressed emission for the entire
              * warmup window (default 400s), blocking early operator
-             * visibility. At 44 slots × 416 B × 1 Hz the bandwidth cost
+             * visibility. At 44 slots × 468 B × 1 Hz the bandwidth cost
              * is ~18 KB/sec — negligible. The Python collector (P12)
              * can apply downstream filters if persistence cost
              * matters. */
