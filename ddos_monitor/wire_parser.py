@@ -124,6 +124,9 @@ class WireMessage:
     baseline_freeze_remaining: int
     thaw_cooldown_remaining: int
     windows_seen: int
+    # Header flags (offset 6, bit 0): the transition into ATTACK was forced by
+    # the absolute volumetric floor, bypassing the gated cascade.
+    absolute_floor_fired: bool
 
     # Raw counters — common + outbound
     inbound_pkts: int
@@ -220,6 +223,9 @@ def parse_message(buf: bytes) -> WireMessage:
         raise BadVersionError(f"unsupported version: {buf[4]}")
     if buf[5] != config.WIRE_MSGTYPE_SNAP:
         raise BadMsgTypeError(f"unexpected msg_type: {buf[5]}")
+
+    # --- Header flags byte (offset 6) ---
+    absolute_floor_fired = bool(buf[6] & config.WIRE_FLAG_ABSOLUTE_FLOOR)
 
     # --- CRC32 over bytes [0..411] (matches engine's service_wire_crc32,
     #     which is the standard zlib/Ethernet CRC) ---
@@ -324,6 +330,7 @@ def parse_message(buf: bytes) -> WireMessage:
         baseline_freeze_remaining=baseline_freeze_remaining,
         thaw_cooldown_remaining=thaw_cooldown_remaining,
         windows_seen=windows_seen,
+        absolute_floor_fired=absolute_floor_fired,
         inbound_pkts=inbound_pkts,
         inbound_bytes=inbound_bytes,
         off_proto_pkts=off_proto_pkts,

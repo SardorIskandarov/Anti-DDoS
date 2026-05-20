@@ -40,6 +40,20 @@
     return "";
   }
 
+  // Small amber "FLOOR" badge: shown ONLY when an ATTACK transition was forced
+  // by the absolute volumetric floor (raw volume past a hard ceiling, gate
+  // bypassed) rather than the behavioral gated cascade. Inline style keeps this
+  // change confined to alerts.html (base.html is not touched).
+  function floorBadge(r) {
+    if ((r.to_phase || "").toUpperCase() !== "ATTACK" || !r.absolute_floor_fired)
+      return "";
+    return ' <span class="floor-badge" title="Forced by absolute volumetric'
+      + ' floor (bypassed the gate)" style="display:inline-block;margin-left:6px;'
+      + 'padding:1px 5px;border-radius:4px;font-size:10px;font-weight:700;'
+      + 'text-transform:uppercase;letter-spacing:.04em;'
+      + 'background:rgba(210,153,34,.18);color:#9a6700;">FLOOR</span>';
+  }
+
   async function refreshAlerts() {
     try {
       const rows = await getJSON(
@@ -60,7 +74,7 @@
               <a href="/services/${r.slot_id}">${r.slot_id}</a></td>
             <td class="mono">${r.target_ip}:${fmtPort(r.port, String(r.proto_kind).startsWith("CATCHALL_"))}</td>
             <td>${fmtProto(r.proto_kind)}</td>
-            <td>${phasePill(r.from_phase)}<span class="arrow">&rarr;</span>${phasePill(r.to_phase)}</td>
+            <td>${phasePill(r.from_phase)}<span class="arrow">&rarr;</span>${phasePill(r.to_phase)}${floorBadge(r)}</td>
             <td>${scoreBar(r.tier0_score)}</td>
             <td>${scoreBar(r.tier1_final_score)}</td>
             <td>${scoreBar(r.attack_evidence)}</td>

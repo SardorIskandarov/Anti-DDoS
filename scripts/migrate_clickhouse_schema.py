@@ -179,6 +179,7 @@ CREATE TABLE IF NOT EXISTS {db}.service_phase_transitions (
     tier1_final_score  Float64,
     attack_evidence    Float64,
     consecutive_attack_windows UInt32,
+    absolute_floor_fired UInt8 DEFAULT 0,
     inserted_at        DateTime DEFAULT now()
 )
 ENGINE = MergeTree
@@ -235,6 +236,28 @@ TABLE_SCHEMAS = {
     config.TABLE_REGISTRY_SNAPSHOTS:  SCHEMA_REGISTRY_SNAPSHOTS,
 }
 
+# ---------------------------------------------------------------------------
+# Additive column migrations. Each is an idempotent `ALTER ... ADD COLUMN IF
+# NOT EXISTS`, so re-running is harmless and existing rows get the column's
+# DEFAULT. The CREATE schemas above already include these columns for fresh
+# installs; these ALTERs bring an already-migrated database (base tables
+# present, but missing a column added later) up to date.
+#
+# CRITICAL: these run on EVERY invocation — they are NOT gated behind the
+# "already migrated" early-exit, which only skips the heavy CREATE/RENAME work.
+# A box can have all base tables yet be missing a later column, so the additive
+# ALTERs must always run to converge. (They require the target table to exist,
+# which is why they run AFTER the create/rename block, never before.)
+#
+# Each entry is (table, column, alter_sql). APPEND new entries — never edit or
+# reorder existing ones (the rollback script mirrors this list in reverse).
+# ---------------------------------------------------------------------------
+ADDITIVE_COLUMN_MIGRATIONS = (
+    (config.TABLE_PHASE_TRANSITIONS, "absolute_floor_fired",
+     "ALTER TABLE {db}." + config.TABLE_PHASE_TRANSITIONS +
+     " ADD COLUMN IF NOT EXISTS absolute_floor_fired UInt8 DEFAULT 0"),
+)
+
 
 # ===========================================================================
 # Helpers
@@ -290,14 +313,25 @@ def run_migration(dry_run, force):
         print("-- step 1: ensure database exists")
         print(create_db_sql + ";")
         print()
-        print("-- step 2: rename legacy table (only if traffic_stats exists")
-        print("--         and traffic_stats_legacy does not)")
+        print("-- step 2: rename legacy table")
+        print("-- CONDITIONAL: the live run executes this ONLY if "
+              f"{LEGACY_TABLE_NAME} exists")
+        print(f"--              and {LEGACY_RENAMED_NAME} does not; otherwise "
+              "it is skipped.")
         print(rename_sql + ";")
         print()
         step = 3
         for name in NEW_TABLES:
-            print(f"-- step {step}: create {name}")
+            print(f"-- step {step}: create {name} "
+                  "(skipped if it already exists)")
             print(TABLE_SCHEMAS[name].format(db=db).strip() + ";")
+            print()
+            step += 1
+        for tbl, col, sql in ADDITIVE_COLUMN_MIGRATIONS:
+            print(f"-- step {step}: additive column migration ({col} on {tbl})")
+            print("-- ALWAYS RUN: executed on every invocation, including an "
+                  "already-migrated DB.")
+            print(sql.format(db=db) + ";")
             print()
             step += 1
         log("DRY RUN complete — nothing was executed.")
@@ -332,31 +366,44 @@ def run_migration(dry_run, force):
 
         fully_migrated = (legacy_renamed
                           and len(new_present) == len(NEW_TABLES))
+
+        # The "already migrated" guard only skips the heavy CREATE/RENAME
+        # block. It must NOT short-circuit the additive column migrations
+        # below — those are idempotent and have to run on every invocation so
+        # a box with the base tables but a missing later column converges.
         if fully_migrated and not force:
-            log("Already migrated, nothing to do "
-                "(pass --force to re-run the idempotent creates).")
-            return 0
-
-        # Step 2: rename the legacy table (idempotent).
-        if legacy_present and not legacy_renamed:
-            log(f"renaming '{LEGACY_TABLE_NAME}' -> '{LEGACY_RENAMED_NAME}' "
-                "(forensic data preserved, never dropped)")
-            client.execute(rename_sql)
-        elif legacy_renamed:
-            log(f"'{LEGACY_RENAMED_NAME}' already exists — rename skipped")
+            log("Base schema already migrated — skipping create/rename "
+                "(pass --force to re-run the idempotent creates); additive "
+                "column migrations below still run.")
         else:
-            log(f"no legacy '{LEGACY_TABLE_NAME}' table found — "
-                "rename skipped (fresh install)")
-
-        # Step 3..6: create the four new tables (IF NOT EXISTS — idempotent).
-        for name in NEW_TABLES:
-            if name in new_present and not force:
-                log(f"table '{name}' already exists — create skipped")
+            # Step 2: rename the legacy table (idempotent).
+            if legacy_present and not legacy_renamed:
+                log(f"renaming '{LEGACY_TABLE_NAME}' -> '{LEGACY_RENAMED_NAME}' "
+                    "(forensic data preserved, never dropped)")
+                client.execute(rename_sql)
+            elif legacy_renamed:
+                log(f"'{LEGACY_RENAMED_NAME}' already exists — rename skipped")
             else:
-                log(f"creating table '{name}'")
-                client.execute(TABLE_SCHEMAS[name].format(db=db))
+                log(f"no legacy '{LEGACY_TABLE_NAME}' table found — "
+                    "rename skipped (fresh install)")
 
-        # Step 7: verify each new table is queryable.
+            # Step 3..6: create the four new tables (IF NOT EXISTS — idempotent).
+            for name in NEW_TABLES:
+                if name in new_present and not force:
+                    log(f"table '{name}' already exists — create skipped")
+                else:
+                    log(f"creating table '{name}'")
+                    client.execute(TABLE_SCHEMAS[name].format(db=db))
+
+        # Step 7: additive column migrations — ALWAYS run, even when the base
+        # schema is already fully migrated. ADD COLUMN IF NOT EXISTS is
+        # idempotent, so this is harmless on an up-to-date DB and is exactly
+        # what converges a DB that has the base tables but lacks a later column.
+        for tbl, col, sql in ADDITIVE_COLUMN_MIGRATIONS:
+            log(f"applying additive column migration: {col} on {tbl}")
+            client.execute(sql.format(db=db))
+
+        # Step 8: verify each new table is queryable.
         log("verifying new tables ...")
         for name in NEW_TABLES:
             count = client.execute(

@@ -85,6 +85,11 @@ WIRE_HEADER_SIZE  = 32
 WIRE_PAYLOAD_SIZE = 380
 WIRE_FOOTER_SIZE  = 4
 
+# Header flags byte at buffer offset 6 (mirrors L2FWD_WIRE_FLAG_* in
+# l2fwd_service_wire.h). bit 0 = the transition into ATTACK was forced by the
+# absolute volumetric floor (bypassed the gated cascade).
+WIRE_FLAG_ABSOLUTE_FLOOR = 0x01
+
 # Collector runtime tuning.
 COLLECTOR_QUEUE_MAX_SIZE  = 10000   # bounded queue; drop-oldest under backpressure
 COLLECTOR_BATCH_SIZE      = 100     # rows per ClickHouse INSERT

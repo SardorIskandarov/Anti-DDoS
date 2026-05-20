@@ -521,8 +521,11 @@ static void test_reserved_zero(void) {
     int rc = service_wire_serialize_slot(&slot, 0, 1, 1, buf);
     CHECK(rc == 0, "serialize OK");
 
-    /* Header reserved at offsets 6..7 and 28..31. */
-    CHECK(buf[6]  == 0 && buf[7]  == 0, "header reserved [6..7] = 0");
+    /* buffer[6] is now a header FLAGS byte (bit 0 = absolute-floor). It is
+     * zero here because det.last_absolute_floor_fired is false on this fresh
+     * slot. buffer[7] and 28..31 remain fully reserved-zero. */
+    CHECK(buf[6]  == 0 && buf[7]  == 0,
+          "flags byte [6] zero when no flag set; [7] reserved = 0");
     CHECK(buf[28] == 0 && buf[29] == 0 && buf[30] == 0 && buf[31] == 0,
           "header reserved [28..31] = 0");
 
@@ -535,6 +538,39 @@ static void test_reserved_zero(void) {
     const uint8_t *c = pl + L2FWD_WIRE_PL_COUNTERS_OFF;
     CHECK(c[76] == 0 && c[77] == 0 && c[78] == 0 && c[79] == 0,
           "counters reserved [76..79] = 0");
+}
+
+/* -------------------------------------------------------------------------
+ * 11. Absolute-floor flag in the header flags byte (buffer[6] bit 0)
+ * ------------------------------------------------------------------------- */
+static void test_absolute_floor_flag(void) {
+    fprintf(stderr, "\n=== POSITIVE: absolute-floor flag in header byte 6 ===\n");
+    static struct service_stats slot;
+    static struct service_detection_state det;
+    memset(&slot, 0, sizeof(slot));
+    memset(&det,  0, sizeof(det));
+    slot.active          = true;
+    slot.proto_kind      = SERVICE_PROTO_TCP;
+    slot.detection_state = &det;
+    slot.common.inbound_pkts = 1;
+
+    uint8_t buf[L2FWD_WIRE_MSG_SIZE];
+
+    /* Flag set: buffer[6] carries bit 0, buffer[7] stays zero, CRC covers it. */
+    det.last_absolute_floor_fired = true;
+    CHECK(service_wire_serialize_slot(&slot, 0, 1, 1, buf) == 0,
+          "serialize OK (flag set)");
+    CHECK(buf[6] == L2FWD_WIRE_FLAG_ABSOLUTE_FLOOR,
+          "buf[6] == L2FWD_WIRE_FLAG_ABSOLUTE_FLOOR (got 0x%02x)", buf[6]);
+    CHECK(buf[7] == 0, "buf[7] still reserved = 0");
+    CHECK(service_wire_verify(buf, sizeof(buf)) == L2FWD_WIRE_OK,
+          "verify OK — CRC covers the flag byte");
+
+    /* Flag clear: buffer[6] is zero again. */
+    det.last_absolute_floor_fired = false;
+    CHECK(service_wire_serialize_slot(&slot, 0, 1, 1, buf) == 0,
+          "serialize OK (flag clear)");
+    CHECK(buf[6] == 0, "buf[6] == 0 when flag false (got 0x%02x)", buf[6]);
 }
 
 /* -------------------------------------------------------------------------
@@ -552,6 +588,7 @@ int main(void) {
     test_null_handling();
     test_size_constants();
     test_reserved_zero();
+    test_absolute_floor_flag();
 
     fprintf(stderr, "\n=== SUMMARY: %d PASS, %d FAIL ===\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;

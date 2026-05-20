@@ -304,7 +304,16 @@ int service_wire_serialize_slot(const struct service_stats *slot,
     buffer[3] = L2FWD_WIRE_MAGIC_3;
     buffer[4] = L2FWD_WIRE_VERSION;
     buffer[5] = L2FWD_WIRE_MSGTYPE_SNAP;
-    /* buffer[6..7] reserved */
+    /* buffer[6] = header flags byte; bit 0 carries the absolute-floor
+     * provenance from the detection state. buffer[7] stays reserved-zero.
+     * Both are inside the CRC region, so the existing CRC covers them. */
+    {
+        const struct service_detection_state *fdet =
+            (const struct service_detection_state *)slot->detection_state;
+        buffer[6] = (fdet && fdet->last_absolute_floor_fired)
+                    ? L2FWD_WIRE_FLAG_ABSOLUTE_FLOOR : 0u;
+    }
+    /* buffer[7] reserved */
     service_wire_write_u64(buffer +  8, timestamp_ns);
     service_wire_write_u16(buffer + 16, slot_id);
     service_wire_write_u16(buffer + 18, L2FWD_WIRE_PAYLOAD_SIZE);

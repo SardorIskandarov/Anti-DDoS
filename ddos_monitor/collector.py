@@ -129,6 +129,7 @@ PHASE_TRANSITION_COLUMNS = (
     "profile_name", "from_phase", "from_phase_str", "to_phase",
     "to_phase_str", "tier0_score", "tier1_final_score",
     "attack_evidence", "consecutive_attack_windows",
+    "absolute_floor_fired",
 )
 
 TEMPORAL_AGGREGATE_COLUMNS = (
@@ -245,6 +246,11 @@ def _to_phase_transition_row(m: WireMessage, prev_phase: int) -> dict:
         "tier1_final_score": m.tier1_final_score,
         "attack_evidence": max(m.tier0_score, m.tier1_final_score),
         "consecutive_attack_windows": m.consecutive_attack_windows,
+        # Provenance: did the absolute volumetric floor force this transition?
+        # The engine only sets the flag in floor-fired windows, so passing it
+        # through is correct — it is meaningful on to_phase=ATTACK rows and 0
+        # otherwise.
+        "absolute_floor_fired": 1 if m.absolute_floor_fired else 0,
     }
 
 

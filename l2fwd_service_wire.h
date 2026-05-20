@@ -61,6 +61,14 @@ struct service_stats;
 #define L2FWD_WIRE_PAYLOAD_SIZE 380
 #define L2FWD_WIRE_FOOTER_SIZE    4
 
+/* Header flags byte at buffer offset 6 (was reserved). No version bump:
+ * consumers that skip reserved bytes are unaffected, and the byte is inside
+ * the CRC region [0..411]. bit 0 = the slot's transition INTO ATTACK was
+ * forced by the absolute volumetric floor (raw volume past a hard ceiling,
+ * bypassing the gate) rather than the normal gated cascade. buffer[7] and
+ * bits 1..7 of buffer[6] remain reserved-zero for future flags. */
+#define L2FWD_WIRE_FLAG_ABSOLUTE_FLOOR  0x01
+
 /* Payload section offsets (relative to payload start, not buffer start). */
 #define L2FWD_WIRE_PL_IDENTITY_OFF    0
 #define L2FWD_WIRE_PL_IDENTITY_SIZE  16

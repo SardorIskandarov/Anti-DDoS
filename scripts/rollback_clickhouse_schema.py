@@ -43,6 +43,17 @@ NEW_TABLES = (
     config.TABLE_REGISTRY_SNAPSHOTS,
 )
 
+# Inverse of COLUMN_MIGRATIONS in migrate_clickhouse_schema.py. Each is an
+# idempotent DROP COLUMN IF EXISTS, run BEFORE the table drops so the rollback
+# order mirrors the forward migration (which ADDED the column after creating
+# the tables). Only applied to tables that still exist (a full teardown drops
+# the table anyway; this keeps a column-only rollback clean and ordered).
+COLUMN_ROLLBACKS = (
+    (config.TABLE_PHASE_TRANSITIONS,
+     "ALTER TABLE {db}." + config.TABLE_PHASE_TRANSITIONS +
+     " DROP COLUMN IF EXISTS absolute_floor_fired"),
+)
+
 
 def log(msg):
     ts = time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -79,11 +90,19 @@ def run_rollback(dry_run):
     if dry_run:
         log("DRY RUN — the following SQL would be executed:")
         print()
-        for i, sql in enumerate(drop_sqls, start=1):
-            print(f"-- step {i}: drop per-service table")
+        step = 1
+        for tbl, sql in COLUMN_ROLLBACKS:
+            print(f"-- step {step}: drop additive column on {tbl} "
+                  "(mirrors the forward migration in reverse)")
+            print(sql.format(db=db) + ";")
+            print()
+            step += 1
+        for sql in drop_sqls:
+            print(f"-- step {step}: drop per-service table")
             print(sql + ";")
             print()
-        print(f"-- step {len(drop_sqls) + 1}: restore legacy table name")
+            step += 1
+        print(f"-- step {step}: restore legacy table name")
         print(f"--         (only if {LEGACY_RENAMED_NAME} exists and")
         print(f"--          {LEGACY_TABLE_NAME} does not)")
         print(rename_sql + ";")
@@ -103,6 +122,15 @@ def run_rollback(dry_run):
 
     try:
         existing = _existing_tables(client, db)
+
+        # Step 0: drop additive columns first (inverse order of the forward
+        # migration), only on tables that still exist.
+        for tbl, sql in COLUMN_ROLLBACKS:
+            if tbl in existing:
+                log(f"dropping additive column on '{tbl}'")
+                client.execute(sql.format(db=db))
+            else:
+                log(f"table '{tbl}' not present — column drop skipped")
 
         # Step 1..4: drop the per-service tables.
         for t in NEW_TABLES:

@@ -59,6 +59,7 @@ def build_message(**kw):
         # header
         version=config.WIRE_VERSION,
         msg_type=config.WIRE_MSGTYPE_SNAP,
+        flags_byte=0,                   # header flags @ offset 6 (bit0 = abs floor)
         timestamp_ns=1_700_000_000_000_000_000,
         slot_id=42,
         payload_len=config.WIRE_PAYLOAD_SIZE,
@@ -109,7 +110,8 @@ def build_message(**kw):
     buf[0:4] = config.WIRE_MAGIC
     buf[4] = d["version"]
     buf[5] = d["msg_type"]
-    # buf[6:8] reserved
+    buf[6] = d["flags_byte"]   # header flags byte (bit0 = absolute floor)
+    # buf[7] reserved
     struct.pack_into(">Q", buf, 8, d["timestamp_ns"])
     struct.pack_into(">H", buf, 16, d["slot_id"])
     struct.pack_into(">H", buf, 18, d["payload_len"])
@@ -255,6 +257,7 @@ def test_parse_known_good_message():
     _eq(m.baseline_freeze_remaining, 30, "baseline_freeze_remaining")
     _eq(m.thaw_cooldown_remaining, 5, "thaw_cooldown_remaining")
     _eq(m.windows_seen, 12345, "windows_seen")
+    _eq(m.absolute_floor_fired, False, "absolute_floor_fired (default msg)")
 
     # raw counters
     _eq(m.inbound_pkts, 1000, "inbound_pkts")
@@ -344,6 +347,16 @@ def test_zeroed_warmup_heartbeat():
     _eq(m.inbound_pkts, 0, "inbound_pkts")
     _eq(m.profile_name, "", "profile_name (empty)")
     _eq(m.win_300s.total_pkts, 0, "win_300s.total_pkts")
+    _eq(m.absolute_floor_fired, False, "absolute_floor_fired (zero msg)")
+
+
+def test_absolute_floor_flag():
+    """Header flags byte (offset 6) bit 0 -> WireMessage.absolute_floor_fired."""
+    m_on = parse_message(build_message(flags_byte=0x01))
+    _eq(m_on.absolute_floor_fired, True, "flags_byte=0x01 -> True")
+
+    m_off = parse_message(build_message(flags_byte=0x00))
+    _eq(m_off.absolute_floor_fired, False, "flags_byte=0x00 -> False")
 
 
 def test_bad_magic():

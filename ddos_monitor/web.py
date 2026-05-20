@@ -524,7 +524,7 @@ def api_alerts():
             SELECT timestamp_dt, slot_id, target_ip_str, port, proto_kind,
                    profile_name, from_phase_str, to_phase_str,
                    tier0_score, tier1_final_score, attack_evidence,
-                   consecutive_attack_windows
+                   consecutive_attack_windows, absolute_floor_fired
             FROM {config.TABLE_PHASE_TRANSITIONS}
             ORDER BY timestamp_ns DESC
             LIMIT %(lim)s
@@ -543,6 +543,7 @@ def api_alerts():
                 'tier1_final_score': float(r[9]),
                 'attack_evidence': float(r[10]),
                 'consecutive_attack_windows': r[11],
+                'absolute_floor_fired': bool(r[12]),
             }
             for r in rows
         ])
