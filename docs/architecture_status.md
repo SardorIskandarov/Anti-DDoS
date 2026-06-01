@@ -72,9 +72,9 @@ but the struct definition in `.h` may persist (decision deferred).
 
 | Path                                            | Status     | Notes                                  |
 |-------------------------------------------------|------------|----------------------------------------|
-| `service_registry/services.json`                | ACTIVE-NEW | Source of truth for registry           |
-| `service_registry/docs/services_schema.md`      | ACTIVE-NEW | JSON schema spec (P0)                  |
-| `service_registry/scripts/*.py`                 | ACTIVE-NEW | Generator + validator tooling          |
+| `config/services.json`                | ACTIVE-NEW | Source of truth for registry           |
+| `config/docs/services_schema.md`      | ACTIVE-NEW | JSON schema spec (P0)                  |
+| `config/scripts/*.py`                 | ACTIVE-NEW | Generator + validator tooling          |
 | `third_party/cjson/*`                           | SUPPORTING | Vendored MIT-licensed JSON parser      |
 | `meson.build`, `Makefile`                       | SUPPORTING | Build system                           |
 | `CHANGELOG.md`                                  | SUPPORTING | Bumped at P16 cutover                  |

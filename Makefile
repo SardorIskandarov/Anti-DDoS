@@ -9,7 +9,7 @@
 
 PROJECT_ROOT  := $(shell pwd)
 VENV_PY       := $(PROJECT_ROOT)/ddos_monitor/venv/bin/python3
-SVC_JSON_SRC  := $(PROJECT_ROOT)/service_registry/services.json
+SVC_JSON_SRC  := $(PROJECT_ROOT)/config/services.json
 SVC_JSON_RUN  := /tmp/svc.json
 ENGINE_BIN    := $(PROJECT_ROOT)/build/l2fwd
 SOCKET_PATH   := /tmp/ddos_stats_socket
@@ -39,11 +39,17 @@ run:
 	@sudo rm -f $(MONITOR_LOG)
 	@: > $(MONITOR_LOG)
 	@echo "[1/3] collector ..."
-	@setsid nohup $(VENV_PY) -u $(PROJECT_ROOT)/ddos_monitor/main.py \
+	@# P4: collector runs the Python detection brain off shared memory
+	@# (DETECTION_SOURCE=shm, the default). It reads the SAME services.json the
+	@# engine runs with, and attaches to the shm once the engine creates it, so
+	@# it no longer needs to start before the engine. Set DETECTION_SOURCE=socket
+	@# here to roll back to the legacy C-wire path.
+	@setsid env SERVICES_JSON_PATH=$(SVC_JSON_RUN) \
+		nohup $(VENV_PY) -u $(PROJECT_ROOT)/ddos_monitor/main.py \
 		>> $(MONITOR_LOG) 2>&1 < /dev/null & \
 		echo $$! > $(COLLECTOR_PIDFILE)
 	@sleep 3
-	@if [ -S $(SOCKET_PATH) ]; then \
+	@if kill -0 $$(cat $(COLLECTOR_PIDFILE)) 2>/dev/null; then \
 		echo "      ✓ collector (pid $$(cat $(COLLECTOR_PIDFILE)))"; \
 	else \
 		echo "      ✗ collector failed — see $(MONITOR_LOG)"; \

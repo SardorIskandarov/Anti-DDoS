@@ -117,7 +117,7 @@ Ordering is enforced by the unit dependencies, not by timing guesses:
 3. **Engine** declares `Requires=` / `After=` on **both**
    `anti-ddos-collector.service` and `anti-ddos-dpdk-setup.service`, so it
    waits for the collector socket *and* the NIC binding. Before launching
-   `l2fwd`, its `ExecStartPre` copies `service_registry/services.json` to
+   `l2fwd`, its `ExecStartPre` copies `config/services.json` to
    `/tmp/svc.json` and then **polls for up to 10 s** for
    `/tmp/ddos_stats_socket` to exist. This poll is critical: the engine does a
    single non-blocking `connect()` at startup with no retry, so the socket
@@ -296,7 +296,7 @@ so updates are just a rebuild + restart:
   ```bash
   sudo systemctl restart anti-ddos-dashboard.service
   ```
-- **`service_registry/services.json` changed:** the engine's `ExecStartPre`
+- **`config/services.json` changed:** the engine's `ExecStartPre`
   re-copies it to `/tmp/svc.json` on every start, so just restart the engine.
 
 ---
@@ -309,5 +309,5 @@ sudo make uninstall-systemd
 
 This stops all services, disables them, removes the unit files from
 `/etc/systemd/system/`, and runs `daemon-reload`. **Data is preserved** — the
-ClickHouse database and `service_registry/services.json` are untouched. The
+ClickHouse database and `config/services.json` are untouched. The
 dev Makefile workflow (`make run`) continues to work unchanged.

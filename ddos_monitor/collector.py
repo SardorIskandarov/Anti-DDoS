@@ -1,56 +1,48 @@
 """
-collector.py — per-service binary collector (P12 complete rewrite).
+collector.py — per-service detection collector.
 
-Consumes the L2FW wire-protocol v1 stream the C engine emits and lands
-it in ClickHouse. Replaces the legacy CSV/text collector entirely.
+Reads the raw-telemetry snapshot the C data plane publishes to shared memory,
+runs the Python detection brain (ddos_monitor/detection) to compute the
+verdict, and lands the result in ClickHouse.
 
 Architecture (threading, NOT asyncio):
 
-    reader thread   socket(server) -> parse -> bounded queue
+    reader thread   shm snapshot -> DetectionPipeline -> bounded queue
     writer thread   queue -> batch -> ClickHouse (3 tables)
     stats thread    periodic stats line every COLLECTOR_STATS_INTERVAL_S
     main thread     signal handling + thread lifecycle
 
-Socket role: the C engine's hotpath connects as a CLIENT to
-ENGINE_SOCKET_PATH, so this collector is the SERVER — it binds,
-listens, and accepts. (The P11/P12 prompt sketch had the collector
-calling connect(); that would be backwards for this codebase. The
-engine is locked and is the client, so the collector must be the
-server. Operational note: start the collector BEFORE the engine — the
-engine attempts a single non-blocking connect at startup and does not
-retry.)
+History: through P4 the collector consumed a pre-computed C verdict over a Unix
+socket (wire protocol v2). At the P5 cutover the detection logic moved to Python
+and the socket path was removed — the engine now ships RAW telemetry via shared
+memory and the verdict is computed here. The ClickHouse writer is unchanged: the
+detector emits the same WireMessage row shape the writers always consumed.
 
-Backpressure: the queue is bounded. When the writer can't keep up and
-the queue fills, the reader drops the OLDEST queued message to make
-room for the newest. The reader never blocks on the queue — losing the
-socket read cadence would lose engine messages outright, which is
-worse than dropping a stale queued one.
+Backpressure: the queue is bounded. When the writer can't keep up and the queue
+fills, the reader drops the OLDEST queued message to make room for the newest.
 
-Durability: telemetry, not transactional data. On a ClickHouse insert
-failure the current batch is dropped (logged), the client is forced to
-reconnect, and the collector keeps reading. Losing a few seconds of
-stats during a DB outage is acceptable; unbounded re-queue growth is
-not.
+Durability: telemetry, not transactional data. On a ClickHouse insert failure
+the current batch is dropped (logged), the client reconnects, and the collector
+keeps reading. Losing a few seconds of stats during a DB outage is acceptable.
 
-systemd-friendly: SIGTERM / SIGINT set a shutdown event; threads drain
-and exit; main() returns 0 on clean shutdown.
+systemd-friendly: SIGTERM / SIGINT set a shutdown event; threads drain and
+exit; main() returns 0 on clean shutdown.
 """
 
+import json
 import logging
-import os
 import queue
 import signal
-import socket
 import sys
 import threading
 import time
 
 import config
-from wire_parser import (
-    parse_message,
-    WireMessage,
-    WireParseError,
-)
+from wire_parser import WireMessage   # row-shape contract built by the detector
+# P4 cutover: Python detection brain reading the shared-memory snapshot.
+from detection.config import DetectionConfig, load_config
+from detection.pipeline import DetectionPipeline
+from detection.snapshot import SnapshotReader, SnapshotLayoutError
 
 logger = logging.getLogger("collector")
 
@@ -327,110 +319,98 @@ def _enqueue_drop_oldest(msg: WireMessage):
                 "(total dropped so far: %d)", dropped)
 
 
-def _handle_connection(conn: socket.socket):
-    """Read 416-byte messages off an accepted connection until it closes."""
-    conn.settimeout(1.0)   # so shutdown_event is checked at least every 1s
-    buffer = b""
-    msg_size = config.WIRE_MSG_SIZE
-    while not shutdown_event.is_set():
-        try:
-            chunk = conn.recv(65536)
-        except socket.timeout:
-            continue
-        except OSError as exc:
-            logger.warning("recv error: %s; closing connection", exc)
-            return
-        if not chunk:
-            logger.info("engine closed the connection")
-            return
+# ---------------------------------------------------------------------------
+# Reader thread — shared-memory snapshot + Python detection brain
+#
+# Reads the raw telemetry the C data plane publishes to shared memory, runs the
+# Python detector, and enqueues the resulting WireMessages — the shape the
+# writer thread + ClickHouse schema expect. (The legacy Unix-socket reader was
+# removed at P5: the engine no longer emits the wire protocol; it publishes raw
+# telemetry to shared memory and the verdict is computed here.)
+# ---------------------------------------------------------------------------
 
-        buffer += chunk
-        while len(buffer) >= msg_size:
-            msg_bytes = buffer[:msg_size]
-            buffer = buffer[msg_size:]
-            _bump("msgs_read")
+
+def _load_detection_config() -> DetectionConfig:
+    """Load per-slot profiles + learning_mode from services.json. On any
+    failure, fall back to an empty config (every slot uses the built-in default
+    profile) so the collector still runs."""
+    try:
+        with open(config.SERVICES_JSON_PATH) as f:
+            sj = json.load(f)
+        cfg = load_config(sj)
+        logger.info("detector config: learning_mode=%s, %d slot profiles (%s)",
+                    cfg.learning_mode, len(cfg.by_key), config.SERVICES_JSON_PATH)
+        return cfg
+    except Exception:  # noqa: BLE001
+        logger.exception("could not load %s; detector uses the default profile "
+                         "for every slot", config.SERVICES_JSON_PATH)
+        return DetectionConfig(learning_mode=False, by_key={}, profiles={})
+
+
+def _shm_read_once(pipe: DetectionPipeline, reader: SnapshotReader) -> int:
+    """Process the latest published bank if new; enqueue its WireMessages.
+    Returns the count produced (0 if no new publish). Single iteration so it is
+    unit-testable in isolation."""
+    res = reader.read_latest()
+    if res is None:
+        return 0
+    header, records = res
+    msgs = pipe.process_snapshot(header, records)
+    for m in msgs:
+        _bump("msgs_read")
+        _bump("msgs_parsed")
+        _enqueue_drop_oldest(m)
+    return len(msgs)
+
+
+def shm_reader_thread():
+    """Attach to the snapshot shm and feed the queue from the Python detector.
+
+    Resumes detector state from a checkpoint (no cold warmup), checkpoints
+    periodically and on shutdown, and tolerates the producer (engine) not being
+    up yet — it retries the attach, exactly like the socket reader retries
+    accept()."""
+    cfg = _load_detection_config()
+    pipe = DetectionPipeline(cfg)
+    if pipe.load_checkpoint(config.DETECTOR_CHECKPOINT_PATH):
+        logger.info("resumed detector state from %s",
+                    config.DETECTOR_CHECKPOINT_PATH)
+
+    reader = SnapshotReader(config.SHM_PATH)
+    opened = False
+    last_ckpt = time.time()
+
+    while not shutdown_event.is_set():
+        if not opened:
             try:
-                msg = parse_message(msg_bytes)
-            except WireParseError as exc:
-                _bump("msgs_dropped_parse_error")
-                with stats_lock:
-                    n = stats["msgs_dropped_parse_error"]
-                # Log the first error and then 1-in-100 to avoid spam.
-                if n == 1 or n % 100 == 0:
-                    logger.warning("parse error (#%d): %s", n, exc)
+                reader.open()
+                opened = True
+                logger.info("shm reader attached to %s", config.SHM_PATH)
+            except FileNotFoundError:
+                shutdown_event.wait(config.COLLECTOR_RECONNECT_DELAY_S)
                 continue
-            _bump("msgs_parsed")
-            _enqueue_drop_oldest(msg)
+            except SnapshotLayoutError:
+                logger.exception("snapshot layout mismatch — engine/collector "
+                                 "contract drift; retrying")
+                shutdown_event.wait(2.0)
+                continue
 
-
-def reader_thread():
-    """Bind the engine socket, accept connections, feed the queue.
-
-    Loops forever (until shutdown) so an engine restart is handled
-    transparently: when the engine reconnects, accept() returns again.
-    """
-    sock_path = config.ENGINE_SOCKET_PATH
-    while not shutdown_event.is_set():
-        server = None
         try:
-            # Remove any stale socket file from a previous run / crash.
-            if os.path.exists(sock_path):
-                try:
-                    os.unlink(sock_path)
-                except OSError as exc:
-                    logger.warning("could not unlink stale socket %s: %s",
-                                   sock_path, exc)
+            _shm_read_once(pipe, reader)
+        except Exception:  # noqa: BLE001 — keep the reader alive
+            logger.exception("shm read/process error")
 
-            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            server.bind(sock_path)
-            server.listen(1)
-            server.settimeout(1.0)   # interruptible accept()
-            logger.info("listening on %s (collector is the socket server; "
-                        "the engine connects as client)", sock_path)
+        now = time.time()
+        if now - last_ckpt >= config.DETECTOR_CHECKPOINT_INTERVAL_S:
+            pipe.save_checkpoint(config.DETECTOR_CHECKPOINT_PATH)
+            last_ckpt = now
 
-            while not shutdown_event.is_set():
-                try:
-                    conn, _ = server.accept()
-                except socket.timeout:
-                    continue
-                except OSError as exc:
-                    logger.warning("accept error: %s", exc)
-                    break
-                _bump("accepts")
-                logger.info("engine connected")
-                try:
-                    _handle_connection(conn)
-                finally:
-                    try:
-                        conn.close()
-                    except OSError:
-                        pass
-                if not shutdown_event.is_set():
-                    logger.info("waiting for the engine to reconnect ...")
-        except OSError as exc:
-            logger.warning("socket setup error: %s; retrying in %.1fs",
-                           exc, config.COLLECTOR_RECONNECT_DELAY_S)
-            _bump("reconnects")
-            shutdown_event.wait(config.COLLECTOR_RECONNECT_DELAY_S)
-        except Exception:  # noqa: BLE001 — last-resort guard, keep thread alive
-            logger.exception("unexpected reader error; retrying")
-            _bump("reconnects")
-            shutdown_event.wait(config.COLLECTOR_RECONNECT_DELAY_S)
-        finally:
-            if server is not None:
-                try:
-                    server.close()
-                except OSError:
-                    pass
+        shutdown_event.wait(config.SHM_POLL_INTERVAL_S)
 
-    # Clean up the socket file on graceful exit.
-    if os.path.exists(sock_path):
-        try:
-            os.unlink(sock_path)
-        except OSError:
-            pass
-    logger.info("reader thread exiting")
+    # Graceful exit: persist learned baselines so the next start resumes warm.
+    pipe.save_checkpoint(config.DETECTOR_CHECKPOINT_PATH)
+    reader.close()
+    logger.info("shm reader thread exiting")
 
 
 # ---------------------------------------------------------------------------
@@ -609,14 +589,15 @@ def main():
         format="%(asctime)s %(levelname)s [%(threadName)s] %(message)s",
     )
     logger.info("=== Anti-DDoS per-service collector starting ===")
-    logger.info("socket=%s queue_max=%d batch_size=%d batch_timeout=%.1fs",
-                config.ENGINE_SOCKET_PATH, config.COLLECTOR_QUEUE_MAX_SIZE,
-                config.COLLECTOR_BATCH_SIZE, config.COLLECTOR_BATCH_TIMEOUT_S)
+    logger.info("detection: Python brain off shared memory shm=%s checkpoint=%s "
+                "queue_max=%d batch_size=%d",
+                config.SHM_PATH, config.DETECTOR_CHECKPOINT_PATH,
+                config.COLLECTOR_QUEUE_MAX_SIZE, config.COLLECTOR_BATCH_SIZE)
 
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 
-    reader = threading.Thread(target=reader_thread, name="reader",
+    reader = threading.Thread(target=shm_reader_thread, name="reader",
                               daemon=False)
     writer = threading.Thread(target=writer_thread, name="writer",
                               daemon=False)

@@ -7,7 +7,7 @@ the engine picks up the change without a restart.
 
 ## Where the registry lives
 
-- **Source of truth:** `service_registry/services.json` (committed to git).
+- **Source of truth:** `config/services.json` (committed to git).
 - **Runtime copy:** `/tmp/svc.json` — what the engine actually reads. The
   engine's `ExecStartPre` copies `services.json` -> `/tmp/svc.json` on every
   start; for a live reload you update `/tmp/svc.json` and SIGHUP the engine.
@@ -20,15 +20,15 @@ no dropped traffic.
 ## Add a new protected IP
 
 1. **Edit the registry.** Add the IP (and its service slots) to the
-   appropriate list in `service_registry/services.json`. Follow the existing
-   structure exactly — see `service_registry/docs/services_schema.md` for the
+   appropriate list in `config/services.json`. Follow the existing
+   structure exactly — see `config/docs/services_schema.md` for the
    schema.
 
 2. **Validate the JSON before doing anything else:**
 
    ```bash
-   python3 service_registry/scripts/validate_services_json.py \
-       service_registry/services.json
+   python3 config/scripts/validate_services_json.py \
+       config/services.json
    ```
 
    Do not proceed if validation fails — a malformed file will be rejected by
@@ -39,12 +39,12 @@ no dropped traffic.
 
    - Via systemd (production):
      ```bash
-     sudo cp service_registry/services.json /tmp/svc.json
+     sudo cp config/services.json /tmp/svc.json
      sudo systemctl kill --signal=SIGHUP anti-ddos-engine.service
      ```
    - Via raw PID (dev or production):
      ```bash
-     sudo cp service_registry/services.json /tmp/svc.json
+     sudo cp config/services.json /tmp/svc.json
      sudo kill -HUP "$(pgrep -f l2fwd)"
      ```
 
@@ -58,7 +58,7 @@ no dropped traffic.
    journalctl -u anti-ddos-engine -n 20 --no-pager
    ```
 
-5. **Commit** `service_registry/services.json` so the change survives the next
+5. **Commit** `config/services.json` so the change survives the next
    engine restart (which re-copies from the committed file).
 
 ---
@@ -67,8 +67,8 @@ no dropped traffic.
 
 Same flow as adding, in reverse:
 
-1. Remove the IP / its slots from `service_registry/services.json`.
-2. Validate: `python3 service_registry/scripts/validate_services_json.py service_registry/services.json`
+1. Remove the IP / its slots from `config/services.json`.
+2. Validate: `python3 config/scripts/validate_services_json.py config/services.json`
 3. Copy to `/tmp/svc.json` and SIGHUP the engine (commands above).
 4. Verify the IP is gone from the **Registry** tab.
 5. Commit the change.
@@ -82,7 +82,7 @@ ClickHouse are INSERT-only and remain queryable.
 
 Profiles define the detection thresholds a slot is scored against.
 
-1. Edit the profile object in `service_registry/services.json` — adjust the
+1. Edit the profile object in `config/services.json` — adjust the
    threshold fields, leave the structure intact.
 2. Validate the JSON (same command as above).
 3. Copy to `/tmp/svc.json` and SIGHUP the engine.
@@ -109,7 +109,7 @@ The reload subsystem is fail-safe by design:
 Recovery:
 
 1. Read the error: `journalctl -u anti-ddos-engine -n 30 --no-pager`.
-2. Fix `service_registry/services.json` (re-run the validator until clean).
+2. Fix `config/services.json` (re-run the validator until clean).
 3. Re-copy to `/tmp/svc.json` and SIGHUP again.
 4. The engine never adopted the broken config, so there is nothing to roll
    back — it has been running the last-good registry the whole time.
@@ -117,7 +117,7 @@ Recovery:
 If you need to get back to the committed state immediately:
 
 ```bash
-sudo cp service_registry/services.json /tmp/svc.json
+sudo cp config/services.json /tmp/svc.json
 sudo systemctl kill --signal=SIGHUP anti-ddos-engine.service
 ```
 

@@ -12,7 +12,7 @@ This is the authoritative table of WHEN each file moves and HOW.
 ## Phase-by-phase movement schedule
 
 ### Phase 0 — JSON tooling (P0)
-- `service_registry/` directory tree created [new]
+- `config/` directory tree created [new]
 - All existing engine files [stay]
 
 ### Phase 1 — Engine infrastructure (P1-P3)
@@ -82,7 +82,7 @@ This is the authoritative table of WHEN each file moves and HOW.
 | `tests/*`                    | Test harness layout doesn't change                 |
 | `ddos_monitor/*`             | Python backend layout doesn't change               |
 | `third_party/cjson/*`        | Vendored dep; only changes on cJSON version bump   |
-| `service_registry/*`         | Config source of truth; stays put                  |
+| `config/*`         | Config source of truth; stays put                  |
 
 ## Rollback considerations
 

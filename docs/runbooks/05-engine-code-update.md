@@ -77,7 +77,7 @@ collector -> engine -> dashboard sequence for you.
 No service restart. Copy to the runtime path and SIGHUP the engine:
 
 ```bash
-sudo cp service_registry/services.json /tmp/svc.json
+sudo cp config/services.json /tmp/svc.json
 sudo systemctl kill --signal=SIGHUP anti-ddos-engine.service
 ```
 

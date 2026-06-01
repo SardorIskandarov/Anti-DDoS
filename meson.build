@@ -14,7 +14,7 @@ add_project_arguments('-march=native', '-O3', '-funroll-loops', language: 'c')
 
 # P1: include path for the vendored cJSON parser (third_party/cjson).
 # Used by l2fwd_service_registry.c starting in P2.
-inc_dirs = include_directories('third_party/cjson')
+inc_dirs = include_directories('engine', 'third_party/cjson')
 
 # P1: vendored cJSON compiled as its own static lib so we can relax
 # warnings ONLY for that translation unit (upstream code emits a few
@@ -31,20 +31,21 @@ cjson_lib = static_library('cjson',
 )
 
 src = [
-  'main.c',
+  'engine/main.c',
   # P7 cutover: the four legacy per-IP modules (l2fwd_ddos_collector.c,
   # l2fwd_detection_engine.c, l2fwd_l2_profile.c, l2fwd_temporal.c) have
   # been retired and their source moved to legacy/. They are no longer
   # compiled into the engine.
-  'l2fwd_service_registry.c',      # P1: skeleton (stubs only); P2 fleshed out
-  'l2fwd_service_stats.c',         # P4: runtime per-service stats data model
-  'l2fwd_service_detection.c',     # P5: per-service detection state
-  'l2fwd_service_temporal_state.c',# P5: per-service temporal state
-  'l2fwd_service_reload.c',        # P6: SIGHUP-driven services.json reload
-  'l2fwd_service_hotpath.c',       # P7: per-service packet hot path
-  'l2fwd_service_features.c',      # P8: feature extraction (HLL/CM/EWMA)
-  'l2fwd_service_scoring.c',       # P9: detection scoring + phase machine
-  'l2fwd_service_wire.c',          # P10: binary wire protocol v1
+  'engine/l2fwd_service_registry.c',      # P1: skeleton (stubs only); P2 fleshed out
+  'engine/l2fwd_service_stats.c',         # P4: runtime per-service stats data model
+  'engine/l2fwd_service_reload.c',        # P6: SIGHUP-driven services.json reload
+  'engine/l2fwd_service_hotpath.c',       # P7: per-service packet hot path
+  'engine/l2fwd_service_features.c',      # HLL/CM sketch primitives (post-cutover)
+  # P5 cutover: detection P8/P9 (feature derivation + scoring/phase) moved to the
+  # Python brain (ddos_monitor/detection); the frozen C parity oracle lives in
+  # legacy/reference/. The socket wire protocol (l2fwd_service_wire.c) is retired
+  # to legacy/ — the engine ships RAW telemetry via the snapshot shm instead.
+  'engine/l2fwd_service_snapshot.c',      # C->Python raw-telemetry shm producer
   ]
 
 executable('l2fwd',
@@ -52,7 +53,7 @@ executable('l2fwd',
   include_directories: inc_dirs,
   link_with: cjson_lib,
   dependencies: [dpdk_dep],
-  link_args: ['-lm'],
+  link_args: ['-lm', '-lrt'],   # -lrt: shm_open for the snapshot producer
   install: true,
 )
 
@@ -62,8 +63,8 @@ executable('l2fwd',
 #   Run:   ./build/test_service_registry_load
 test_registry = executable('test_service_registry_load',
   sources: [
-    'tests/test_service_registry_load.c',
-    'l2fwd_service_registry.c',
+    'tests/c/test_service_registry_load.c',
+    'engine/l2fwd_service_registry.c',
   ],
   include_directories: inc_dirs,
   link_with: cjson_lib,
@@ -80,28 +81,21 @@ test('service_registry_load',
 # same JSON.
 executable('load_one',
   sources: [
-    'tests/load_one.c',
-    'l2fwd_service_registry.c',
+    'tests/c/load_one.c',
+    'engine/l2fwd_service_registry.c',
   ],
   include_directories: inc_dirs,
   link_with: cjson_lib,
   install: false,
 )
 
-# P4: standalone test harness for service_stats data model.
-# No DPDK linkage.
-#   Build: ninja -C build test_service_stats
-#   Run:   ./build/test_service_stats
-# P5: now also links the two new per-service state modules, because
-# l2fwd_service_stats.c references service_detection_state_alloc /
-# service_temporal_state_alloc from the wire_* helpers.
+# P4: standalone test harness for the service_stats data model (raw counters +
+# sketches). No DPDK linkage.
 test_stats = executable('test_service_stats',
   sources: [
-    'tests/test_service_stats.c',
-    'l2fwd_service_stats.c',
-    'l2fwd_service_registry.c',
-    'l2fwd_service_detection.c',
-    'l2fwd_service_temporal_state.c',
+    'tests/c/test_service_stats.c',
+    'engine/l2fwd_service_stats.c',
+    'engine/l2fwd_service_registry.c',
   ],
   include_directories: inc_dirs,
   link_with: cjson_lib,
@@ -113,58 +107,19 @@ test('service_stats',
   timeout: 30,
 )
 
-# P5: standalone test harness for per-service detection state.
-# Pulls in the service_registry so we can read a real profile from
-# services.json for the profile-aware init test.
-#   Build: ninja -C build test_service_detection_state
-#   Run:   ./build/test_service_detection_state
-test_detection = executable('test_service_detection_state',
-  sources: [
-    'tests/test_service_detection_state.c',
-    'l2fwd_service_detection.c',
-    'l2fwd_service_registry.c',
-  ],
-  include_directories: inc_dirs,
-  link_with: cjson_lib,
-  install: false,
-)
+# P5 cutover: test_service_detection_state and test_service_temporal_state were
+# removed — per-slot detection_state / temporal_state no longer exist in the C
+# data model (the Python brain owns detection). The frozen C originals live in
+# legacy/reference/ and are exercised by tests/python/test_detector_*.py.
 
-test('service_detection_state',
-  test_detection,
-  timeout: 30,
-)
-
-# P5: standalone test harness for per-service temporal state.
-# No registry needed — the temporal state is fully self-contained.
-#   Build: ninja -C build test_service_temporal_state
-#   Run:   ./build/test_service_temporal_state
-test_temporal = executable('test_service_temporal_state',
-  sources: [
-    'tests/test_service_temporal_state.c',
-    'l2fwd_service_temporal_state.c',
-  ],
-  include_directories: inc_dirs,
-  install: false,
-)
-
-test('service_temporal_state',
-  test_temporal,
-  timeout: 30,
-)
-
-# P6: standalone test harness for SIGHUP reload subsystem. Links the full
-# Phase 2 stack — registry, stats, detection, temporal, reload — because
-# the reload's perform() touches every layer end-to-end.
-#   Build: ninja -C build test_service_reload
-#   Run:   ./build/test_service_reload
+# P6: standalone test harness for the SIGHUP reload subsystem (registry + stats
+# + reload). Post-cutover there is no detection/temporal state to wire.
 test_reload = executable('test_service_reload',
   sources: [
-    'tests/test_service_reload.c',
-    'l2fwd_service_reload.c',
-    'l2fwd_service_stats.c',
-    'l2fwd_service_registry.c',
-    'l2fwd_service_detection.c',
-    'l2fwd_service_temporal_state.c',
+    'tests/c/test_service_reload.c',
+    'engine/l2fwd_service_reload.c',
+    'engine/l2fwd_service_stats.c',
+    'engine/l2fwd_service_registry.c',
   ],
   include_directories: inc_dirs,
   link_with: cjson_lib,
@@ -176,107 +131,9 @@ test('service_reload',
   timeout: 30,
 )
 
-# P8: standalone test harness for the feature extraction primitives.
-# Exercises HLL, CM, EWMA, burst window, Welford, compute_one, and the
-# temporal ring-buffer push. Pulls in service_stats / service_registry
-# only because compute_one walks struct service_stats by value.
-#   Build: ninja -C build test_service_features
-#   Run:   ./build/test_service_features
-test_features = executable('test_service_features',
-  sources: [
-    'tests/test_service_features.c',
-    'l2fwd_service_features.c',
-    'l2fwd_service_scoring.c',          # P9: features.c now refs is_frozen
-    'l2fwd_service_stats.c',
-    'l2fwd_service_detection.c',
-    'l2fwd_service_temporal_state.c',
-    'l2fwd_service_registry.c',
-  ],
-  include_directories: inc_dirs,
-  link_with: cjson_lib,
-  link_args: ['-lm'],   # service_features uses log/sqrt/ldexp
-  install: false,
-)
-
-test('service_features',
-  test_features,
-  timeout: 30,
-)
-
-# P9: standalone test harness for the detection scoring layer. Exercises
-# CUSUM, Tier-1 channels, phase machine, freeze respect, off-protocol
-# detector. Pulls in scoring + features + the data-model modules (no
-# DPDK; the scoring layer is pure CPU math on stats).
-#   Build: ninja -C build test_service_scoring
-#   Run:   ./build/test_service_scoring
-test_scoring = executable('test_service_scoring',
-  sources: [
-    'tests/test_service_scoring.c',
-    'l2fwd_service_scoring.c',
-    'l2fwd_service_features.c',
-    'l2fwd_service_stats.c',
-    'l2fwd_service_detection.c',
-    'l2fwd_service_temporal_state.c',
-    'l2fwd_service_registry.c',
-  ],
-  include_directories: inc_dirs,
-  link_with: cjson_lib,
-  link_args: ['-lm'],   # scoring + features use math
-  install: false,
-)
-
-test('service_scoring',
-  test_scoring,
-  timeout: 30,
-)
-
-# P10: standalone test harness for the wire protocol. Exercises CRC32,
-# big-endian round-trips, full slot serialize+verify+parse, malformed
-# message rejection, and serializes every active slot from the real
-# services.json registry.
-#   Build: ninja -C build test_service_wire
-#   Run:   ./build/test_service_wire
-test_wire = executable('test_service_wire',
-  sources: [
-    'tests/test_service_wire.c',
-    'l2fwd_service_wire.c',
-    'l2fwd_service_features.c',
-    'l2fwd_service_scoring.c',
-    'l2fwd_service_stats.c',
-    'l2fwd_service_detection.c',
-    'l2fwd_service_temporal_state.c',
-    'l2fwd_service_registry.c',
-  ],
-  include_directories: inc_dirs,
-  link_with: cjson_lib,
-  link_args: ['-lm'],   # features + scoring use math; wire uses ldexp through features
-  install: false,
-)
-
-test('service_wire',
-  test_wire,
-  timeout: 30,
-)
-
-# Test-only helper: emits ONE canonical v2 wire message (the
-# test_full_slot_roundtrip fixture) to stdout as raw bytes, for C->Python
-# wire-equivalence checking. Not a test() target and not installed; links the
-# same sources as test_service_wire so it stays byte-identical to the engine.
-#   Build: ninja -C build dump_wire_sample
-#   Use:   ./build/dump_wire_sample > sample.bin   (binary on stdout)
-dump_wire_sample = executable('dump_wire_sample',
-  sources: [
-    'tests/dump_wire_sample.c',
-    'l2fwd_service_wire.c',
-    'l2fwd_service_features.c',
-    'l2fwd_service_scoring.c',
-    'l2fwd_service_stats.c',
-    'l2fwd_service_detection.c',
-    'l2fwd_service_temporal_state.c',
-    'l2fwd_service_registry.c',
-  ],
-  include_directories: inc_dirs,
-  link_with: cjson_lib,
-  link_args: ['-lm'],
-  install: false,
-)
+# P5 cutover: test_service_features / test_service_scoring / test_service_wire /
+# dump_wire_sample were removed — their C modules (P8 feature derivation, P9
+# scoring, the socket wire protocol) are no longer built into the engine. The
+# frozen P8/P9 parity oracle in legacy/reference/ is exercised by the Python
+# tests (tests/python/test_detector_*.py); HLL/CM sketch math is covered by the
+# snapshot round-trip there.

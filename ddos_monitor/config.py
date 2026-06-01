@@ -108,6 +108,35 @@ TABLE_REGISTRY_SNAPSHOTS  = "service_registry_snapshots"
 TABLE_TRAFFIC_STATS_LEGACY = "traffic_stats_legacy"
 
 # ============================================================================
+# DETECTION (Python brain off the shared-memory snapshot)
+#
+# Since the P5 cutover the collector reads the raw-telemetry snapshot from
+# shared memory and runs the Python detection brain (ddos_monitor/detection);
+# the verdict lands in the SAME ClickHouse tables (the writer is unchanged).
+# The legacy C-engine wire path was removed — to revert the migration, use git.
+# ============================================================================
+
+# Shared-memory object the C snapshot producer publishes to (mirrors
+# SERVICE_SNAPSHOT_SHM_PATH in engine/l2fwd_service_snapshot.h).
+SHM_PATH = _os.environ.get("SHM_PATH", "/dev/shm/anti_ddos_snapshot")
+
+# services.json the detector loads for per-slot profiles + learning_mode. MUST
+# be the same file the engine runs with (the Makefile copies it to /tmp/svc.json
+# and points both the engine and the collector at it).
+SERVICES_JSON_PATH = _os.environ.get("SERVICES_JSON_PATH",
+                                     "/etc/anti-ddos/services.json")
+
+# Detector state checkpoint — survives collector restarts so we resume from
+# learned baselines instead of a ~400-window cold warmup.
+DETECTOR_CHECKPOINT_PATH = _os.environ.get(
+    "DETECTOR_CHECKPOINT_PATH", "/var/lib/anti-ddos/detector_state.ckpt")
+DETECTOR_CHECKPOINT_INTERVAL_S = 30   # periodic checkpoint cadence (seconds)
+
+# Snapshot poll cadence — just above the engine's 1 Hz publish so a new bank is
+# picked up promptly without busy-spinning.
+SHM_POLL_INTERVAL_S = 0.2
+
+# ============================================================================
 # TARGET IP / SUBNET FILTER
 # Only dst_ip addresses falling within these networks are processed.
 # Entries can be single IPs ("1.2.3.4") or CIDR subnets ("1.2.3.0/24").
