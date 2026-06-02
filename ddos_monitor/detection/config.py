@@ -103,7 +103,7 @@ def ip_to_int(ip_str: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
+@dataclass
 class ProfileParams:
     name: str
     alpha: float

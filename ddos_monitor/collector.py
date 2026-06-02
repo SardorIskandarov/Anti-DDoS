@@ -371,7 +371,9 @@ def shm_reader_thread():
     up yet — it retries the attach, exactly like the socket reader retries
     accept()."""
     cfg = _load_detection_config()
-    pipe = DetectionPipeline(cfg)
+    # Pass services.json path so the pipeline can hot-reload when the engine
+    # bumps registry_epoch after a SIGHUP. Without the path, reload is a no-op.
+    pipe = DetectionPipeline(cfg, services_json_path=config.SERVICES_JSON_PATH)
     if pipe.load_checkpoint(config.DETECTOR_CHECKPOINT_PATH):
         logger.info("resumed detector state from %s",
                     config.DETECTOR_CHECKPOINT_PATH)
