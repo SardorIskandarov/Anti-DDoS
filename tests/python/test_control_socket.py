@@ -13,6 +13,7 @@ Verifies the Unix-socket control channel end-to-end:
 
 import json
 import os
+import signal as _signal
 import socket
 import sys
 import tempfile
@@ -260,6 +261,120 @@ def test_queued_action_runs_at_tick_boundary():
         server.stop()
 
 
+def test_request_reload_validates_services_json():
+    """If services.json is missing or invalid, request_reload returns a
+    clean error WITHOUT signalling the engine. Validation is gate #1
+    of the reload safety dance."""
+    pipe = _build_pipeline()
+    # Don't set _services_json_path → action should refuse early.
+    fd, path = tempfile.mkstemp(suffix=".sock", prefix="ctrl-")
+    os.close(fd)
+    os.unlink(path)
+    server = ControlSocketServer(pipe, path=path)
+    server.start()
+    try:
+        resp = _send_command(path, {"action": "request_reload"})
+        assert resp["ok"] is False
+        assert "services_json_path" in resp["error"]
+        print(f"  [PASS] request_reload refuses without services_json_path "
+              f"({resp['error']})")
+    finally:
+        server.stop()
+
+
+def test_request_reload_rejects_invalid_json():
+    """Validation step: malformed services.json on disk must fail the
+    action BEFORE we touch the engine."""
+    pipe = _build_pipeline()
+    # Write a bad services.json and point the pipeline at it.
+    fd, sjpath = tempfile.mkstemp(suffix=".json", prefix="svc-")
+    os.close(fd)
+    with open(sjpath, "w") as f:
+        f.write("{ this is broken")
+    pipe._services_json_path = sjpath
+
+    fd, path = tempfile.mkstemp(suffix=".sock", prefix="ctrl-")
+    os.close(fd)
+    os.unlink(path)
+    server = ControlSocketServer(pipe, path=path)
+    server.start()
+    try:
+        resp = _send_command(path, {"action": "request_reload"})
+        assert resp["ok"] is False
+        assert "valid JSON" in resp["error"] or "valid json" in resp["error"]
+        print(f"  [PASS] request_reload rejects invalid JSON "
+              f"({resp['error'][:60]}...)")
+    finally:
+        server.stop()
+        os.unlink(sjpath)
+
+
+def test_request_reload_detects_epoch_bump():
+    """Happy path (with engine signalling mocked):
+       - operator writes new services.json
+       - sends request_reload
+       - we simulate the engine's epoch bump by having a thread drive a
+         snapshot with a new registry_epoch while the action polls
+       - request_reload returns success with the new epoch
+    We monkey-patch _find_engine_pid + os.kill so the test doesn't touch
+    real processes."""
+    pipe = _build_pipeline()
+
+    # Set up a valid services.json on disk for the validator.
+    fd, sjpath = tempfile.mkstemp(suffix=".json", prefix="svc-")
+    os.close(fd)
+    with open(sjpath, "w") as f:
+        json.dump({"learning_mode": False, "profiles": {}, "services": []}, f)
+    pipe._services_json_path = sjpath
+
+    # Prime pipe._last_registry_epoch so the action has a baseline to compare.
+    pipe.process_snapshot(_header(epoch=10), _records())
+    assert pipe._last_registry_epoch == 10
+
+    fd, path = tempfile.mkstemp(suffix=".sock", prefix="ctrl-")
+    os.close(fd)
+    os.unlink(path)
+    server = ControlSocketServer(pipe, path=path)
+    server.start()
+
+    # Monkey-patch _find_engine_pid + os.kill so we don't touch real processes.
+    import control_socket as cs
+    real_find_pid = cs._find_engine_pid
+    real_kill = os.kill
+    cs._find_engine_pid = lambda: 99999
+
+    # When os.kill is called, instead of signalling, schedule a snapshot
+    # with bumped epoch to simulate the engine's response.
+    kill_observed = {"target": None, "signal": None}
+    def fake_kill(pid, sig):
+        kill_observed["target"] = pid
+        kill_observed["signal"] = sig
+        # Schedule the epoch bump 100ms later, from another thread.
+        def bump():
+            time.sleep(0.1)
+            pipe.process_snapshot(_header(epoch=11), _records())
+        threading.Thread(target=bump, daemon=True).start()
+
+    os.kill = fake_kill
+    try:
+        resp = _send_command(path, {"action": "request_reload"}, timeout=10.0)
+        assert resp["ok"] is True, resp
+        result = resp["result"]
+        assert result["engine_pid"] == 99999
+        assert result["epoch_before"] == 10
+        assert result["epoch_after"] == 11
+        assert kill_observed["target"] == 99999
+        assert kill_observed["signal"] == _signal.SIGHUP
+        print(f"  [PASS] request_reload detects epoch bump "
+              f"({result['epoch_before']} -> {result['epoch_after']} "
+              f"in {result['elapsed_ms']}ms)")
+    finally:
+        cs._find_engine_pid = real_find_pid
+        os.kill = real_kill
+        server.stop()
+        os.unlink(sjpath)
+
+
 def test_socket_file_cleaned_up_on_stop():
     pipe, server, path = _make_server()
     assert os.path.exists(path)
@@ -277,6 +392,9 @@ def main():
     test_unknown_action_returns_error()
     test_invalid_json_returns_error()
     test_queued_action_runs_at_tick_boundary()
+    test_request_reload_validates_services_json()
+    test_request_reload_rejects_invalid_json()
+    test_request_reload_detects_epoch_bump()
     test_socket_file_cleaned_up_on_stop()
     print("RESULT: Phase 2 control socket OK")
     return 0

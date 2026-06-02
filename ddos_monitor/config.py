@@ -103,6 +103,13 @@ TABLE_SERVICE_STATS       = "service_stats"
 TABLE_PHASE_TRANSITIONS   = "service_phase_transitions"
 TABLE_TEMPORAL_AGGREGATES = "service_temporal_aggregates"
 TABLE_REGISTRY_SNAPSHOTS  = "service_registry_snapshots"
+# Interactive-dashboard tables (created on demand via CREATE TABLE IF NOT EXISTS
+# at collector startup — Phase 3+ of the interactive dashboard).
+TABLE_ADMIN_ACTIONS       = "service_admin_actions"
+TABLE_ALERT_ANNOTATIONS   = "service_alert_annotations"
+
+# Path for the collector's control-socket listener (Phase 2 onwards).
+CONTROL_SOCKET_PATH       = "/tmp/anti-ddos-control.sock"
 
 # Legacy table preserved (renamed, never dropped) by the migration.
 TABLE_TRAFFIC_STATS_LEGACY = "traffic_stats_legacy"

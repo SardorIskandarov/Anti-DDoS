@@ -447,7 +447,47 @@ def _connect_clickhouse():
     )
     logger.info("connected to ClickHouse at %s:%s/%s",
                 config.CH_HOST, config.CH_PORT, config.CH_DB)
+    _ensure_interactive_tables(client)
     return client
+
+
+def _ensure_interactive_tables(client):
+    """Idempotent CREATE for the interactive-dashboard tables. The legacy
+    service_stats / phase_transitions / etc. tables remain managed by
+    scripts/migrate_clickhouse_schema.py; these new ones are smaller and
+    auto-created so the dashboard work doesn't need an out-of-band step."""
+    try:
+        client.execute(f"""
+            CREATE TABLE IF NOT EXISTS {config.CH_DB}.{config.TABLE_ADMIN_ACTIONS} (
+                ts_ns        UInt64,
+                ts_dt        DateTime,
+                action       String,
+                args_json    String,
+                status       Enum8('pending'=0, 'success'=1, 'failed'=2),
+                result_json  String,
+                duration_ms  UInt32
+            ) ENGINE = MergeTree()
+            ORDER BY (ts_ns)
+            TTL ts_dt + INTERVAL 30 DAY
+        """)
+        client.execute(f"""
+            CREATE TABLE IF NOT EXISTS {config.CH_DB}.{config.TABLE_ALERT_ANNOTATIONS} (
+                transition_ts_ns  UInt64,
+                slot_id           UInt32,
+                annotated_at_ns   UInt64,
+                status            Enum8('new'=0, 'investigating'=1, 'resolved'=2, 'false_positive'=3),
+                note              String
+            ) ENGINE = ReplacingMergeTree(annotated_at_ns)
+            ORDER BY (transition_ts_ns, slot_id)
+        """)
+        logger.info("interactive-dashboard tables ready: %s, %s",
+                    config.TABLE_ADMIN_ACTIONS,
+                    config.TABLE_ALERT_ANNOTATIONS)
+    except Exception:        # noqa: BLE001
+        # Don't let a schema error kill the writer thread; the interactive
+        # features just won't work until the operator fixes it.
+        logger.exception("failed to ensure interactive-dashboard tables; "
+                         "config editor / annotations will be unavailable")
 
 
 def _collect_batch():

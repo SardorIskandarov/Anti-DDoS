@@ -53,9 +53,11 @@ Socket lifecycle
 import json
 import logging
 import os
+import signal as _signal
 import socket
 import subprocess
 import threading
+import time
 from typing import Optional
 
 logger = logging.getLogger("control_socket")
@@ -146,6 +148,83 @@ def _action_engine_pid(pipe, args: dict) -> dict:
     return {"pid": _find_engine_pid()}
 
 
+def _action_request_reload(pipe, args: dict) -> dict:
+    """Validate services.json, SIGHUP the engine, wait for registry_epoch
+    to bump (engine confirms its reload succeeded).
+
+    Returns {"engine_pid": ..., "new_epoch": ..., "elapsed_ms": ...}.
+
+    Note: this action runs INSIDE the command queue, meaning the
+    pipeline is between ticks while we wait. We don't want to block
+    too long — 5s is generous (engine reload completes in ms). If the
+    engine doesn't bump within timeout, we report failure but leave
+    the pipeline running: the next snapshot the engine publishes will
+    still go through the normal epoch-bump detection path."""
+    # 1. Read + validate the on-disk services.json. The pipeline's
+    #    services_json_path field tells us which file to validate. If
+    #    the path isn't set, the pipeline can't reload at all.
+    path = getattr(pipe, "_services_json_path", None)
+    if not path:
+        raise RuntimeError("pipeline has no services_json_path configured")
+    try:
+        with open(path) as f:
+            new_json = json.load(f)
+    except FileNotFoundError:
+        raise RuntimeError(f"services.json not found at {path}")
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"services.json is not valid JSON: {e}")
+
+    # Defensive validation: ProfileParams.from_json mirrors the
+    # engine's loader. If any profile is malformed we'd rather fail
+    # the reload here than ask the engine to attempt-and-fail.
+    from detection.config import ProfileParams, load_config
+    try:
+        load_config(new_json)        # exercises every profile_from_json
+    except Exception as e:           # noqa: BLE001
+        raise RuntimeError(f"services.json validation failed: {e}")
+
+    # 2. Find the engine pid. Without a pid we can't signal.
+    engine_pid = _find_engine_pid()
+    if engine_pid is None:
+        raise RuntimeError("engine pid not found via pgrep -f l2fwd")
+
+    # 3. Record the current epoch so we can detect the bump.
+    epoch_before = pipe._last_registry_epoch
+
+    # 4. SIGHUP. May fail with PermissionError if the collector doesn't
+    #    have the privilege to signal the engine — that's a deployment
+    #    issue, not a bug; surface it cleanly.
+    try:
+        os.kill(engine_pid, _signal.SIGHUP)
+    except PermissionError as e:
+        raise RuntimeError(f"cannot signal engine pid {engine_pid}: {e}")
+    except ProcessLookupError:
+        raise RuntimeError(f"engine pid {engine_pid} disappeared")
+
+    # 5. Wait up to 5s for _last_registry_epoch to bump. The reader
+    #    thread updates that field at the top of process_snapshot.
+    #    Since we're currently INSIDE process_snapshot's queue drain,
+    #    we have to release control to let the next tick fire. The
+    #    simplest way: just busy-wait with short sleeps — at 1 Hz tick
+    #    cadence we'll see the bump within ~1-2 cycles.
+    t0 = time.monotonic()
+    deadline = t0 + 5.0
+    while time.monotonic() < deadline:
+        if pipe._last_registry_epoch != epoch_before:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            return {
+                "engine_pid": engine_pid,
+                "epoch_before": int(epoch_before),
+                "epoch_after": int(pipe._last_registry_epoch),
+                "elapsed_ms": elapsed_ms,
+            }
+        time.sleep(0.05)
+
+    raise RuntimeError(
+        f"reload timed out: engine pid={engine_pid} did not bump "
+        f"registry_epoch within 5s (epoch still {epoch_before})")
+
+
 def _action_slot_info(pipe, args: dict) -> dict:
     """Return the full SlotState for a slot. Args accepts either
     {"slot_id": int} (matches the record index used by the dashboard's
@@ -179,10 +258,15 @@ def _action_slot_info(pipe, args: dict) -> dict:
     return out
 
 
-# Read-only actions — run inline on the listener thread.
+# Read-only actions — run inline on the listener thread. request_reload
+# is inline because it only READS pipeline state (the services_json_path
+# and the epoch counter) — running it through the command queue would
+# deadlock since it polls for an epoch bump that only the reader thread
+# can produce, and the queue blocks the reader thread.
 _INLINE_ACTIONS = {
-    "ping":        _action_ping,
-    "engine_pid":  _action_engine_pid,
+    "ping":            _action_ping,
+    "engine_pid":      _action_engine_pid,
+    "request_reload":  _action_request_reload,
 }
 
 # Mutating / inspection actions that need the pipeline lock — submitted to
