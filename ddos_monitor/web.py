@@ -586,6 +586,178 @@ def api_alerts():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/audit')
+def api_audit():
+    """Unified audit stream: phase_transitions ∪ admin_actions ∪
+    registry_snapshots, with annotations joined onto transitions.
+
+    Query params:
+      limit (int, default 200)  — max rows total
+      types (csv, default 'transition,admin,registry')  — event-type filter
+
+    Each row has a `type` ('transition' | 'admin' | 'registry') and a
+    `payload` dict with type-specific fields. Annotations on a
+    transition appear as payload.annotation = {status, note,
+    annotated_at}.
+    """
+    ch = get_ch_client()
+    if ch is None:
+        return jsonify({'error': 'clickhouse unavailable'}), 503
+    try:
+        limit = max(1, min(safe_int(request.args.get('limit', 200)), 1000))
+        types_csv = request.args.get('types', 'transition,admin,registry')
+        types = set(t.strip() for t in types_csv.split(',') if t.strip())
+
+        events = []
+
+        # --- Transitions (existing service_phase_transitions table) ---
+        if 'transition' in types:
+            rows = ch.execute(f"""
+                SELECT t.timestamp_ns, t.timestamp_dt, t.slot_id,
+                       t.target_ip_str, t.port, t.proto_kind, t.profile_name,
+                       t.from_phase_str, t.to_phase_str,
+                       t.tier0_score, t.tier1_final_score, t.attack_evidence,
+                       t.consecutive_attack_windows, t.absolute_floor_fired,
+                       a.status, a.note, a.annotated_at_ns
+                FROM {config.TABLE_PHASE_TRANSITIONS} AS t
+                LEFT JOIN (
+                    SELECT transition_ts_ns, slot_id,
+                           argMax(status, annotated_at_ns)         AS status,
+                           argMax(note, annotated_at_ns)           AS note,
+                           max(annotated_at_ns)                    AS annotated_at_ns
+                    FROM {config.TABLE_ALERT_ANNOTATIONS}
+                    GROUP BY transition_ts_ns, slot_id
+                ) AS a
+                ON  a.transition_ts_ns = t.timestamp_ns
+                AND a.slot_id            = t.slot_id
+                ORDER BY t.timestamp_ns DESC
+                LIMIT {limit}
+            """)
+            for r in rows:
+                payload = {
+                    'slot_id': r[2], 'target_ip': r[3], 'port': r[4],
+                    'proto_kind': proto_kind_name(int(r[5])),
+                    'profile_name': r[6],
+                    'from_phase': r[7], 'to_phase': r[8],
+                    'tier0_score': float(r[9]),
+                    'tier1_final_score': float(r[10]),
+                    'attack_evidence': float(r[11]),
+                    'consecutive_attack_windows': r[12],
+                    'absolute_floor_fired': bool(r[13]),
+                }
+                if r[14]:  # annotation present
+                    payload['annotation'] = {
+                        'status': r[14], 'note': r[15] or '',
+                        'annotated_at_ns': int(r[16]) if r[16] else 0,
+                    }
+                events.append({
+                    'type': 'transition',
+                    'ts_ns': int(r[0]),
+                    'timestamp': r[1].isoformat() if r[1] else None,
+                    'payload': payload,
+                })
+
+        # --- Admin actions (NEW service_admin_actions table) ---
+        if 'admin' in types:
+            try:
+                rows = ch.execute(f"""
+                    SELECT ts_ns, ts_dt, action, args_json,
+                           status, result_json, duration_ms
+                    FROM {config.TABLE_ADMIN_ACTIONS}
+                    ORDER BY ts_ns DESC
+                    LIMIT {limit}
+                """)
+                for r in rows:
+                    events.append({
+                        'type': 'admin',
+                        'ts_ns': int(r[0]),
+                        'timestamp': r[1].isoformat() if r[1] else None,
+                        'payload': {
+                            'action': r[2],
+                            'args': json.loads(r[3]) if r[3] else {},
+                            'status': r[4],
+                            'result': json.loads(r[5]) if r[5] else {},
+                            'duration_ms': int(r[6] or 0),
+                        },
+                    })
+            except Exception:    # noqa: BLE001
+                # Table may not exist yet on first run; silently skip.
+                pass
+
+        # --- Registry snapshots (existing reload audit log) ---
+        if 'registry' in types:
+            rows = ch.execute(f"""
+                SELECT timestamp_dt, event_type, source_path,
+                       n_protected_ips, n_profiles, n_services,
+                       n_catchalls, n_total_slots,
+                       reload_count, reload_failures, error_message
+                FROM {config.TABLE_REGISTRY_SNAPSHOTS}
+                ORDER BY timestamp_dt DESC
+                LIMIT {limit}
+            """)
+            for r in rows:
+                ts_dt = r[0]
+                # registry_snapshots uses DateTime (second precision); fake ts_ns
+                # for stable cross-source ordering.
+                ts_ns = int(ts_dt.timestamp() * 1_000_000_000) if ts_dt else 0
+                events.append({
+                    'type': 'registry',
+                    'ts_ns': ts_ns,
+                    'timestamp': ts_dt.isoformat() if ts_dt else None,
+                    'payload': {
+                        'event_type': r[1],
+                        'source_path': r[2],
+                        'n_protected_ips': r[3], 'n_profiles': r[4],
+                        'n_services': r[5], 'n_catchalls': r[6],
+                        'n_total_slots': r[7],
+                        'reload_count': r[8], 'reload_failures': r[9],
+                        'error': r[10],
+                    },
+                })
+
+        # Merge-sort by timestamp descending, truncate.
+        events.sort(key=lambda e: e['ts_ns'], reverse=True)
+        return jsonify(events[:limit])
+
+    except Exception as e:    # noqa: BLE001
+        logger.exception("api_audit failed")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/audit/annotate', methods=['POST'])
+def api_audit_annotate():
+    """Annotate a phase-transition event. Body:
+       {transition_ts_ns: int, slot_id: int, status: str, note: str}
+
+    status ∈ {'new', 'investigating', 'resolved', 'false_positive'}
+    """
+    ch = get_ch_client()
+    if ch is None:
+        return jsonify({'error': 'clickhouse unavailable'}), 503
+    body = request.get_json(silent=True) or {}
+    try:
+        ts_ns = int(body.get('transition_ts_ns'))
+        slot_id = int(body.get('slot_id'))
+        status = str(body.get('status', 'investigating'))
+        note = str(body.get('note', ''))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'bad fields'}), 400
+    if status not in ('new', 'investigating', 'resolved', 'false_positive'):
+        return jsonify({'error': f'bad status: {status!r}'}), 400
+
+    now_ns = int(datetime.now().timestamp() * 1_000_000_000)
+    try:
+        ch.execute(
+            f"INSERT INTO {config.TABLE_ALERT_ANNOTATIONS} "
+            f"(transition_ts_ns, slot_id, annotated_at_ns, status, note) "
+            f"VALUES",
+            [(ts_ns, slot_id, now_ns, status, note)])
+        return jsonify({'ok': True, 'annotated_at_ns': now_ns})
+    except Exception as e:    # noqa: BLE001
+        logger.exception("api_audit_annotate failed")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/health')
 def api_health():
     """Liveness + freshness probe. degraded if data is >5min stale."""

@@ -1,27 +1,107 @@
 {% extends "base.html" %}
-{% block title %}Alerts{% endblock %}
+{% block title %}Audit{% endblock %}
+
+{% block head_extra %}
+<style>
+  /* ---- event-type chip filter row ---- */
+  .chip-row {
+    display: flex; gap: 6px; flex-wrap: wrap;
+    margin: 0 0 14px 0; align-items: center;
+  }
+  .chip {
+    background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--text-dim); cursor: pointer;
+    padding: 4px 12px; border-radius: 12px;
+    font-size: 12px; font-family: inherit;
+    user-select: none;
+  }
+  .chip:hover { color: var(--text); border-color: var(--accent); }
+  .chip.active {
+    background: var(--accent); color: var(--bg);
+    border-color: var(--accent); font-weight: 600;
+  }
+
+  /* ---- per-type row tints ---- */
+  tr.ev-transition td { background: rgba(248,81,73,.04); }
+  tr.ev-admin      td { background: rgba(88,166,255,.04); }
+  tr.ev-registry   td { background: rgba(63,185,80,.04); }
+
+  /* ---- event-type pill ---- */
+  .type-pill {
+    display: inline-block; padding: 1px 8px; border-radius: 10px;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.4px;
+    text-transform: uppercase;
+  }
+  .type-transition { background: rgba(248,81,73,.18); color: var(--ph-attack); }
+  .type-admin      { background: rgba(88,166,255,.18); color: var(--accent); }
+  .type-registry   { background: rgba(63,185,80,.18); color: var(--ph-normal); }
+
+  /* ---- annotation status badges ---- */
+  .ann-badge {
+    display: inline-block; padding: 1px 7px; border-radius: 9px;
+    font-size: 10px; font-weight: 700; margin-left: 6px;
+  }
+  .ann-new            { background: rgba(139,148,158,.20); color: var(--text-dim); }
+  .ann-investigating  { background: rgba(210,153,34,.22); color: var(--ph-suspicious); }
+  .ann-resolved       { background: rgba(63,185,80,.22); color: var(--ph-normal); }
+  .ann-false_positive { background: rgba(88,166,255,.22); color: var(--accent); }
+
+  /* ---- annotation editor row ---- */
+  .ann-editor {
+    background: var(--panel-2); border-top: 1px solid var(--border);
+    padding: 10px 14px;
+  }
+  .ann-editor textarea {
+    background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); border-radius: 6px;
+    padding: 6px 10px; font-family: inherit; font-size: 13px;
+    width: 100%; min-height: 50px; resize: vertical;
+  }
+  .ann-editor select {
+    background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); border-radius: 6px;
+    padding: 6px 10px; font-size: 13px; margin-right: 8px;
+  }
+  .ann-editor button {
+    background: var(--accent); border: none; color: var(--bg);
+    border-radius: 6px; padding: 6px 14px; cursor: pointer;
+    font-family: inherit; font-size: 13px; font-weight: 600;
+  }
+  .ann-editor button:hover { filter: brightness(1.1); }
+  .ann-editor button.cancel {
+    background: var(--panel); color: var(--text-dim); margin-left: 6px;
+  }
+</style>
+{% endblock %}
 
 {% block content %}
-  <h1>Alerts</h1>
+  <h1>Audit</h1>
   <p class="subtitle">
-    Phase transitions, newest first (up to {{ config.DASHBOARD_ALERTS_LIMIT }}).
-    Auto-refreshes every {{ config.DASHBOARD_REFRESH_SECONDS }}s.
+    Unified timeline: phase transitions, admin actions, registry reloads.
+    Newest first. Auto-refreshes every {{ config.DASHBOARD_REFRESH_SECONDS }}s.
   </p>
 
-  <div id="al-error"></div>
+  <div id="au-error"></div>
 
   <div class="panel">
-    <span class="clock" id="al-count"></span>
+    <div class="chip-row" id="au-chips">
+      <span class="window-label" style="color:var(--text-dim);font-size:11px;
+            text-transform:uppercase;letter-spacing:.5px;margin-right:4px;">Show</span>
+      <span class="chip active" data-type="transition">Transitions</span>
+      <span class="chip active" data-type="admin">Admin actions</span>
+      <span class="chip active" data-type="registry">Registry reloads</span>
+      <span class="clock" id="au-count" style="margin-left:auto;"></span>
+    </div>
+
     <table class="grid">
       <thead>
         <tr>
-          <th>Timestamp</th><th>Slot</th><th>Target</th><th>Proto</th>
-          <th>Transition</th><th>Tier-0</th><th>Tier-1 final</th>
-          <th>Attack evidence</th><th>Consec.</th>
+          <th>Time</th><th>Type</th><th>Subject</th>
+          <th>Detail</th><th>Status / Result</th>
         </tr>
       </thead>
-      <tbody id="al-body">
-        <tr><td colspan="9" class="empty">Loading…</td></tr>
+      <tbody id="au-body">
+        <tr><td colspan="5" class="empty">Loading…</td></tr>
       </tbody>
     </table>
   </div>
@@ -29,68 +109,194 @@
 
 {% block scripts %}
 <script>
-  // Row tint: a transition INTO ATTACK is red; INTO NORMAL is a green
-  // recovery; everything else (e.g. -> SUSPICIOUS, WARMUP -> NORMAL) is
-  // left neutral.
-  function rowStyle(toPhase) {
-    const t = (toPhase || "").toUpperCase();
-    if (t === "ATTACK")     return ' style="background:rgba(248,81,73,.10);"';
-    if (t === "NORMAL")     return ' style="background:rgba(63,185,80,.08);"';
-    if (t === "SUSPICIOUS") return ' style="background:rgba(210,153,34,.07);"';
-    return "";
+  // Active type chips — set is mutable; chip clicks toggle.
+  const activeTypes = new Set(["transition", "admin", "registry"]);
+
+  function chipKey(t) {
+    if (t === "transition") return "Transitions";
+    if (t === "admin")      return "Admin actions";
+    if (t === "registry")   return "Registry reloads";
+    return t;
   }
 
-  // Small amber "FLOOR" badge: shown ONLY when an ATTACK transition was forced
-  // by the absolute volumetric floor (raw volume past a hard ceiling, gate
-  // bypassed) rather than the behavioral gated cascade. Inline style keeps this
-  // change confined to alerts.html (base.html is not touched).
-  function floorBadge(r) {
-    if ((r.to_phase || "").toUpperCase() !== "ATTACK" || !r.absolute_floor_fired)
-      return "";
-    return ' <span class="floor-badge" title="Forced by absolute volumetric'
-      + ' floor (bypassed the gate)" style="display:inline-block;margin-left:6px;'
-      + 'padding:1px 5px;border-radius:4px;font-size:10px;font-weight:700;'
-      + 'text-transform:uppercase;letter-spacing:.04em;'
-      + 'background:rgba(210,153,34,.18);color:#d29922;">FLOOR</span>';
+  function syncChips() {
+    document.querySelectorAll("#au-chips .chip[data-type]").forEach(c => {
+      c.classList.toggle("active", activeTypes.has(c.dataset.type));
+    });
   }
 
-  async function refreshAlerts() {
+  function annBadge(ann) {
+    if (!ann) return "";
+    const cls = "ann-" + ann.status.replace(/[^a-z_]/g, "");
+    return `<span class="ann-badge ${cls}">${ann.status}</span>`;
+  }
+
+  function floorBadge(payload) {
+    if (!payload.absolute_floor_fired) return "";
+    return ' <span class="ann-badge" style="background:rgba(210,153,34,.22);'
+      + 'color:#d29922;">FLOOR</span>';
+  }
+
+  function renderTransition(ev) {
+    const p = ev.payload;
+    return `
+      <td>${phasePill(p.from_phase)}<span class="arrow">&rarr;</span>${phasePill(p.to_phase)}${floorBadge(p)}${annBadge(p.annotation)}</td>
+      <td>${scoreBar(p.tier1_final_score)}</td>
+    `;
+  }
+
+  function renderAdmin(ev) {
+    const p = ev.payload;
+    const statusColor = (p.status === "success") ? "var(--ph-normal)" :
+                        (p.status === "failed")  ? "var(--ph-attack)" :
+                        "var(--text-dim)";
+    const argsBrief = Object.keys(p.args || {}).length
+      ? `args: ${JSON.stringify(p.args)}` : "";
+    return `
+      <td><code>${p.action}</code> ${argsBrief
+            ? `<span class="clock">${argsBrief}</span>` : ""}</td>
+      <td style="color:${statusColor};font-weight:600;">${p.status}
+          <span class="clock">${p.duration_ms}ms</span></td>
+    `;
+  }
+
+  function renderRegistry(ev) {
+    const p = ev.payload;
+    const slotCount = p.n_total_slots != null
+      ? `${fmtNum(p.n_total_slots)} slots` : "—";
+    const errCell = p.error
+      ? `<td style="color:var(--ph-attack);">${p.error}</td>`
+      : `<td class="clock">reload #${p.reload_count}</td>`;
+    return `
+      <td><code>${p.event_type}</code> <span class="clock">${slotCount}</span></td>
+      ${errCell}
+    `;
+  }
+
+  function rowFor(ev) {
+    const cls = "ev-" + ev.type;
+    const pill = `<span class="type-pill type-${ev.type}">${ev.type}</span>`;
+    let subject = "";
+    let detailsAndStatus = "";
+
+    if (ev.type === "transition") {
+      const p = ev.payload;
+      subject = `<a href="/slots/${p.slot_id}">${p.target_ip}:`
+              + `${fmtPort(p.port, String(p.proto_kind).startsWith("CATCHALL_"))}`
+              + `</a> <span class="clock">${fmtProto(p.proto_kind)}</span>`;
+      detailsAndStatus = renderTransition(ev);
+    } else if (ev.type === "admin") {
+      subject = `<span class="clock">collector</span>`;
+      detailsAndStatus = renderAdmin(ev);
+    } else if (ev.type === "registry") {
+      subject = `<code>${ev.payload.source_path || ""}</code>`;
+      detailsAndStatus = renderRegistry(ev);
+    }
+
+    const annButton = (ev.type === "transition")
+      ? `<button onclick="toggleAnn('${ev.ts_ns}_${ev.payload.slot_id}')"
+                style="background:none;border:none;color:var(--accent);
+                       cursor:pointer;font-size:11px;font-family:inherit;">
+           ${ev.payload.annotation ? "edit" : "+ note"}
+         </button>` : "";
+
+    let html = `<tr class="${cls}">
+      <td class="mono">${fmtTs(ev.timestamp)}</td>
+      <td>${pill}</td>
+      <td class="mono">${subject}${annButton ? " " + annButton : ""}</td>
+      ${detailsAndStatus}
+    </tr>`;
+
+    // Inline annotation editor (hidden by default; toggle reveals).
+    if (ev.type === "transition") {
+      const annId = `${ev.ts_ns}_${ev.payload.slot_id}`;
+      const cur = ev.payload.annotation || {};
+      html += `<tr id="ann-${annId}" style="display:none;">
+        <td colspan="5" class="ann-editor">
+          <div style="display:flex;gap:8px;align-items:flex-start;">
+            <select id="ann-status-${annId}">
+              <option value="new"${cur.status==="new"?" selected":""}>new</option>
+              <option value="investigating"${cur.status==="investigating"?" selected":""}>investigating</option>
+              <option value="resolved"${cur.status==="resolved"?" selected":""}>resolved</option>
+              <option value="false_positive"${cur.status==="false_positive"?" selected":""}>false positive</option>
+            </select>
+            <textarea id="ann-note-${annId}"
+                      placeholder="why is this happening / what was checked / who looked at it">${cur.note||""}</textarea>
+          </div>
+          <div style="margin-top:8px;">
+            <button onclick="saveAnn('${ev.ts_ns}','${ev.payload.slot_id}','${annId}')">Save</button>
+            <button class="cancel" onclick="toggleAnn('${annId}')">Cancel</button>
+          </div>
+        </td>
+      </tr>`;
+    }
+
+    return html;
+  }
+
+  function toggleAnn(annId) {
+    const el = document.getElementById("ann-" + annId);
+    if (!el) return;
+    el.style.display = el.style.display === "none" ? "" : "none";
+  }
+
+  async function saveAnn(tsNs, slotId, annId) {
+    const status = document.getElementById("ann-status-" + annId).value;
+    const note = document.getElementById("ann-note-" + annId).value;
     try {
-      const rows = await getJSON(
-        `/api/alerts?limit={{ config.DASHBOARD_ALERTS_LIMIT }}`);
-      document.getElementById("al-error").innerHTML = "";
-
-      const body = document.getElementById("al-body");
-      if (!rows.length) {
-        body.innerHTML =
-          '<tr><td colspan="9" class="empty">' +
-          'No phase transitions in the last query window. System nominal.' +
-          '</td></tr>';
-      } else {
-        body.innerHTML = rows.map(r => `
-          <tr${rowStyle(r.to_phase)}>
-            <td class="mono">${fmtTs(r.timestamp)}</td>
-            <td class="mono">
-              <a href="/slots/${r.slot_id}">${r.slot_id}</a></td>
-            <td class="mono">${r.target_ip}:${fmtPort(r.port, String(r.proto_kind).startsWith("CATCHALL_"))}</td>
-            <td>${fmtProto(r.proto_kind)}</td>
-            <td>${phasePill(r.from_phase)}<span class="arrow">&rarr;</span>${phasePill(r.to_phase)}${floorBadge(r)}</td>
-            <td>${scoreBar(r.tier0_score)}</td>
-            <td>${scoreBar(r.tier1_final_score)}</td>
-            <td>${scoreBar(r.attack_evidence)}</td>
-            <td class="mono num">${fmtNum(r.consecutive_attack_windows)}</td>
-          </tr>`).join("");
-      }
-      document.getElementById("al-count").textContent =
-        `${rows.length} transition${rows.length === 1 ? "" : "s"}`;
-
-      setClock(rows.length ? rows[0].timestamp : new Date().toISOString(), true);
+      const r = await fetch("/api/audit/annotate", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          transition_ts_ns: Number(tsNs), slot_id: Number(slotId),
+          status: status, note: note,
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || r.statusText);
+      toggleAnn(annId);
+      refreshAudit();
     } catch (e) {
-      showError("al-error", e.message);
+      showError("au-error", "annotate: " + e.message);
+    }
+  }
+
+  async function refreshAudit() {
+    try {
+      const types = Array.from(activeTypes).join(",");
+      const events = await getJSON(`/api/audit?limit=200&types=${types}`);
+      document.getElementById("au-error").innerHTML = "";
+
+      const body = document.getElementById("au-body");
+      if (!events.length) {
+        body.innerHTML =
+          '<tr><td colspan="5" class="empty">' +
+          'No events match the current filter.</td></tr>';
+      } else {
+        body.innerHTML = events.map(rowFor).join("");
+      }
+      document.getElementById("au-count").textContent =
+        `${events.length} event${events.length === 1 ? "" : "s"}`;
+      setClock(events.length ? events[0].timestamp : new Date().toISOString(), true);
+    } catch (e) {
+      showError("au-error", e.message);
       setClock(null, false);
     }
   }
-  refreshAlerts();
-  setInterval(refreshAlerts, REFRESH_MS);
+
+  // Chip wiring
+  document.querySelectorAll("#au-chips .chip[data-type]").forEach(c => {
+    c.addEventListener("click", () => {
+      const t = c.dataset.type;
+      if (activeTypes.has(t)) activeTypes.delete(t);
+      else activeTypes.add(t);
+      syncChips();
+      refreshAudit();
+    });
+  });
+
+  syncChips();
+  refreshAudit();
+  setInterval(refreshAudit, REFRESH_MS);
 </script>
 {% endblock %}
