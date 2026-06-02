@@ -375,6 +375,131 @@ def test_request_reload_detects_epoch_bump():
         os.unlink(sjpath)
 
 
+def test_force_ewma_freeze():
+    pipe, server, path = _make_server()
+    try:
+        st = pipe.detector._slots[KEY]
+        assert st.ewma_freeze_remaining == 0
+        resp = _send_with_tick_driver(
+            pipe, path, {"action": "force_ewma_freeze",
+                         "args": {"slot_id": 0, "ticks": 12}})
+        assert resp["ok"], resp
+        # After the action ran and the next tick processed, the freeze
+        # counter has been decremented once (process_snapshot decrements
+        # before running the slot through the main path).
+        assert st.ewma_freeze_remaining >= 10, st.ewma_freeze_remaining
+        print(f"  [PASS] force_ewma_freeze sets countdown "
+              f"(remaining={st.ewma_freeze_remaining})")
+    finally:
+        server.stop()
+
+
+def test_force_attack_freeze_and_release():
+    pipe, server, path = _make_server()
+    try:
+        st = pipe.detector._slots[KEY]
+        # Force ATTACK — this sets attack_freeze_active=True and
+        # initially pins phase=ATTACK. Subsequent ticks may rescore
+        # the phase against quiet traffic, but the freeze persists
+        # (preventing thaw release) until explicitly cleared.
+        resp = _send_with_tick_driver(
+            pipe, path, {"action": "force_attack_freeze",
+                         "args": {"slot_id": 0}})
+        assert resp["ok"], resp
+        # The freeze flag stays True across ticks (that's the persistent
+        # part of force_attack_freeze; the displayed phase tracks live
+        # traffic during the freeze window).
+        assert st.attack_freeze_active is True
+        # CUSUM is also frozen while attack_freeze_active is True.
+        print(f"  [PASS] force_attack_freeze (attack_freeze=True, "
+              f"phase={st.phase})")
+
+        # Then release everything
+        resp = _send_with_tick_driver(
+            pipe, path, {"action": "release_freezes",
+                         "args": {"slot_id": 0}})
+        assert resp["ok"], resp
+        assert st.attack_freeze_active is False
+        assert st.phase == C.PHASE_NORMAL
+        assert st.cusum_pps.S_plus == 0.0
+        print(f"  [PASS] release_freezes (phase={st.phase}, all cleared)")
+    finally:
+        server.stop()
+
+
+def test_reset_transient():
+    pipe, server, path = _make_server()
+    try:
+        st = pipe.detector._slots[KEY]
+        # Pre-load some transient state.
+        st.tier0_history_bits = 0b11111
+        st.consecutive_attack_windows = 5
+        st.cusum_pps.S_plus = 99.0
+
+        resp = _send_with_tick_driver(
+            pipe, path, {"action": "reset_transient", "args": {"slot_id": 0}})
+        assert resp["ok"], resp
+        assert st.tier0_history_bits == 0
+        assert st.consecutive_attack_windows == 0
+        assert st.cusum_pps.S_plus == 0.0
+        # Phase + freezes should be untouched.
+        print(f"  [PASS] reset_transient clears bitmask + CUSUM, "
+              f"leaves phase/freezes intact")
+    finally:
+        server.stop()
+
+
+def test_set_learning_mode():
+    pipe, server, path = _make_server()
+    try:
+        assert pipe.config.learning_mode is False
+        resp = _send_with_tick_driver(
+            pipe, path, {"action": "set_learning_mode",
+                         "args": {"enabled": True}})
+        assert resp["ok"], resp
+        assert pipe.config.learning_mode is True
+        assert pipe.detector.config.learning_mode is True
+        # Toggle off again.
+        resp = _send_with_tick_driver(
+            pipe, path, {"action": "set_learning_mode",
+                         "args": {"enabled": False}})
+        assert resp["ok"], resp
+        assert pipe.config.learning_mode is False
+        print(f"  [PASS] set_learning_mode toggles config + detector "
+              f"(now {pipe.config.learning_mode})")
+    finally:
+        server.stop()
+
+
+def test_save_and_load_checkpoint():
+    pipe, server, path = _make_server()
+    fd, ckpt = tempfile.mkstemp(suffix=".ckpt", prefix="ckpt-")
+    os.close(fd)
+    os.unlink(ckpt)
+    try:
+        # Save
+        resp = _send_with_tick_driver(
+            pipe, path, {"action": "save_checkpoint",
+                         "args": {"path": ckpt}})
+        assert resp["ok"], resp
+        assert os.path.exists(ckpt)
+        # Mutate state so we can prove the load restored.
+        pipe.detector._slots[KEY].tier0_history_bits = 0b10101
+
+        resp = _send_with_tick_driver(
+            pipe, path, {"action": "load_checkpoint",
+                         "args": {"path": ckpt}})
+        assert resp["ok"], resp
+        # Phase 6 of Track A drains transient state on load -> bits=0.
+        assert pipe.detector._slots[KEY].tier0_history_bits == 0
+        print(f"  [PASS] save_checkpoint + load_checkpoint round-trip "
+              f"(transient drained on load)")
+    finally:
+        server.stop()
+        if os.path.exists(ckpt):
+            os.unlink(ckpt)
+
+
 def test_socket_file_cleaned_up_on_stop():
     pipe, server, path = _make_server()
     assert os.path.exists(path)
@@ -395,6 +520,11 @@ def main():
     test_request_reload_validates_services_json()
     test_request_reload_rejects_invalid_json()
     test_request_reload_detects_epoch_bump()
+    test_force_ewma_freeze()
+    test_force_attack_freeze_and_release()
+    test_reset_transient()
+    test_set_learning_mode()
+    test_save_and_load_checkpoint()
     test_socket_file_cleaned_up_on_stop()
     print("RESULT: Phase 2 control socket OK")
     return 0

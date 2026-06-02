@@ -225,6 +225,116 @@ def _action_request_reload(pipe, args: dict) -> dict:
         f"registry_epoch within 5s (epoch still {epoch_before})")
 
 
+def _resolve_slot(pipe, args: dict):
+    """Locate a SlotState by slot_id (insertion order index into the
+    detector's _slots dict) or by explicit (ip, port, kind). Returns
+    (key, slot_state) or raises."""
+    slots = pipe.detector._slots
+    if "slot_id" in args:
+        slot_id = int(args["slot_id"])
+        keys = list(slots.keys())
+        if not (0 <= slot_id < len(keys)):
+            raise KeyError(f"slot_id {slot_id} out of range "
+                           f"(have {len(keys)} slots)")
+        key = keys[slot_id]
+        return key, slots[key]
+    if "ip" in args and "port" in args and "kind" in args:
+        key = (int(args["ip"]), int(args["port"]), int(args["kind"]))
+        st = slots.get(key)
+        if st is None:
+            raise KeyError(f"no slot for {key}")
+        return key, st
+    raise ValueError("expected slot_id OR (ip,port,kind)")
+
+
+def _action_force_ewma_freeze(pipe, args: dict) -> dict:
+    """Force the EWMA freeze on a specific slot. Use ticks=0 to release."""
+    key, st = _resolve_slot(pipe, args)
+    ticks = int(args.get("ticks", st.params.baseline_freeze_windows))
+    if ticks < 0:
+        raise ValueError("ticks must be >= 0")
+    st.ewma_freeze_remaining = ticks
+    return {"key": list(key), "ewma_freeze_remaining": st.ewma_freeze_remaining}
+
+
+def _action_force_attack_freeze(pipe, args: dict) -> dict:
+    """Force a slot into the full ATTACK freeze. Pins phase to ATTACK,
+    locks the baseline AND the CUSUM until thaw."""
+    from detection import config as C
+    key, st = _resolve_slot(pipe, args)
+    st.attack_freeze_active = True
+    st.phase = C.PHASE_ATTACK
+    st.consecutive_normal_windows = 0
+    # Also arm the EWMA freeze so the baseline is protected immediately.
+    fw = st.params.baseline_freeze_windows
+    if st.ewma_freeze_remaining < fw:
+        st.ewma_freeze_remaining = fw
+    return {"key": list(key),
+            "attack_freeze_active": st.attack_freeze_active,
+            "phase": int(st.phase)}
+
+
+def _action_release_freezes(pipe, args: dict) -> dict:
+    """Release all freezes on a slot. Phase is reset to NORMAL; CUSUM
+    drained so the slot starts fresh. Use this to manually exit a
+    sticky ATTACK verdict you know is a false positive."""
+    from detection import config as C
+    key, st = _resolve_slot(pipe, args)
+    st.attack_freeze_active = False
+    st.ewma_freeze_remaining = 0
+    st.consecutive_normal_windows = 0
+    st.phase = C.PHASE_NORMAL
+    st.cusum_pps.S_plus = 0.0
+    st.cusum_bps.S_plus = 0.0
+    st.cusum_fps.S_plus = 0.0
+    return {"key": list(key),
+            "phase": int(st.phase),
+            "freezes_cleared": True}
+
+
+def _action_reset_transient(pipe, args: dict) -> dict:
+    """Clear the 5-bit bitmask + CUSUM accumulators on a slot WITHOUT
+    touching the phase or the freezes. Useful when the bitmask got
+    seeded by an injection event you want to scrub from the history."""
+    key, st = _resolve_slot(pipe, args)
+    st.tier0_history_bits = 0
+    st.consecutive_attack_windows = 0
+    st.cusum_pps.S_plus = 0.0
+    st.cusum_bps.S_plus = 0.0
+    st.cusum_fps.S_plus = 0.0
+    return {"key": list(key), "transient_cleared": True}
+
+
+def _action_set_learning_mode(pipe, args: dict) -> dict:
+    """Toggle the GLOBAL learning_mode flag (affects every slot).
+    Args: {"enabled": bool}."""
+    enabled = bool(args.get("enabled", False))
+    pipe.config.learning_mode = enabled
+    pipe.detector.config.learning_mode = enabled
+    return {"learning_mode": enabled,
+            "n_slots_affected": len(pipe.detector._slots)}
+
+
+def _action_save_checkpoint(pipe, args: dict) -> dict:
+    """Save a checkpoint to the configured path (default) or args.path."""
+    import config as cfg_top   # the top-level config, not detection.config
+    path = args.get("path") or cfg_top.DETECTOR_CHECKPOINT_PATH
+    ok = pipe.save_checkpoint(path)
+    if not ok:
+        raise RuntimeError(f"save_checkpoint failed for {path}")
+    return {"path": path, "n_slots": len(pipe.detector._slots)}
+
+
+def _action_load_checkpoint(pipe, args: dict) -> dict:
+    """Load a checkpoint from path (default: configured path). Drains
+    transient state on every restored slot — see pipeline.load_checkpoint."""
+    import config as cfg_top
+    path = args.get("path") or cfg_top.DETECTOR_CHECKPOINT_PATH
+    ok = pipe.load_checkpoint(path)
+    return {"path": path, "loaded": ok,
+            "n_slots": len(pipe.detector._slots) if ok else 0}
+
+
 def _action_slot_info(pipe, args: dict) -> dict:
     """Return the full SlotState for a slot. Args accepts either
     {"slot_id": int} (matches the record index used by the dashboard's
@@ -272,7 +382,14 @@ _INLINE_ACTIONS = {
 # Mutating / inspection actions that need the pipeline lock — submitted to
 # the command queue and run at the next tick boundary.
 _QUEUED_ACTIONS = {
-    "slot_info":   _action_slot_info,
+    "slot_info":            _action_slot_info,
+    "force_ewma_freeze":    _action_force_ewma_freeze,
+    "force_attack_freeze":  _action_force_attack_freeze,
+    "release_freezes":      _action_release_freezes,
+    "reset_transient":      _action_reset_transient,
+    "set_learning_mode":    _action_set_learning_mode,
+    "save_checkpoint":      _action_save_checkpoint,
+    "load_checkpoint":      _action_load_checkpoint,
 }
 
 
