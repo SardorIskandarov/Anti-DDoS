@@ -378,6 +378,17 @@ def shm_reader_thread():
         logger.info("resumed detector state from %s",
                     config.DETECTOR_CHECKPOINT_PATH)
 
+    # Start the dashboard control socket — accepts ping / engine_pid /
+    # slot_info now; later phases add reload + runtime overrides.
+    from control_socket import ControlSocketServer, DEFAULT_SOCKET_PATH
+    ctrl_path = getattr(config, "CONTROL_SOCKET_PATH", DEFAULT_SOCKET_PATH)
+    ctrl_server = ControlSocketServer(pipe, path=ctrl_path)
+    try:
+        ctrl_server.start()
+    except OSError as e:
+        logger.warning("control socket disabled: %s (continuing without it)", e)
+        ctrl_server = None
+
     reader = SnapshotReader(config.SHM_PATH)
     opened = False
     last_ckpt = time.time()
@@ -412,6 +423,8 @@ def shm_reader_thread():
     # Graceful exit: persist learned baselines so the next start resumes warm.
     pipe.save_checkpoint(config.DETECTOR_CHECKPOINT_PATH)
     reader.close()
+    if ctrl_server is not None:
+        ctrl_server.stop()
     logger.info("shm reader thread exiting")
 
 
