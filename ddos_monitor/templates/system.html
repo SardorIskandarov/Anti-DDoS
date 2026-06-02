@@ -1,32 +1,390 @@
 {% extends "base.html" %}
 {% block title %}System{% endblock %}
 
+{% block head_extra %}
+<style>
+  .health-grid {
+    display: grid; grid-template-columns: 180px 1fr;
+    gap: 6px 18px; align-items: center;
+  }
+  .health-grid .k { color: var(--text-dim); font-size: 12px; }
+  .health-grid .v { font-family: monospace; font-size: 13px; }
+  .health-grid .ok    { color: var(--ph-normal); }
+  .health-grid .stale { color: var(--ph-suspicious); }
+  .health-grid .down  { color: var(--ph-attack); }
+
+  .ctrl-row {
+    display: flex; align-items: center; gap: 14px; padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .ctrl-row:last-child { border-bottom: none; }
+  .ctrl-row .lbl { font-weight: 600; min-width: 200px; }
+  .ctrl-row .sub { color: var(--text-dim); font-size: 12px; }
+
+  .switch { display: inline-block; position: relative; width: 42px; height: 22px; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .slider {
+    position: absolute; cursor: pointer; inset: 0;
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 14px; transition: .15s;
+  }
+  .switch .slider::before {
+    content: ""; position: absolute; height: 16px; width: 16px;
+    left: 2px; top: 2px; background: var(--text-dim); border-radius: 50%;
+    transition: .15s;
+  }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider::before {
+    transform: translateX(20px); background: var(--bg);
+  }
+
+  .btn {
+    background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 6px;
+    padding: 6px 14px; cursor: pointer;
+    font-family: inherit; font-size: 13px;
+  }
+  .btn:hover { color: var(--text); border-color: var(--accent); }
+  .btn.primary {
+    background: var(--accent); color: var(--bg); border-color: var(--accent);
+    font-weight: 600;
+  }
+  .btn.primary:hover { filter: brightness(1.1); }
+  .btn.danger {
+    background: rgba(248,81,73,.18);
+    color: var(--ph-attack); border-color: rgba(248,81,73,.4);
+  }
+  .btn.danger:hover {
+    background: var(--ph-attack); color: var(--bg);
+  }
+  .btn:disabled {
+    background: var(--panel-2); color: var(--text-dim);
+    border-color: var(--border); cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  /* Hold-to-confirm progress overlay for destructive actions */
+  .btn.hold {
+    position: relative; overflow: hidden;
+  }
+  .btn.hold .fill {
+    position: absolute; inset: 0; background: rgba(248,81,73,.35);
+    width: 0%; transition: width .05s linear; pointer-events: none;
+  }
+  .btn.hold span.label { position: relative; z-index: 1; }
+
+  .slot-detail {
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px; margin-top: 12px;
+  }
+  .slot-detail .row {
+    display: grid; grid-template-columns: 200px 1fr; gap: 4px 12px;
+    margin-bottom: 4px;
+  }
+  .slot-detail .row .k { color: var(--text-dim); font-size: 12px; }
+  .slot-detail .row .v { font-family: monospace; font-size: 13px; }
+
+  .action-result {
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 10px 14px; margin-top: 10px;
+    font-family: monospace; font-size: 12px; max-height: 200px;
+    overflow-y: auto;
+  }
+  .action-result.ok    { border-color: rgba(63,185,80,.4); }
+  .action-result.error { border-color: rgba(248,81,73,.4); color: var(--ph-attack); }
+</style>
+{% endblock %}
+
 {% block content %}
   <h1>System</h1>
   <p class="subtitle">
     Engine health, runtime controls, and per-slot overrides.
+    Health refreshes every {{ config.DASHBOARD_REFRESH_SECONDS }}s.
   </p>
+
+  <div id="sy-error"></div>
 
   <div class="panel">
     <h2>Engine health</h2>
-    <div class="empty">
-      Snapshot freshness, layout-hash match, reload audit, and live
-      control buttons will land here in Phase 8.
+    <div class="health-grid" id="sy-health">
+      <div class="k">loading…</div><div class="v">—</div>
     </div>
   </div>
 
   <div class="panel">
     <h2>Global controls</h2>
-    <div class="empty">
-      Learning-mode toggle, checkpoint save/load buttons (Phase 8).
+
+    <div class="ctrl-row">
+      <div class="lbl">Learning mode</div>
+      <label class="switch">
+        <input type="checkbox" id="sy-learning" onchange="setLearningMode()">
+        <span class="slider"></span>
+      </label>
+      <div class="sub">All slots cache scores but never transition.
+        Train baselines every tick.</div>
     </div>
+
+    <div class="ctrl-row">
+      <div class="lbl">Checkpoint</div>
+      <button class="btn primary" onclick="systemAction('save_checkpoint')">
+        Save checkpoint now
+      </button>
+      <button class="btn" onclick="systemAction('load_checkpoint')">
+        Reload from last checkpoint
+      </button>
+      <div class="sub">Persist / restore all slot state at default path.</div>
+    </div>
+
+    <div id="sy-global-result"></div>
   </div>
 
   <div class="panel">
     <h2>Per-slot runtime overrides</h2>
-    <div class="empty">
-      Force EWMA freeze, force ATTACK freeze, release freezes, reset
-      transient state (Phase 8).
+
+    <div class="ctrl-row" style="border:none;">
+      <div class="lbl">Slot</div>
+      <select id="sy-slot" onchange="loadSlotDetail()"
+              style="background:var(--panel-2);border:1px solid var(--border);
+                     color:var(--text);border-radius:6px;padding:6px 10px;
+                     font-family:monospace;font-size:13px;min-width:340px;">
+        <option value="">— select a slot —</option>
+      </select>
+    </div>
+
+    <div id="sy-slot-detail" class="slot-detail" style="display:none;">
+      <div id="sy-slot-state"></div>
+
+      <div class="ctrl-row" style="border:none;margin-top:14px;padding:6px 0;">
+        <div class="lbl">EWMA freeze</div>
+        <input type="number" id="sy-freeze-ticks" value="60" min="0" max="600"
+               style="background:var(--panel-2);border:1px solid var(--border);
+                      color:var(--text);border-radius:6px;padding:6px 10px;
+                      font-family:monospace;font-size:13px;width:80px;">
+        <button class="btn primary" onclick="forceFreeze()">
+          Force EWMA freeze
+        </button>
+        <button class="btn" onclick="releaseFreezes()">
+          Release freezes
+        </button>
+      </div>
+
+      <div class="ctrl-row" style="border:none;padding:6px 0;">
+        <div class="lbl">Force ATTACK freeze</div>
+        <button class="btn hold danger" id="sy-force-attack"
+                onmousedown="holdBegin(event)" onmouseup="holdEnd(event)"
+                onmouseleave="holdEnd(event)">
+          <span class="fill"></span>
+          <span class="label">Hold to force</span>
+        </button>
+        <div class="sub">Pins attack_freeze_active=True until released.
+          Hold for 3 seconds.</div>
+      </div>
+
+      <div class="ctrl-row" style="border:none;padding:6px 0;">
+        <div class="lbl">Transient state</div>
+        <button class="btn" onclick="resetTransient()">
+          Reset bitmask + CUSUM
+        </button>
+        <div class="sub">Clears the 5-bit history and CUSUM accumulators
+          without touching phase or freezes.</div>
+      </div>
+
+      <div id="sy-slot-result"></div>
     </div>
   </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  let SELECTED_SLOT_ID = null;
+
+  // ----- engine health -----
+  function fmtAge(seconds) {
+    if (seconds == null) return "—";
+    if (seconds < 1) return "live";
+    if (seconds < 60) return Math.round(seconds) + "s ago";
+    if (seconds < 3600) return Math.round(seconds/60) + "m ago";
+    return Math.round(seconds/3600) + "h ago";
+  }
+
+  async function refreshHealth() {
+    try {
+      const h = await getJSON("/api/system/health");
+      const rl = h.last_reload || {};
+      const freshClass = h.snapshot_age_seconds == null ? "down"
+                      : h.snapshot_age_seconds <= 5     ? "ok"
+                      : h.snapshot_age_seconds <= 30    ? "stale"
+                                                        : "down";
+      const sockClass = h.socket_reachable ? "ok" : "down";
+      document.getElementById("sy-health").innerHTML = `
+        <div class="k">control socket</div>
+        <div class="v ${sockClass}">${h.collector_socket}
+          ${h.socket_reachable ? "✓ reachable" : "✗ "+(h.socket_error||"unreachable")}
+        </div>
+        <div class="k">collector pid (this)</div>
+        <div class="v">—</div>
+        <div class="k">engine pid</div>
+        <div class="v">${h.engine_pid != null ? h.engine_pid : "<span class='down'>not running</span>"}</div>
+        <div class="k">latest snapshot</div>
+        <div class="v ${freshClass}">${fmtTs(h.latest_snapshot)}
+          (${fmtAge(h.snapshot_age_seconds)})</div>
+        <div class="k">last reload</div>
+        <div class="v">${fmtTs(rl.timestamp)}
+          — <code>${rl.event_type || "n/a"}</code>
+          — ${fmtNum(rl.n_total_slots)} slots
+          ${rl.reload_failures ? `<span class='down'>(${rl.reload_failures} failures)</span>` : ""}
+        </div>
+        ${rl.error ? `<div class="k">last error</div>
+                      <div class="v down">${rl.error}</div>` : ""}
+      `;
+      setClock(h.latest_snapshot, true);
+    } catch (e) {
+      showError("sy-error", e.message);
+      setClock(null, false);
+    }
+  }
+
+  // ----- slot list (for the picker) -----
+  async function refreshSlotList() {
+    try {
+      const slots = await getJSON("/api/system/slots");
+      const sel = document.getElementById("sy-slot");
+      const prev = sel.value;
+      sel.innerHTML = '<option value="">— select a slot —</option>'
+        + slots.map(s =>
+          `<option value="${s.slot_id}">
+            ${s.slot_id} · ${s.target_ip}:${fmtPort(s.port, String(s.proto_kind).startsWith("CATCHALL_"))}
+            ${fmtProto(s.proto_kind)} (${s.profile_name}) — ${s.phase}
+          </option>`).join("");
+      if (prev) sel.value = prev;
+    } catch (e) { /* silent */ }
+  }
+
+  async function loadSlotDetail() {
+    const sel = document.getElementById("sy-slot");
+    const idStr = sel.value;
+    if (!idStr) {
+      document.getElementById("sy-slot-detail").style.display = "none";
+      SELECTED_SLOT_ID = null;
+      return;
+    }
+    SELECTED_SLOT_ID = Number(idStr);
+    document.getElementById("sy-slot-detail").style.display = "block";
+    try {
+      const r = await fetch("/api/system/action", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({action: "slot_info",
+                              args: {slot_id: SELECTED_SLOT_ID}}),
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || "action failed");
+      const s = d.result;
+      document.getElementById("sy-slot-state").innerHTML = `
+        <div class="row"><div class="k">phase</div>
+          <div class="v">${phasePill(["WARMUP","NORMAL","SUSPICIOUS","ATTACK"][s.phase])}</div></div>
+        <div class="row"><div class="k">Tier-0 R0</div>
+          <div class="v">${s.last_tier0_score.toFixed(3)}</div></div>
+        <div class="row"><div class="k">Tier-1 T1</div>
+          <div class="v">${s.t1_final.toFixed(3)}</div></div>
+        <div class="row"><div class="k">EWMA freeze remaining</div>
+          <div class="v">${s.ewma_freeze_remaining} ticks</div></div>
+        <div class="row"><div class="k">Attack freeze</div>
+          <div class="v">${s.attack_freeze_active ? "<span class='down'>ACTIVE</span>" : "inactive"}</div></div>
+        <div class="row"><div class="k">5-bit history</div>
+          <div class="v">${s.tier0_history_bits.toString(2).padStart(5,"0")}
+            (popcount=${s.consecutive_attack_windows})</div></div>
+        <div class="row"><div class="k">CUSUM (pps/bps/fps)</div>
+          <div class="v">${s.cusum_pps_S_plus.toFixed(2)} / ${s.cusum_bps_S_plus.toFixed(2)} / ${s.cusum_fps_S_plus.toFixed(2)}</div></div>
+        <div class="row"><div class="k">profile</div>
+          <div class="v">${s.params.name}
+            (α=${s.params.alpha}, freeze=${s.params.baseline_freeze_windows})</div></div>
+      `;
+    } catch (e) {
+      showError("sy-error", e.message);
+    }
+  }
+
+  // ----- action helpers -----
+  function renderActionResult(containerId, ok, content) {
+    document.getElementById(containerId).innerHTML =
+      `<div class="action-result ${ok ? "ok" : "error"}">${content}</div>`;
+  }
+
+  async function systemAction(action, args, resultContainer) {
+    resultContainer = resultContainer || "sy-global-result";
+    try {
+      const r = await fetch("/api/system/action", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({action, args: args || {}}),
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || "action failed");
+      renderActionResult(resultContainer, true,
+        `${action} ✓ → ${JSON.stringify(d.result, null, 2)}`);
+      // Refresh slot detail if it was the target.
+      if (args && args.slot_id != null) loadSlotDetail();
+      return d;
+    } catch (e) {
+      renderActionResult(resultContainer, false,
+        `${action} ✗ → ${e.message}`);
+    }
+  }
+
+  async function setLearningMode() {
+    const enabled = document.getElementById("sy-learning").checked;
+    await systemAction("set_learning_mode", {enabled: enabled});
+    refreshHealth();
+  }
+
+  async function forceFreeze() {
+    if (SELECTED_SLOT_ID == null) return;
+    const ticks = Number(document.getElementById("sy-freeze-ticks").value);
+    await systemAction("force_ewma_freeze",
+      {slot_id: SELECTED_SLOT_ID, ticks: ticks}, "sy-slot-result");
+  }
+  async function releaseFreezes() {
+    if (SELECTED_SLOT_ID == null) return;
+    await systemAction("release_freezes",
+      {slot_id: SELECTED_SLOT_ID}, "sy-slot-result");
+  }
+  async function resetTransient() {
+    if (SELECTED_SLOT_ID == null) return;
+    await systemAction("reset_transient",
+      {slot_id: SELECTED_SLOT_ID}, "sy-slot-result");
+  }
+
+  // ----- hold-to-confirm for force_attack_freeze -----
+  let HOLD_TIMER = null;
+  let HOLD_START = 0;
+  const HOLD_MS = 3000;
+  function holdBegin(ev) {
+    if (SELECTED_SLOT_ID == null) return;
+    HOLD_START = Date.now();
+    const fill = ev.currentTarget.querySelector(".fill");
+    HOLD_TIMER = setInterval(() => {
+      const pct = Math.min(100, (Date.now() - HOLD_START) / HOLD_MS * 100);
+      fill.style.width = pct + "%";
+      if (pct >= 100) {
+        clearInterval(HOLD_TIMER); HOLD_TIMER = null;
+        fill.style.width = "0%";
+        systemAction("force_attack_freeze",
+          {slot_id: SELECTED_SLOT_ID}, "sy-slot-result");
+      }
+    }, 50);
+  }
+  function holdEnd(ev) {
+    if (HOLD_TIMER) {
+      clearInterval(HOLD_TIMER); HOLD_TIMER = null;
+      ev.currentTarget.querySelector(".fill").style.width = "0%";
+    }
+  }
+
+  // ----- bootstrap -----
+  refreshHealth();
+  refreshSlotList();
+  setInterval(refreshHealth, REFRESH_MS);
+  setInterval(refreshSlotList, REFRESH_MS * 10);   // slot list changes rarely
+</script>
 {% endblock %}

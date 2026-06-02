@@ -986,6 +986,149 @@ def api_audit_annotate():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/system/health')
+def api_system_health():
+    """Engine health snapshot. Combines collector pid + engine pid +
+    latest snapshot freshness + last successful reload from
+    registry_snapshots. Pure read."""
+    ch = get_ch_client()
+    out = {
+        'collector_socket': getattr(config, 'CONTROL_SOCKET_PATH',
+                                    '/tmp/anti-ddos-control.sock'),
+    }
+    # Engine pid via the control socket (so we go through the same
+    # discovery path the rest of the dashboard uses).
+    try:
+        resp = _trigger_socket_action({"action": "engine_pid"}, timeout=2.0)
+        out['engine_pid'] = (resp.get('result') or {}).get('pid')
+        out['socket_reachable'] = True
+    except Exception as e:    # noqa: BLE001
+        out['engine_pid'] = None
+        out['socket_reachable'] = False
+        out['socket_error'] = str(e)
+
+    # Latest snapshot freshness from service_stats.
+    if ch is not None:
+        try:
+            rows = ch.execute(
+                f"SELECT max(timestamp_dt) FROM {config.TABLE_SERVICE_STATS}")
+            latest = rows[0][0] if rows and rows[0][0] else None
+            out['latest_snapshot'] = latest.isoformat() if latest else None
+            out['snapshot_age_seconds'] = (
+                (datetime.now() - latest).total_seconds() if latest else None)
+            # Last reload from registry_snapshots.
+            rows = ch.execute(f"""
+                SELECT timestamp_dt, event_type, reload_count,
+                       reload_failures, error_message, n_total_slots
+                FROM {config.TABLE_REGISTRY_SNAPSHOTS}
+                ORDER BY timestamp_dt DESC
+                LIMIT 1
+            """)
+            if rows:
+                r = rows[0]
+                out['last_reload'] = {
+                    'timestamp': r[0].isoformat() if r[0] else None,
+                    'event_type': r[1],
+                    'reload_count': r[2],
+                    'reload_failures': r[3],
+                    'error': r[4],
+                    'n_total_slots': r[5],
+                }
+        except Exception as e:    # noqa: BLE001
+            out['ch_error'] = str(e)
+    else:
+        out['ch_error'] = 'clickhouse client unavailable'
+
+    return jsonify(out)
+
+
+@app.route('/api/system/slots')
+def api_system_slots():
+    """Lightweight slot list for the System tab's per-slot picker.
+    Returns {slot_id, target_ip, port, proto_kind, profile_name, phase}
+    for every freshness-gated active slot. Reuses the existing
+    service_stats query path."""
+    ch = get_ch_client()
+    if ch is None:
+        return jsonify({'error': 'clickhouse unavailable'}), 503
+    try:
+        fresh = config.DASHBOARD_SLOT_FRESHNESS_SECONDS
+        rows = ch.execute(f"""
+            SELECT slot_id,
+                   argMax(target_ip_str, timestamp_ns)  AS target_ip,
+                   argMax(port, timestamp_ns)           AS port,
+                   argMax(proto_kind_str, timestamp_ns) AS proto_kind,
+                   argMax(profile_name, timestamp_ns)   AS profile_name,
+                   argMax(phase_str, timestamp_ns)      AS phase
+            FROM {config.TABLE_SERVICE_STATS}
+            WHERE inserted_at >= now() - INTERVAL {fresh} SECOND
+            GROUP BY slot_id
+            ORDER BY target_ip, port, proto_kind
+        """)
+        return jsonify([
+            {'slot_id': r[0], 'target_ip': r[1], 'port': r[2],
+             'proto_kind': r[3], 'profile_name': r[4], 'phase': r[5]}
+            for r in rows
+        ])
+    except Exception as e:    # noqa: BLE001
+        logger.exception("api_system_slots failed")
+        return jsonify({'error': str(e)}), 500
+
+
+def _trigger_socket_action(action_dict: dict, timeout: float = 10.0) -> dict:
+    """Send any well-formed action to the control socket; return the
+    parsed reply. Raises on protocol/IO error. Used by /api/system/action."""
+    import socket as _socket
+    sock_path = getattr(config, 'CONTROL_SOCKET_PATH',
+                        '/tmp/anti-ddos-control.sock')
+    s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    s.connect(sock_path)
+    try:
+        s.sendall((json.dumps(action_dict) + "\n").encode("utf-8"))
+        buf = b""
+        while not buf.endswith(b"\n"):
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        return json.loads(buf.decode("utf-8").strip())
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+
+
+@app.route('/api/system/action', methods=['POST'])
+def api_system_action():
+    """Proxy any control-socket action. Body: {action, args?}.
+
+    Allow-list enforced — the dashboard cannot send arbitrary actions
+    to the collector. Adding a new action here is the explicit gate
+    for surfacing it in the UI."""
+    body = request.get_json(silent=True) or {}
+    action = body.get('action')
+    args = body.get('args') or {}
+    allowed = {
+        'ping', 'engine_pid', 'slot_info',
+        'force_ewma_freeze', 'force_attack_freeze',
+        'release_freezes', 'reset_transient',
+        'set_learning_mode', 'save_checkpoint', 'load_checkpoint',
+    }
+    if action not in allowed:
+        return jsonify({'error': f'action not allowed: {action!r}'}), 400
+    try:
+        resp = _trigger_socket_action({'action': action, 'args': args})
+        return jsonify(resp)
+    except FileNotFoundError:
+        return jsonify({'ok': False,
+                        'error': 'control socket not running'}), 503
+    except Exception as e:    # noqa: BLE001
+        logger.exception("system action failed")
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 @app.route('/api/health')
 def api_health():
     """Liveness + freshness probe. degraded if data is >5min stale."""
