@@ -1,4 +1,4 @@
-# Changelog
+# Changelog 
 
 ## v3.1.0 — Tier-1.5 L3 amplification & carpet-bombing detection (2026-05-12)
 
