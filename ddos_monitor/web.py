@@ -488,23 +488,251 @@ def api_slot_timeseries(slot_id):
 
 @app.route('/api/registry')
 def api_registry():
-    """Return the parsed services.json from disk (read-only view)."""
+    """Return the parsed services.json from disk (read-only view).
+
+    NOTE: kept as a legacy alias for callers that still hit /api/registry.
+    The Config tab uses /api/config (Phase 7) which adds the backups
+    list and accepts writes."""
+    return api_config_get_internal()
+
+
+def api_config_get_internal():
     path = config.SERVICES_JSON_PATH
     if not os.path.isfile(path):
         return jsonify({'error': f'registry file not found: {path}'}), 404
     try:
         with open(path) as f:
             content = json.load(f)
+        backups = _list_config_backups(path)
         return jsonify({
             'path': path,
             'modified_time': datetime.fromtimestamp(
                 os.path.getmtime(path)).isoformat(),
             'size_bytes': os.path.getsize(path),
             'content': content,
+            'backups': backups,
         })
-    except Exception as e:  # noqa: BLE001
-        logger.exception("api_registry failed")
+    except Exception as e:    # noqa: BLE001
+        logger.exception("config get failed")
         return jsonify({'error': str(e)}), 500
+
+
+def _list_config_backups(services_json_path):
+    """Return [{filename, modified_time, size_bytes}, ...] for every
+    services.json.bak.* alongside the live file. Newest first."""
+    d = os.path.dirname(services_json_path) or "."
+    base = os.path.basename(services_json_path)
+    prefix = base + ".bak."
+    out = []
+    try:
+        for entry in os.listdir(d):
+            if not entry.startswith(prefix):
+                continue
+            full = os.path.join(d, entry)
+            try:
+                st = os.stat(full)
+                out.append({
+                    'filename': entry,
+                    'modified_time': datetime.fromtimestamp(st.st_mtime).isoformat(),
+                    'size_bytes': st.st_size,
+                })
+            except OSError:
+                pass
+    except OSError:
+        return []
+    out.sort(key=lambda b: b['modified_time'], reverse=True)
+    return out
+
+
+def _config_write_with_backup(services_json_path, new_content_obj):
+    """Atomic write services.json with a timestamped .bak. Returns the
+    backup filename (basename) created. Validates via ProfileParams
+    before writing — invalid input raises ValueError."""
+    # Structural validation — these checks catch obvious operator mistakes
+    # that load_config() would silently accept. load_config is permissive
+    # by design (.get with defaults everywhere) so the engine never crashes
+    # on a half-written config; here we want to REJECT obvious garbage
+    # before it ever reaches the engine.
+    if not isinstance(new_content_obj, dict):
+        raise ValueError("config must be a JSON object")
+    if "profiles" not in new_content_obj:
+        raise ValueError("config missing 'profiles' field")
+    if not isinstance(new_content_obj.get("profiles"), dict):
+        raise ValueError("'profiles' must be an object")
+    if "services" not in new_content_obj:
+        raise ValueError("config missing 'services' field")
+    if not isinstance(new_content_obj.get("services"), list):
+        raise ValueError("'services' must be an array")
+
+    # Semantic validation — exercise every profile's from_json.
+    from detection.config import load_config
+    try:
+        load_config(new_content_obj)
+    except Exception as e:    # noqa: BLE001
+        raise ValueError(f"validation failed: {e}")
+
+    d = os.path.dirname(services_json_path) or "."
+    base = os.path.basename(services_json_path)
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    bak_name = f"{base}.bak.{ts}"
+    bak_path = os.path.join(d, bak_name)
+
+    # Copy current → backup (if the live file exists).
+    if os.path.isfile(services_json_path):
+        import shutil
+        shutil.copy2(services_json_path, bak_path)
+
+    # Atomic write of the new content.
+    import tempfile as _tempfile
+    fd, tmp = _tempfile.mkstemp(dir=d, prefix=".cfg-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(new_content_obj, f, indent=2, sort_keys=False)
+        os.replace(tmp, services_json_path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+    # Prune old backups — keep 20 most recent.
+    backups = _list_config_backups(services_json_path)
+    for old in backups[20:]:
+        try:
+            os.unlink(os.path.join(d, old['filename']))
+        except OSError:
+            pass
+
+    return bak_name
+
+
+def _trigger_reload_via_socket():
+    """Send {action: request_reload} to the collector's control socket.
+    Returns the parsed reply dict. Raises on any IO/protocol error."""
+    import socket as _socket
+    sock_path = getattr(config, 'CONTROL_SOCKET_PATH',
+                        '/tmp/anti-ddos-control.sock')
+    s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    s.settimeout(10.0)
+    s.connect(sock_path)
+    try:
+        s.sendall((json.dumps({"action": "request_reload"}) + "\n")
+                  .encode("utf-8"))
+        buf = b""
+        while not buf.endswith(b"\n"):
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        return json.loads(buf.decode("utf-8").strip())
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+
+
+@app.route('/api/config', methods=['GET'])
+def api_config_get():
+    """Same shape as /api/registry — current services.json plus
+    `backups` list."""
+    return api_config_get_internal()
+
+
+@app.route('/api/config', methods=['POST'])
+def api_config_save():
+    """Write a new services.json (after validation + auto-backup),
+    then trigger the collector's reload via the control socket.
+
+    Body: full services.json content (replaces the file).
+
+    Response:
+      200 ok: {ok: true, backup, reload: {engine_pid, epoch_after, ...}}
+      400  : validation failure / bad content
+      500  : write or reload failed (backup already taken — rollback automatic)
+    """
+    body = request.get_json(silent=True)
+    if body is None:
+        return jsonify({'error': 'POST body must be JSON'}), 400
+
+    path = config.SERVICES_JSON_PATH
+
+    # Phase 1: validate + write with backup.
+    try:
+        backup = _config_write_with_backup(path, body)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:    # noqa: BLE001
+        logger.exception("config write failed")
+        return jsonify({'error': str(e)}), 500
+
+    # Phase 2: trigger reload via the control socket.
+    try:
+        resp = _trigger_reload_via_socket()
+    except FileNotFoundError:
+        return jsonify({
+            'ok': True, 'backup': backup,
+            'reload': {'ok': False,
+                       'error': 'control socket not available; '
+                                'engine will reload on next manual SIGHUP'},
+        })
+    except Exception as e:    # noqa: BLE001
+        logger.exception("config reload trigger failed")
+        # The file write succeeded but the reload didn't — that's not a
+        # rollback case (the operator can retry from the System tab).
+        return jsonify({
+            'ok': True, 'backup': backup,
+            'reload': {'ok': False, 'error': str(e)},
+        })
+
+    return jsonify({'ok': True, 'backup': backup, 'reload': resp})
+
+
+@app.route('/api/config/restore', methods=['POST'])
+def api_config_restore():
+    """Restore a previously saved backup. Body: {filename}.
+
+    Effectively re-runs api_config_save with the backup file's content,
+    so the same backup/write/reload flow applies. The current live
+    services.json is preserved as a fresh .bak before being overwritten,
+    so the restore itself is reversible."""
+    body = request.get_json(silent=True) or {}
+    filename = body.get('filename')
+    if not filename:
+        return jsonify({'error': 'filename required'}), 400
+    path = config.SERVICES_JSON_PATH
+    d = os.path.dirname(path) or "."
+    base = os.path.basename(path)
+    prefix = base + ".bak."
+    if not filename.startswith(prefix):
+        return jsonify({'error': f'not a backup of {base}'}), 400
+    bak_path = os.path.join(d, filename)
+    if not os.path.isfile(bak_path):
+        return jsonify({'error': f'backup not found: {filename}'}), 404
+    try:
+        with open(bak_path) as f:
+            content = json.load(f)
+    except Exception as e:    # noqa: BLE001
+        return jsonify({'error': f'backup unreadable: {e}'}), 500
+
+    # Same write-with-backup + reload flow as a regular save.
+    try:
+        backup = _config_write_with_backup(path, content)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:    # noqa: BLE001
+        logger.exception("config restore write failed")
+        return jsonify({'error': str(e)}), 500
+
+    try:
+        resp = _trigger_reload_via_socket()
+    except Exception as e:    # noqa: BLE001
+        return jsonify({
+            'ok': True, 'restored_from': filename, 'backup': backup,
+            'reload': {'ok': False, 'error': str(e)},
+        })
+    return jsonify({
+        'ok': True, 'restored_from': filename, 'backup': backup,
+        'reload': resp,
+    })
 
 
 @app.route('/api/registry/audit')

@@ -1,143 +1,512 @@
 {% extends "base.html" %}
-{% block title %}Registry{% endblock %}
+{% block title %}Config{% endblock %}
+
+{% block head_extra %}
+<style>
+  .cfg-meta { display: grid; grid-template-columns: 120px 1fr;
+              gap: 4px 18px; margin-bottom: 8px; }
+  .cfg-meta .k { color: var(--text-dim); }
+  .cfg-meta .v { font-family: "SF Mono", Menlo, Consolas, monospace; }
+
+  .toggle-row {
+    display: flex; align-items: center; gap: 14px; padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .toggle-row:last-child { border-bottom: none; }
+  .toggle-row .lbl { font-weight: 600; }
+  .toggle-row .sub { color: var(--text-dim); font-size: 12px; }
+
+  .switch { display: inline-block; position: relative; width: 42px;
+            height: 22px; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .slider {
+    position: absolute; cursor: pointer; inset: 0;
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 14px; transition: .15s;
+  }
+  .switch .slider::before {
+    content: ""; position: absolute; height: 16px; width: 16px;
+    left: 2px; top: 2px; background: var(--text-dim); border-radius: 50%;
+    transition: .15s;
+  }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider::before {
+    transform: translateX(20px); background: var(--bg);
+  }
+
+  /* ---- profile editor card ---- */
+  .profile-card { border: 1px solid var(--border); border-radius: 8px;
+                  margin-bottom: 12px; }
+  .profile-head { padding: 10px 14px; display: flex;
+                  align-items: center; gap: 10px; cursor: pointer;
+                  background: var(--panel-2); border-radius: 8px 8px 0 0; }
+  .profile-head .name { font-weight: 600; font-family: monospace; }
+  .profile-head .grow { flex: 1; }
+  .profile-body { padding: 14px; display: none; }
+  .profile-card.open .profile-body { display: block; }
+
+  .field-grid { display: grid;
+                grid-template-columns: 200px 140px 1fr;
+                gap: 6px 14px; align-items: center; }
+  .field-grid label { color: var(--text-dim); font-size: 12px;
+                      font-family: monospace; }
+  .field-grid input {
+    background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 6px;
+    padding: 5px 10px; font-family: monospace; font-size: 12px;
+  }
+  .field-grid .hint { color: var(--text-dim); font-size: 11px; }
+
+  /* ---- services table ---- */
+  .svc-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+  .svc-table td, .svc-table th {
+    padding: 6px 8px; border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .svc-table th { color: var(--text-dim); font-size: 11px;
+                  text-transform: uppercase; letter-spacing: .5px;
+                  text-align: left; font-weight: 600; }
+  .svc-table input, .svc-table select {
+    background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 6px; padding: 4px 8px;
+    font-family: monospace; font-size: 12px;
+  }
+  .svc-table input.ip { width: 130px; }
+  .svc-table input.port { width: 70px; text-align: right; }
+  .icon-btn {
+    background: none; border: none; cursor: pointer;
+    color: var(--text-dim); font-size: 14px; padding: 2px 6px;
+  }
+  .icon-btn:hover { color: var(--ph-attack); }
+
+  /* ---- action bar ---- */
+  .action-bar {
+    position: sticky; bottom: 0; background: var(--panel);
+    border-top: 1px solid var(--border);
+    padding: 12px 16px; margin: 16px -16px -16px;
+    display: flex; gap: 10px; align-items: center;
+  }
+  .action-bar button {
+    background: var(--accent); border: none; color: var(--bg);
+    border-radius: 6px; padding: 8px 16px; cursor: pointer;
+    font-family: inherit; font-size: 13px; font-weight: 600;
+  }
+  .action-bar button:hover { filter: brightness(1.1); }
+  .action-bar button.cancel {
+    background: var(--panel-2); color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+  .action-bar button:disabled {
+    background: var(--panel-2); color: var(--text-dim); cursor: not-allowed;
+  }
+  .action-bar .status { color: var(--text-dim); font-size: 12px; }
+  .dirty-pill {
+    background: rgba(210,153,34,.18); color: var(--ph-suspicious);
+    padding: 2px 9px; border-radius: 11px; font-size: 11px;
+    font-weight: 700; letter-spacing: .4px;
+  }
+
+  /* ---- backups list ---- */
+  .bak-row {
+    display: grid; grid-template-columns: 1fr auto auto;
+    gap: 12px; padding: 8px 10px; align-items: center;
+    border-bottom: 1px solid var(--border);
+  }
+  .bak-row:last-child { border-bottom: none; }
+  .bak-row code { color: var(--text-dim); font-size: 12px; }
+  .bak-row button {
+    background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 6px; padding: 4px 12px;
+    cursor: pointer; font-family: inherit; font-size: 12px;
+  }
+  .bak-row button:hover { color: var(--text); border-color: var(--accent); }
+</style>
+{% endblock %}
 
 {% block content %}
-  <h1>Registry</h1>
+  <h1>Config</h1>
   <p class="subtitle">
-    Read-only view of the live <code>services.json</code> and the engine's
-    reload audit log. Refreshes every 30s.
+    Edit <code>services.json</code>, save with automatic backup, reload
+    the engine. Every save is audit-logged.
   </p>
 
-  <div id="rg-error"></div>
+  <div id="cf-error"></div>
 
   <div class="panel">
-    <h2>services.json &mdash; file metadata</h2>
-    <div class="kv-grid" id="rg-meta">
+    <h2>File metadata</h2>
+    <div class="cfg-meta" id="cf-meta">
       <div class="k">loading…</div><div class="v">—</div>
     </div>
   </div>
 
   <div class="panel">
-    <h2>Protected IPs</h2>
-    <div id="rg-protected" class="mono" style="line-height:1.8;">loading…</div>
+    <h2>Global</h2>
+    <div class="toggle-row">
+      <label class="switch">
+        <input type="checkbox" id="cf-learning">
+        <span class="slider"></span>
+      </label>
+      <div>
+        <div class="lbl">Learning mode</div>
+        <div class="sub">Every slot caches scores but never transitions phase.
+          Train baselines every tick. Flip off to enter production.</div>
+      </div>
+    </div>
   </div>
 
   <div class="panel">
-    <h2>Profiles</h2>
-    <div id="rg-profiles">loading…</div>
+    <h2>Profiles
+      <button class="icon-btn" onclick="addProfile()"
+              style="float:right;color:var(--accent);font-size:12px;
+                     font-weight:600;">+ Add profile</button>
+    </h2>
+    <div id="cf-profiles">loading…</div>
   </div>
 
   <div class="panel">
-    <h2>Full services.json</h2>
-    <details>
-      <summary>show raw JSON</summary>
-      <pre class="json" id="rg-rawjson">—</pre>
-    </details>
-  </div>
-
-  <div class="panel">
-    <h2>Reload audit &mdash; service_registry_snapshots</h2>
-    <table class="grid">
+    <h2>Protected services
+      <button class="icon-btn" onclick="addService()"
+              style="float:right;color:var(--accent);font-size:12px;
+                     font-weight:600;">+ Add service</button>
+    </h2>
+    <table class="svc-table" id="cf-svc-table">
       <thead>
-        <tr>
-          <th>Timestamp</th><th>Event</th><th>Total slots</th>
-          <th>Protected IPs</th><th>Profiles</th>
-          <th>Reload count</th><th>Failures</th><th>Error</th>
-        </tr>
+        <tr><th>Target IP</th><th>Port</th><th>Proto</th>
+            <th>Profile</th><th></th></tr>
       </thead>
-      <tbody id="rg-audit-body">
-        <tr><td colspan="8" class="empty">Loading…</td></tr>
-      </tbody>
+      <tbody id="cf-svc-body"><tr><td colspan="5" class="empty">loading…</td></tr></tbody>
     </table>
+  </div>
+
+  <div class="panel">
+    <h2>Backups</h2>
+    <div id="cf-backups">loading…</div>
+  </div>
+
+  <div class="action-bar">
+    <span class="status" id="cf-status">No changes.</span>
+    <span style="flex:1;"></span>
+    <button class="cancel" id="cf-reset" disabled
+            onclick="resetEdits()">Reset edits</button>
+    <button id="cf-save" disabled
+            onclick="saveConfig()">Save + Reload</button>
   </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-  const REGISTRY_REFRESH_MS = 30000;  // registry changes rarely
+  // Live state.
+  let CURRENT = null;   // last fetched server content (snapshot of services.json)
+  let DRAFT = null;     // in-flight editable copy
 
-  function eventPill(ev) {
-    const e = (ev || "").toLowerCase();
-    if (e.includes("fail")) return `<span class="pill ATTACK">${ev}</span>`;
-    if (e.includes("success")) return `<span class="pill NORMAL">${ev}</span>`;
-    return `<span class="pill WARMUP">${ev || "—"}</span>`;
+  // The only fields the engine actually reads (see detection/config.py
+  // ProfileParams). Anything else in the JSON is preserved but not
+  // surfaced in the editor.
+  const PROFILE_FIELDS = [
+    {key:"tier0.alpha", label:"alpha", default:0.05,
+      hint:"EWMA weight (0–1). Low = stable; high = reactive.", step:"0.01"},
+    {key:"tier0.variance_ceiling_factor", label:"variance_ceiling",
+      default:6.0,
+      hint:"±C·σ winsorization clamp.", step:"0.5"},
+    {key:"tier0.absolute_pps_threshold", label:"absolute_pps_threshold",
+      default:0, hint:"0 = disabled.", step:"1"},
+    {key:"tier0.absolute_bps_threshold", label:"absolute_bps_threshold",
+      default:0, hint:"0 = disabled.", step:"1"},
+    {key:"tier0.absolute_fps_threshold", label:"absolute_fps_threshold",
+      default:0, hint:"0 = disabled.", step:"1"},
+    {key:"tier1.baseline_freeze_windows", label:"baseline_freeze_windows",
+      default:60, hint:"EWMA freeze duration when t0 fires.", step:"1"},
+    {key:"tier1.thaw_cooldown_windows", label:"thaw_cooldown_windows",
+      default:30, hint:"NORMAL ticks to release ATTACK freeze.", step:"1"},
+    {key:"tier1.warmup_windows", label:"warmup_windows", default:400,
+      hint:"Cold-start ticks before verdicts.", step:"1"},
+  ];
+  const PROFILE_FLAGS = [
+    {key:"detection_fixes.fps_source", label:"fix_fps_source",
+      hint:"Align fps EWMA with CUSUM source."},
+    {key:"detection_fixes.frag_zscore", label:"fix_frag_zscore",
+      hint:"Z-score frag ratio against learned baseline."},
+  ];
+
+  function getPath(obj, path) {
+    return path.split(".").reduce((o, k) => (o ? o[k] : undefined), obj);
+  }
+  function setPath(obj, path, val) {
+    const parts = path.split(".");
+    let o = obj;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (o[parts[i]] == null || typeof o[parts[i]] !== "object")
+        o[parts[i]] = {};
+      o = o[parts[i]];
+    }
+    o[parts[parts.length - 1]] = val;
+  }
+  function cssEscape(s) {
+    return s.replace(/[^a-zA-Z0-9_-]/g, c =>
+      "_" + c.charCodeAt(0).toString(16));
   }
 
-  async function refreshRegistry() {
-    // ---- services.json ----
-    try {
-      const d = await getJSON("/api/registry");
-      document.getElementById("rg-error").innerHTML = "";
-
-      document.getElementById("rg-meta").innerHTML = `
-        <div class="k">path</div><div class="v">${d.path}</div>
-        <div class="k">modified</div><div class="v">${fmtTs(d.modified_time)}</div>
-        <div class="k">size</div><div class="v">${fmtBytes(d.size_bytes)}</div>`;
-
-      const c = d.content || {};
-      const protected_ips = c.protected_ips || c.protectedIps || [];
-      const protEl = document.getElementById("rg-protected");
-      if (Array.isArray(protected_ips) && protected_ips.length) {
-        protEl.innerHTML = protected_ips.map(x =>
-          `<span style="display:inline-block;min-width:160px;">${
-            (typeof x === "object") ? JSON.stringify(x) : x}</span>`).join("");
-      } else {
-        protEl.innerHTML = '<span class="clock">none listed</span>';
-      }
-
-      const profiles = c.profiles || [];
-      const profEl = document.getElementById("rg-profiles");
-      if (Array.isArray(profiles) && profiles.length) {
-        profEl.innerHTML = profiles.map((p, i) => {
-          const name = (p && (p.name || p.profile_name)) || `profile_${i}`;
-          return `<details>
-            <summary>${name}</summary>
-            <pre class="json">${JSON.stringify(p, null, 2)}</pre>
-          </details>`;
-        }).join("");
-      } else if (profiles && typeof profiles === "object") {
-        profEl.innerHTML =
-          `<pre class="json">${JSON.stringify(profiles, null, 2)}</pre>`;
-      } else {
-        profEl.innerHTML = '<span class="clock">none listed</span>';
-      }
-
-      document.getElementById("rg-rawjson").textContent =
-        JSON.stringify(c, null, 2);
-    } catch (e) {
-      showError("rg-error", e.message);
-    }
-
-    // ---- reload audit ----
-    try {
-      const audit = await getJSON("/api/registry/audit?limit=50");
-      const body = document.getElementById("rg-audit-body");
-      if (!audit.length) {
-        body.innerHTML =
-          '<tr><td colspan="8" class="empty">' +
-          'No registry snapshots recorded yet.</td></tr>';
-      } else {
-        body.innerHTML = audit.map(a => `
-          <tr>
-            <td class="mono">${fmtTs(a.timestamp)}</td>
-            <td>${eventPill(a.event_type)}</td>
-            <td class="mono num">${fmtNum(a.n_total_slots)}</td>
-            <td class="mono num">${fmtNum(a.n_protected_ips)}</td>
-            <td class="mono num">${fmtNum(a.n_profiles)}</td>
-            <td class="mono num">${fmtNum(a.reload_count)}</td>
-            <td class="mono num">${fmtNum(a.reload_failures)}</td>
-            <td class="mono">${a.error_message || "—"}</td>
-          </tr>`).join("");
-      }
-    } catch (e) {
-      // audit table failing is non-fatal — keep the services.json view
-      document.getElementById("rg-audit-body").innerHTML =
-        `<tr><td colspan="8" class="empty">audit unavailable: ${e.message}</td></tr>`;
-    }
-
-    setClock(new Date().toISOString(), true);
+  function markDirty() {
+    const isDirty = JSON.stringify(CURRENT) !== JSON.stringify(DRAFT);
+    document.getElementById("cf-save").disabled = !isDirty;
+    document.getElementById("cf-reset").disabled = !isDirty;
+    document.getElementById("cf-status").innerHTML = isDirty
+      ? '<span class="dirty-pill">UNSAVED</span>' : "No changes.";
   }
-  refreshRegistry();
-  setInterval(refreshRegistry, REGISTRY_REFRESH_MS);
+
+  function resetEdits() {
+    DRAFT = JSON.parse(JSON.stringify(CURRENT));
+    renderAll();
+  }
+
+  function renderMeta(data) {
+    document.getElementById("cf-meta").innerHTML = `
+      <div class="k">path</div><div class="v">${data.path}</div>
+      <div class="k">modified</div><div class="v">${fmtTs(data.modified_time)}</div>
+      <div class="k">size</div><div class="v">${fmtBytes(data.size_bytes)}</div>`;
+  }
+
+  function renderGlobal() {
+    document.getElementById("cf-learning").checked = !!DRAFT.learning_mode;
+  }
+
+  function renderProfiles() {
+    const profilesObj = DRAFT.profiles || {};
+    const names = Object.keys(profilesObj);
+    if (!names.length) {
+      document.getElementById("cf-profiles").innerHTML =
+        '<div class="empty">No profiles defined.</div>';
+      return;
+    }
+    document.getElementById("cf-profiles").innerHTML = names.map(name => {
+      const p = profilesObj[name] || {};
+      const fieldsHTML = PROFILE_FIELDS.map(f => {
+        const val = getPath(p, f.key);
+        const display = val !== undefined && val !== null ? val : f.default;
+        return `<label>${f.label}</label>
+                <input type="number" step="${f.step}" data-prof="${name}"
+                       data-path="${f.key}" value="${display}">
+                <span class="hint">${f.hint}</span>`;
+      }).join("");
+      const flagsHTML = PROFILE_FLAGS.map(f => {
+        const val = !!getPath(p, f.key);
+        return `<label>${f.label}</label>
+                <label class="switch" style="justify-self:start;">
+                  <input type="checkbox" data-prof="${name}" data-path="${f.key}"
+                         ${val ? "checked" : ""}>
+                  <span class="slider"></span>
+                </label>
+                <span class="hint">${f.hint}</span>`;
+      }).join("");
+      const safe = cssEscape(name);
+      return `<div class="profile-card" id="prof-${safe}">
+        <div class="profile-head" onclick="toggleProfile('${safe}')">
+          <span class="name">${name}</span>
+          <span class="grow"></span>
+          <button class="icon-btn" onclick="event.stopPropagation();
+                  deleteProfile('${name.replace(/'/g, "\\'")}')">🗑</button>
+        </div>
+        <div class="profile-body">
+          <div class="field-grid">${fieldsHTML}${flagsHTML}</div>
+        </div>
+      </div>`;
+    }).join("");
+
+    document.querySelectorAll("#cf-profiles input[type=number]").forEach(inp => {
+      inp.addEventListener("input", () => {
+        const v = Number(inp.value);
+        if (!Number.isFinite(v)) return;
+        const name = inp.dataset.prof;
+        DRAFT.profiles[name] = DRAFT.profiles[name] || {};
+        setPath(DRAFT.profiles[name], inp.dataset.path, v);
+        markDirty();
+      });
+    });
+    document.querySelectorAll("#cf-profiles input[type=checkbox]").forEach(inp => {
+      inp.addEventListener("change", () => {
+        const name = inp.dataset.prof;
+        DRAFT.profiles[name] = DRAFT.profiles[name] || {};
+        setPath(DRAFT.profiles[name], inp.dataset.path, inp.checked);
+        markDirty();
+      });
+    });
+  }
+
+  function toggleProfile(safeName) {
+    const el = document.getElementById("prof-" + safeName);
+    if (el) el.classList.toggle("open");
+  }
+
+  function addProfile() {
+    const name = prompt("New profile name:");
+    if (!name) return;
+    if (DRAFT.profiles && DRAFT.profiles[name]) {
+      alert("Profile already exists: " + name); return;
+    }
+    DRAFT.profiles = DRAFT.profiles || {};
+    DRAFT.profiles[name] = {tier0:{}, tier1:{}, detection_fixes:{}};
+    renderProfiles();
+    markDirty();
+  }
+
+  function deleteProfile(name) {
+    if (!confirm(`Delete profile "${name}"?`)) return;
+    delete DRAFT.profiles[name];
+    renderProfiles();
+    markDirty();
+  }
+
+  function renderServices() {
+    const svcs = DRAFT.services || [];
+    const profileOpts = Object.keys(DRAFT.profiles || {})
+      .map(n => `<option value="${n}">${n}</option>`).join("");
+    const body = document.getElementById("cf-svc-body");
+    if (!svcs.length) {
+      body.innerHTML = '<tr><td colspan="5" class="empty">No services defined.</td></tr>';
+      return;
+    }
+    body.innerHTML = svcs.map((s, i) => `<tr>
+      <td><input class="ip" data-idx="${i}" data-key="target_ip"
+                 value="${s.target_ip || ""}"></td>
+      <td><input class="port" type="number" data-idx="${i}" data-key="port"
+                 value="${s.port || 0}"></td>
+      <td>
+        <select data-idx="${i}" data-key="proto">
+          <option value="TCP" ${s.proto==="TCP"?"selected":""}>TCP</option>
+          <option value="UDP" ${s.proto==="UDP"?"selected":""}>UDP</option>
+          <option value="ICMP" ${s.proto==="ICMP"?"selected":""}>ICMP</option>
+        </select>
+      </td>
+      <td>
+        <select data-idx="${i}" data-key="profile">
+          ${profileOpts.replace(`value="${s.profile}"`,
+                                `value="${s.profile}" selected`)}
+        </select>
+      </td>
+      <td style="text-align:right;">
+        <button class="icon-btn" onclick="deleteService(${i})">🗑</button>
+      </td>
+    </tr>`).join("");
+
+    document.querySelectorAll("#cf-svc-body input, #cf-svc-body select")
+      .forEach(el => {
+        el.addEventListener("input", () => {
+          const idx = Number(el.dataset.idx);
+          const key = el.dataset.key;
+          let val = el.value;
+          if (el.type === "number") val = Number(val);
+          DRAFT.services[idx][key] = val;
+          markDirty();
+        });
+      });
+  }
+
+  function addService() {
+    DRAFT.services = DRAFT.services || [];
+    const defaultProfile = Object.keys(DRAFT.profiles || {})[0] || "";
+    DRAFT.services.push({target_ip: "0.0.0.0", port: 0, proto: "TCP",
+                         profile: defaultProfile});
+    renderServices();
+    markDirty();
+  }
+  function deleteService(idx) {
+    if (!confirm("Remove this service?")) return;
+    DRAFT.services.splice(idx, 1);
+    renderServices();
+    markDirty();
+  }
+
+  function renderBackups(data) {
+    const baks = data.backups || [];
+    if (!baks.length) {
+      document.getElementById("cf-backups").innerHTML =
+        '<div class="empty">No backups yet — saves auto-create them.</div>';
+      return;
+    }
+    document.getElementById("cf-backups").innerHTML = baks.map(b => `
+      <div class="bak-row">
+        <div><code>${b.filename}</code></div>
+        <div class="clock">${fmtTs(b.modified_time)} · ${fmtBytes(b.size_bytes)}</div>
+        <button onclick="restoreBackup('${b.filename}')">Restore</button>
+      </div>`).join("");
+  }
+
+  async function restoreBackup(filename) {
+    if (!confirm(`Restore ${filename}? Current file will be backed up
+first, then overwritten. Engine reloads.`)) return;
+    document.getElementById("cf-save").disabled = true;
+    document.getElementById("cf-reset").disabled = true;
+    document.getElementById("cf-status").textContent = "Restoring…";
+    try {
+      const r = await fetch("/api/config/restore", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({filename}),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || r.statusText);
+      const reloadOk = d.reload && d.reload.ok;
+      document.getElementById("cf-status").innerHTML = reloadOk
+        ? `Restored from <code>${filename}</code>; engine reloaded.`
+        : `Restored, but reload reported: ${d.reload.error || "n/a"}`;
+      await refreshConfig();
+    } catch (e) {
+      showError("cf-error", e.message);
+      document.getElementById("cf-status").textContent = "Restore failed.";
+    }
+  }
+
+  function renderAll() {
+    renderGlobal();
+    renderProfiles();
+    renderServices();
+    markDirty();
+  }
+
+  async function saveConfig() {
+    document.getElementById("cf-save").disabled = true;
+    document.getElementById("cf-reset").disabled = true;
+    document.getElementById("cf-status").textContent = "Saving…";
+    try {
+      const r = await fetch("/api/config", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(DRAFT),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || r.statusText);
+      const reloadOk = d.reload && d.reload.ok;
+      document.getElementById("cf-status").innerHTML = reloadOk
+        ? `Saved (backup <code>${d.backup}</code>). Engine reloaded in ${d.reload.result.elapsed_ms}ms.`
+        : `Saved (backup <code>${d.backup}</code>); reload: ${d.reload && d.reload.error || "n/a"}`;
+      await refreshConfig();
+    } catch (e) {
+      showError("cf-error", e.message);
+      document.getElementById("cf-status").textContent = "Save failed.";
+      markDirty();
+    }
+  }
+
+  async function refreshConfig() {
+    try {
+      const d = await getJSON("/api/config");
+      document.getElementById("cf-error").innerHTML = "";
+      CURRENT = d.content;
+      DRAFT = JSON.parse(JSON.stringify(CURRENT));
+      renderMeta(d);
+      renderAll();
+      renderBackups(d);
+      document.getElementById("cf-learning").onchange = (e) => {
+        DRAFT.learning_mode = e.target.checked;
+        markDirty();
+      };
+      setClock(d.modified_time, true);
+    } catch (e) {
+      showError("cf-error", e.message);
+      setClock(null, false);
+    }
+  }
+  refreshConfig();
+  // No interval refresh — would clobber unsaved edits.
 </script>
 {% endblock %}
