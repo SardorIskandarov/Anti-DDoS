@@ -76,7 +76,7 @@
           'No non-WARMUP slots yet — system is still warming up.</td></tr>';
       } else {
         body.innerHTML = slots.map(s => `
-          <tr class="clickable" onclick="location.href='/services/${s.slot_id}'">
+          <tr class="clickable" onclick="location.href='/slots/${s.slot_id}'">
             <td class="mono">${s.slot_id}</td>
             <td class="mono">${s.target_ip}</td>
             <td class="mono num">${fmtPort(s.port, String(s.proto_kind).startsWith("CATCHALL_"))}</td>

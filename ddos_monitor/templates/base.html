@@ -193,10 +193,11 @@
   <header class="topbar">
     <div class="brand"><span class="dot"></span>Anti-DDoS &middot; Per-Service</div>
     <nav class="tabs">
-      <a href="/"         class="{{ 'active' if active_tab == 'overview' else '' }}">Overview</a>
-      <a href="/services" class="{{ 'active' if active_tab == 'services' else '' }}">Services</a>
-      <a href="/registry" class="{{ 'active' if active_tab == 'registry' else '' }}">Registry</a>
-      <a href="/alerts"   class="{{ 'active' if active_tab == 'alerts' else '' }}">Alerts</a>
+      <a href="/"       class="{{ 'active' if active_tab == 'operations' else '' }}">Operations</a>
+      <a href="/slots"  class="{{ 'active' if active_tab == 'slots' else '' }}">Slots</a>
+      <a href="/config" class="{{ 'active' if active_tab == 'config' else '' }}">Config</a>
+      <a href="/audit"  class="{{ 'active' if active_tab == 'audit' else '' }}">Audit</a>
+      <a href="/system" class="{{ 'active' if active_tab == 'system' else '' }}">System</a>
     </nav>
     <div class="clock" id="topclock">&mdash;</div>
   </header>

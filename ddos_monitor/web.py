@@ -41,7 +41,7 @@ from typing import Optional
 # Flat-import bootstrap (matches collector.py / main.py / wire_parser.py)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, redirect
 import config
 from wire_parser import phase_name, proto_kind_name, PHASE_NAMES, PROTO_KIND_NAMES
 
@@ -155,34 +155,62 @@ def inject_template_globals():
 # ====== HTML routes ======
 
 @app.route('/')
-def index():
-    """Overview tab — top-level dashboard."""
-    return render_template('overview.html', active_tab='overview')
+def operations_view():
+    """Operations tab — top-level dashboard (homepage)."""
+    return render_template('operations.html', active_tab='operations')
 
 
-@app.route('/services')
-def services_view():
-    """Services tab — all slots in a table."""
-    return render_template('services.html', active_tab='services')
+@app.route('/slots')
+def slots_view():
+    """Slots tab — all slots in a table."""
+    return render_template('slots.html', active_tab='slots')
 
 
-@app.route('/services/<int:slot_id>')
+@app.route('/slots/<int:slot_id>')
 def slot_detail_view(slot_id: int):
     """Slot detail page with charts."""
     return render_template('slot_detail.html', slot_id=slot_id,
-                           active_tab='services')
+                           active_tab='slots')
+
+
+@app.route('/config')
+def config_view():
+    """Config tab — view + (Phase 7) edit services.json + reload audit."""
+    return render_template('config.html', active_tab='config')
+
+
+@app.route('/audit')
+def audit_view():
+    """Audit tab — unified phase transitions + (Phase 6) config changes
+    + admin actions timeline."""
+    return render_template('audit.html', active_tab='audit')
+
+
+@app.route('/system')
+def system_view():
+    """System tab — engine health + (Phase 8) runtime overrides."""
+    return render_template('system.html', active_tab='system')
+
+
+# --- Legacy URL redirects (one cycle of grace for any old bookmarks) ---
+@app.route('/services')
+def _legacy_services():
+    return redirect('/slots', code=301)
+
+
+@app.route('/services/<int:slot_id>')
+def _legacy_service_detail(slot_id):
+    return redirect(f'/slots/{slot_id}', code=301)
 
 
 @app.route('/registry')
-def registry_view():
-    """Registry tab — current services.json + reload audit."""
-    return render_template('registry.html', active_tab='registry')
+def _legacy_registry():
+    return redirect('/config', code=301)
 
 
 @app.route('/alerts')
-def alerts_view():
-    """Alerts tab — phase transitions."""
-    return render_template('alerts.html', active_tab='alerts')
+def _legacy_alerts():
+    return redirect('/audit', code=301)
 
 
 # ====== JSON API ======

@@ -71,7 +71,7 @@
           <tr${rowStyle(r.to_phase)}>
             <td class="mono">${fmtTs(r.timestamp)}</td>
             <td class="mono">
-              <a href="/services/${r.slot_id}">${r.slot_id}</a></td>
+              <a href="/slots/${r.slot_id}">${r.slot_id}</a></td>
             <td class="mono">${r.target_ip}:${fmtPort(r.port, String(r.proto_kind).startsWith("CATCHALL_"))}</td>
             <td>${fmtProto(r.proto_kind)}</td>
             <td>${phasePill(r.from_phase)}<span class="arrow">&rarr;</span>${phasePill(r.to_phase)}${floorBadge(r)}</td>

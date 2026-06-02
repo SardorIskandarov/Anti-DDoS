@@ -81,7 +81,7 @@
         '<tr><td colspan="11" class="empty">No slots match the filter.</td></tr>';
     } else {
       body.innerHTML = rows.map(s => `
-        <tr class="clickable" onclick="location.href='/services/${s.slot_id}'">
+        <tr class="clickable" onclick="location.href='/slots/${s.slot_id}'">
           <td class="mono">${s.slot_id}</td>
           <td class="mono">${s.target_ip}</td>
           <td class="mono num">${fmtPort(s.port, s.is_catchall)}</td>

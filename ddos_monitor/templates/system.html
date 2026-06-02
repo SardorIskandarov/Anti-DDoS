@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}System{% endblock %}
+
+{% block content %}
+  <h1>System</h1>
+  <p class="subtitle">
+    Engine health, runtime controls, and per-slot overrides.
+  </p>
+
+  <div class="panel">
+    <h2>Engine health</h2>
+    <div class="empty">
+      Snapshot freshness, layout-hash match, reload audit, and live
+      control buttons will land here in Phase 8.
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Global controls</h2>
+    <div class="empty">
+      Learning-mode toggle, checkpoint save/load buttons (Phase 8).
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Per-slot runtime overrides</h2>
+    <div class="empty">
+      Force EWMA freeze, force ATTACK freeze, release freezes, reset
+      transient state (Phase 8).
+    </div>
+  </div>
+{% endblock %}

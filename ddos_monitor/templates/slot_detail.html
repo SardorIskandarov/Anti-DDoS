@@ -81,7 +81,7 @@
 {% endblock %}
 
 {% block content %}
-  <p class="subtitle"><a href="/services">&larr; Services</a></p>
+  <p class="subtitle"><a href="/slots">&larr; Slots</a></p>
   <h1 id="sd-header">Slot {{ slot_id }}</h1>
   <p class="subtitle" id="sd-subtitle">Loading slot {{ slot_id }}…</p>
 
@@ -142,10 +142,6 @@
         <div class="label">Unique source IPs</div>
         <div class="value" id="t-src-ips">—</div>
       </div>
-      <div class="tile traffic">
-        <div class="label">Unique dst ports</div>
-        <div class="value" id="t-dst-ports">—</div>
-      </div>
     </div>
   </div>
 
@@ -174,14 +170,14 @@
 
   <!-- ===== tab bar ===== -->
   <div class="tab-bar" id="sd-tabbar">
-    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="detection" class="active">Detection</button>
+    <button data-tab="overview">Overview</button>
     <button data-tab="protocol">Protocol</button>
     <button data-tab="distribution">Distribution</button>
-    <button data-tab="detection">Detection</button>
   </div>
 
   <!-- ===== Overview tab ===== -->
-  <div class="tab-content active" id="tab-overview">
+  <div class="tab-content" id="tab-overview">
     <div class="chart-grid" id="grid-overview"></div>
   </div>
 
@@ -214,7 +210,7 @@
   </div>
 
   <!-- ===== Detection tab ===== -->
-  <div class="tab-content" id="tab-detection">
+  <div class="tab-content active" id="tab-detection">
     <div class="chart-grid" id="grid-detection"></div>
     <div class="panel" style="margin-top:16px;">
       <h2>Raw counters</h2>
@@ -243,7 +239,7 @@
   // ---- module state ----
   let latestTs   = null;   // last /timeseries response
   let protoGroup = null;   // 'tcp' | 'udp' | 'icmp' | 'other' | null
-  let activeTab  = "overview";
+  let activeTab  = "detection";
   const charts   = {};     // canvasId -> Chart instance (lazy-created)
 
   // Charts the user has zoomed/panned into. We skip data updates for
@@ -295,12 +291,6 @@
     { canvas:"c-fps", grid:"grid-overview", tab:"overview",
       title:"Unique flows", yLabel:"flows",
       datasets:[{label:"unique flows", field:"unique_flows", color:"#a5d6ff"}] },
-    { canvas:"c-out-pkts", grid:"grid-overview", tab:"overview",
-      title:"Outbound packets / sec", yLabel:"pkts/s",
-      datasets:[{label:"outbound pkts/s", field:"out_pkts", color:"#6e7681"}] },
-    { canvas:"c-out-bytes", grid:"grid-overview", tab:"overview",
-      title:"Outbound bytes / sec", yLabel:"bytes/s",
-      datasets:[{label:"outbound bytes/s", field:"out_bytes", color:"#6e7681"}] },
     { canvas:"c-ip-frag", grid:"grid-overview", tab:"overview",
       title:"IP fragment packets / sec", yLabel:"pkts/s",
       datasets:[{label:"ip frag pkts/s", field:"ip_frag_pkts", color:"#f0883e"}] },
@@ -309,24 +299,9 @@
     { canvas:"c-syn", grid:"grid-proto-tcp", tab:"protocol", protoGroup:"tcp",
       title:"SYN packets / sec", yLabel:"pkts/s",
       datasets:[{label:"syn_pkts", field:"syn_pkts", color:"#f85149"}] },
-    { canvas:"c-syn-ack", grid:"grid-proto-tcp", tab:"protocol", protoGroup:"tcp",
-      title:"SYN-ACK packets / sec", yLabel:"pkts/s",
-      datasets:[{label:"syn_ack_pkts", field:"syn_ack_pkts", color:"#ffa657"}] },
-    { canvas:"c-fin-ack", grid:"grid-proto-tcp", tab:"protocol", protoGroup:"tcp",
-      title:"FIN-ACK packets / sec", yLabel:"pkts/s",
-      datasets:[{label:"fin_ack_pkts", field:"fin_ack_pkts", color:"#ffa657"}] },
     { canvas:"c-rst", grid:"grid-proto-tcp", tab:"protocol", protoGroup:"tcp",
       title:"RST packets / sec", yLabel:"pkts/s",
       datasets:[{label:"rst_pkts", field:"rst_pkts", color:"#ff7b72"}] },
-    { canvas:"c-ack-data", grid:"grid-proto-tcp", tab:"protocol", protoGroup:"tcp",
-      title:"ACK-with-data packets / sec", yLabel:"pkts/s",
-      datasets:[{label:"ack_data_pkts", field:"ack_data_pkts", color:"#ffa657"}] },
-    { canvas:"c-empty-ack", grid:"grid-proto-tcp", tab:"protocol", protoGroup:"tcp",
-      title:"Empty-ACK packets / sec", yLabel:"pkts/s",
-      datasets:[{label:"empty_ack_pkts", field:"empty_ack_pkts", color:"#ffa657"}] },
-    { canvas:"c-zero-win", grid:"grid-proto-tcp", tab:"protocol", protoGroup:"tcp",
-      title:"Zero-window packets / sec", yLabel:"pkts/s",
-      datasets:[{label:"zero_window_pkts", field:"zero_window_pkts", color:"#ffa657"}] },
 
     // ---- Protocol: UDP (proto_kind 2, 5) ----
     { canvas:"c-udp-pkts", grid:"grid-proto-udp", tab:"protocol", protoGroup:"udp",
@@ -359,12 +334,6 @@
     { canvas:"c-entropy", grid:"grid-distribution", tab:"distribution",
       title:"/24 source entropy", yLabel:"entropy",
       datasets:[{label:"src_24_entropy", field:"src_24_entropy", color:"#a5d6ff"}] },
-    { canvas:"c-ttl-mean", grid:"grid-distribution", tab:"distribution",
-      title:"TTL mean", yLabel:"ttl",
-      datasets:[{label:"ttl_mean", field:"ttl_mean", color:"#a5d6ff"}] },
-    { canvas:"c-ttl-stddev", grid:"grid-distribution", tab:"distribution",
-      title:"TTL stddev", yLabel:"ttl σ",
-      datasets:[{label:"ttl_stddev", field:"ttl_stddev", color:"#a5d6ff"}] },
 
     // ---- Detection (always visible, two charts conditional on proto) ----
     { canvas:"c-scores", grid:"grid-detection", tab:"detection",
@@ -393,12 +362,6 @@
       title:"Tier-1 off-protocol score", yLabel:"score [0..1]",
       yMin:0, yMax:1, datasets:[
         {label:"tier1_offproto_score", field:"tier1_offproto_score", color:"#f0883e"}] },
-    { canvas:"c-bw-z", grid:"grid-detection", tab:"detection",
-      title:"Bandwidth z-scores (pps / bps)", yLabel:"z-score",
-      yBeginAtZero:false, datasets:[
-        {label:"bw_pps_z_last", field:"bw_pps_z_last", color:"#58a6ff"},
-        {label:"bw_bps_z_last", field:"bw_bps_z_last", color:"#79c0ff"},
-      ] },
     { canvas:"c-phase", grid:"grid-detection", tab:"detection",
       title:"Phase (0 warmup · 1 normal · 2 suspicious · 3 attack)",
       yLabel:"phase", stepped:true, phase:true, yMin:0, yMax:3, agg:"max",
@@ -717,15 +680,6 @@
         compactNum(Math.round(Number(s.unique_flows) || 0));
       document.getElementById("t-src-ips").textContent =
         compactNum(Math.round(Number(s.unique_src_ips) || 0));
-      // unique_dst_ports is not yet emitted by the per-service wire
-      // protocol — named-service slots have exactly one port anyway, so
-      // "1" is the right default. The day the engine starts shipping a
-      // real dst-port HLL, this tile will pick it up automatically.
-      document.getElementById("t-dst-ports").textContent =
-        (s.unique_dst_ports == null)
-          ? "1"
-          : compactNum(Math.round(Number(s.unique_dst_ports) || 0));
-
       // tier-1 component grid
       document.getElementById("sd-tier1-grid").innerHTML =
         TIER1_FIELDS.map(([f, label]) => `
