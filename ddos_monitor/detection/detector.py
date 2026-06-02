@@ -13,7 +13,11 @@ Per-tick stages:
                       counters. No EWMA updates.
     2. Tier-0       — CUSUM(pps,bps,fps) + burst-z → weighted R0; scored
                       against the prior baseline mean/variance.
-    3. abs-floor    — absolute-threshold breach short-circuits to ATTACK.
+    3. abs-floor    — absolute-threshold breach. BYPASSES the persistence
+                      gate (forces Tier-1 to run this tick) but does NOT
+                      bypass Tier-1 itself. The phase is still whatever
+                      Tier-1's T1 says — abs-floor on its own no longer
+                      convicts, signature corroboration is required.
     4. persistence  — Tier-0-fired history is a 5-bit rolling bitmask; the
                       gate opens when popcount(history) >= GATE_PERSISTENCE_WINDOWS.
                       This catches pulsing/burst attacks the old strict
@@ -24,8 +28,8 @@ Per-tick stages:
                       corroboration-aware fusion lifts the verdict on two
                       mid-tier channels while capping the single-channel
                       penalty to 0.15.
-    6. phase + freezes — abs/warmup/gate/thresholds → new phase; arm/release
-                         attack-freeze and EWMA-freeze.
+    6. phase + freezes — warmup/gate/abs-floor/thresholds → new phase;
+                         arm/release attack-freeze and EWMA-freeze.
     7. update       — train EWMA baselines + burst-EWMA only if (not frozen)
                       and (verdict == NORMAL).
 
@@ -258,12 +262,18 @@ class Detector:
         # bit 0 = current tick, bits 1..4 = previous four. Gate fires when
         # popcount(history) >= GATE_PERSISTENCE_WINDOWS. This catches pulsing
         # patterns (1,0,1,0,1) the old strict consecutive counter missed.
-        st.tier0_history_bits = (
-            ((st.tier0_history_bits << 1) | (1 if t0_fired else 0)) & 0x1F)
-        popcount = bin(st.tier0_history_bits).count("1")
-        # Wire field repurposed: now reports popcount-of-5 instead of
-        # strict consecutive count (semantic change, schema stable).
-        st.consecutive_attack_windows = popcount
+        # Skipped during warmup — the popcount across an uncalibrated
+        # baseline isn't meaningful and the wire field would mislead
+        # dashboards. After warmup ends, the bitmask is clean and starts
+        # filling fresh.
+        popcount = 0
+        if st.warmup_remaining == 0:
+            st.tier0_history_bits = (
+                ((st.tier0_history_bits << 1) | (1 if t0_fired else 0)) & 0x1F)
+            popcount = bin(st.tier0_history_bits).count("1")
+            # Wire field repurposed: now reports popcount-of-5 instead of
+            # strict consecutive count (semantic change, schema stable).
+            st.consecutive_attack_windows = popcount
 
         # === STAGE 5a: learning mode — score, cache, train, never transition ===
         if self.config.learning_mode:
@@ -280,7 +290,7 @@ class Detector:
         if st.ewma_freeze_remaining > 0:
             st.ewma_freeze_remaining -= 1
 
-        # === STAGE 5b: warmup — score, cache, train, auto-promote ===
+        # === STAGE 5b: warmup — score, cache, train (guarded), auto-promote ===
         if st.warmup_remaining > 0:
             st.warmup_remaining -= 1
             st.warmup_windows_completed += 1
@@ -288,42 +298,60 @@ class Detector:
             st.last_attack_evidence = R0
             if st.warmup_remaining == 0 and st.phase == C.PHASE_WARMUP:
                 st.phase = C.PHASE_NORMAL
-            # During warmup we always train — that's how the baseline boots.
-            self._update_baselines(st, rec, kind, pps, bps, fps_ewma_input,
-                                   ttl_sd_bessel, src_ip_ratio, off_ratio,
-                                   src24_top1, src24_ent, frag_r, alpha, vcf, p)
+
+            # Arm the EWMA freeze on any Tier-0 fire (including abs_breach)
+            # during warmup — without this guard, an attacker timing a flood
+            # against a fresh slot's warmup window permanently raises the
+            # baseline (the warmup branch used to train unconditionally).
+            if t0_fired:
+                fw = p.baseline_freeze_windows
+                if st.ewma_freeze_remaining < fw:
+                    st.ewma_freeze_remaining = fw
+
+            # Train only when the slot isn't (now) frozen. is_frozen() folds
+            # in the just-armed freeze above, so a Tier-0 fire blocks its
+            # own contaminating update — same invariant as the main path.
+            if not st.is_frozen():
+                self._update_baselines(st, rec, kind, pps, bps, fps_ewma_input,
+                                       ttl_sd_bessel, src_ip_ratio, off_ratio,
+                                       src24_top1, src24_ent, frag_r, alpha, vcf, p)
+
             self._finalize(st, p, old_phase)
             return
 
         # === STAGE 5c/6: main path — gate, Tier-1, phase ===
         new_phase = old_phase
 
-        if abs_breach:
-            # Absolute floor forces ATTACK, bypass gate + Tier-1.
-            self._combine(st, rec, kind)
-            st.last_attack_evidence = R0
-            new_phase = C.PHASE_ATTACK
-        else:
-            gate_open = popcount >= C.GATE_PERSISTENCE_WINDOWS
-            if not gate_open:
-                new_phase = C.PHASE_NORMAL
-                st.last_attack_evidence = R0
+        # Run Tier-1 whenever either trigger is active:
+        #   (a) the rolling-history persistence gate has opened (3-of-5), OR
+        #   (b) the absolute floor has been breached — abs-floor now
+        #       BYPASSES the persistence gate but does NOT bypass Tier-1.
+        # The verdict is always Tier-1's call against the standard thresholds.
+        # abs-floor on its own no longer convicts: a pure volumetric breach
+        # must be corroborated by at least one signature channel to reach
+        # ATTACK. The wire still flags last_absolute_floor_fired so operators
+        # can see that a hard threshold was crossed regardless of the phase.
+        if abs_breach or popcount >= C.GATE_PERSISTENCE_WINDOWS:
+            T1 = self._combine(st, rec, kind)
+            st.last_attack_evidence = T1
+            if T1 >= C.ATTACK_THRESHOLD:
+                new_phase = C.PHASE_ATTACK
+            elif T1 >= C.SUSPICIOUS_THRESHOLD:
+                new_phase = C.PHASE_SUSPICIOUS
             else:
-                T1 = self._combine(st, rec, kind)
-                st.last_attack_evidence = T1
-                if T1 >= C.ATTACK_THRESHOLD:
-                    new_phase = C.PHASE_ATTACK
-                elif T1 >= C.SUSPICIOUS_THRESHOLD:
-                    new_phase = C.PHASE_SUSPICIOUS
-                else:
-                    new_phase = C.PHASE_NORMAL
+                new_phase = C.PHASE_NORMAL
+        else:
+            new_phase = C.PHASE_NORMAL
+            st.last_attack_evidence = R0
 
-            # Arm the EWMA freeze the instant Tier-0 fires, even if the gate
-            # didn't open this tick — protects the baseline from the spike.
-            if t0_fired:
-                fw = p.baseline_freeze_windows
-                if st.ewma_freeze_remaining < fw:
-                    st.ewma_freeze_remaining = fw
+        # Arm the EWMA freeze the instant Tier-0 fires (including any
+        # abs-floor breach — t0_fired already folds it in), regardless of
+        # whether Tier-1 corroborated to ATTACK. The freeze protects the
+        # baseline from being trained on the contaminated window.
+        if t0_fired:
+            fw = p.baseline_freeze_windows
+            if st.ewma_freeze_remaining < fw:
+                st.ewma_freeze_remaining = fw
 
         st.phase = new_phase
 
@@ -337,6 +365,15 @@ class Detector:
                 if st.consecutive_normal_windows >= p.thaw_cooldown_windows:
                     st.attack_freeze_active = False
                     st.consecutive_normal_windows = 0
+                    # Drain CUSUM at thaw. While the freeze was active,
+                    # S_plus stayed stuck at its attack-saturated value;
+                    # by now we've seen thaw_cooldown_windows of NORMAL,
+                    # so the stale accumulator is no longer informative
+                    # and would otherwise re-arm the EWMA freeze for
+                    # ~h/k more ticks while it drained naturally.
+                    st.cusum_pps.S_plus = 0.0
+                    st.cusum_bps.S_plus = 0.0
+                    st.cusum_fps.S_plus = 0.0
             else:
                 st.consecutive_normal_windows = 0
 
@@ -401,13 +438,15 @@ class Detector:
         k, h = C.TIER0_K, C.TIER0_H
 
         def chan(cusum, x, ewma):
-            r = 0.0
+            # Advance CUSUM unless the slot is in full ATTACK freeze (which
+            # sticks S_plus at its saturated value so the verdict can't
+            # decay prematurely). Always report the normalised accumulator
+            # so a slow-ramp attack contributes proportionally to R0 as
+            # S_plus climbs — pre-fix, this returned 0 until the breach
+            # moment, then jumped to ~1.0 in one tick (invisible buildup).
             if not cusum_frozen:
-                if M.cusum_update(cusum, x, ewma.mean, _stddev_of(ewma), k, h):
-                    r = min(1.0, cusum.S_plus / h)
-            else:
-                r = min(1.0, cusum.S_plus / h)
-            return r
+                M.cusum_update(cusum, x, ewma.mean, _stddev_of(ewma), k, h)
+            return min(1.0, cusum.S_plus / h)
 
         st.r_pps = chan(st.cusum_pps, pps, st.ewma_pps)
         st.r_bps = chan(st.cusum_bps, bps, st.ewma_bps)
@@ -460,7 +499,13 @@ class Detector:
                 M.ewma_update(st.ewma_empty_ack_ratio, int(rec["empty_ack_pkts"]) / dn, alpha, vcf)
                 M.ewma_update(st.ewma_zero_window_ratio, int(rec["zero_window_pkts"]) / dn, alpha, vcf)
                 sa = int(rec["syn_ack_pkts"])
-                syn_to_sa = (int(rec["syn_pkts"]) / sa) if sa > 0 else float(int(rec["syn_pkts"]))
+                # Saturating fallback when sa == 0: cap at 10 (a healthy
+                # SYN/SYN-ACK ratio is ~1; 10 is clearly attack-shaped but
+                # bounded). Without this cap, a single SYN flood pushes
+                # the baseline scale to thousands, after which smaller
+                # subsequent attacks read as "below average" and score
+                # LOWER than legitimate traffic — polarity inversion.
+                syn_to_sa = (int(rec["syn_pkts"]) / sa) if sa > 0 else min(10.0, float(int(rec["syn_pkts"])))
                 M.ewma_update(st.ewma_syn_to_synack, syn_to_sa, alpha, vcf)
                 # Welford-true Bessel CoV: snapshot ships mean/M2 directly.
                 mean = float(rec["tcp_pkt_size_mean"])
@@ -501,7 +546,9 @@ class Detector:
         empty_ack_r = int(rec["empty_ack_pkts"]) / dn
         zero_win_r = int(rec["zero_window_pkts"]) / dn
         sa = int(rec["syn_ack_pkts"])
-        syn_to_sa = (int(rec["syn_pkts"]) / sa) if sa > 0 else float(int(rec["syn_pkts"]))
+        # Saturating fallback identical to the training site — caps the
+        # sa==0 case at 10 so a SYN flood doesn't poison the scale.
+        syn_to_sa = (int(rec["syn_pkts"]) / sa) if sa > 0 else min(10.0, float(int(rec["syn_pkts"])))
         pkt_cov = _pop_cov_from_welford(float(rec["tcp_pkt_size_mean"]),
                                         float(rec["tcp_pkt_size_M2"]), tp)
         z1 = M.ewma_z_score(st.ewma_syn_ratio, syn_r)
@@ -561,8 +608,11 @@ class Detector:
             return 0.0
         pkts = int(rec["inbound_pkts"])
         dn = float(pkts)
-        # Welford-true population TTL stddev (pop variance = M2/n).
-        ttl_var = (float(rec["ttl_M2"]) / dn) if pkts > 1 else 0.0
+        # Welford-true Bessel TTL stddev (sample variance = M2/(n-1)).
+        # Matches the baseline training in _update_baselines, which feeds
+        # ewma_ttl_stddev with sqrt(M2/(n-1)). Population (M2/n) here
+        # produced a systematic ~5% bias at low n vs the Bessel baseline.
+        ttl_var = (float(rec["ttl_M2"]) / (pkts - 1)) if pkts > 1 else 0.0
         if ttl_var < 0.0:
             ttl_var = 0.0
         ttl_sd = math.sqrt(ttl_var)
